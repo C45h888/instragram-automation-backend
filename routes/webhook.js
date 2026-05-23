@@ -122,8 +122,7 @@ router.get('/test', (req, res) => {
     message: '✅ Webhook routes are working!',
     available_endpoints: [
       'GET /webhook/instagram (Meta verification)',
-      'POST /webhook/instagram (Meta events for frontend)',
-      'GET /webhook/realtime-updates (Frontend polling)'
+      'POST /webhook/instagram (Meta events → audit_log DB)'
     ],
     timestamp: new Date().toISOString()
   });
