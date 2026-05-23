@@ -1,0 +1,84 @@
+{
+  "name": "instagram-automation-backend",
+  "version": "2.0.0",
+  "description": "Backend API for Instagram Automation Dashboard with Meta API integration and direct Supabase connection",
+  "main": "server.js",
+  "scripts": {
+    "//": "=== CROSS-PLATFORM SCRIPTS (Windows compatible) ===",
+    "start": "NODE_ENV=production node server.js",
+    "start:prod": "NODE_ENV=production node server.js",
+    "start:pm2": "NODE_ENV=production pm2 start server.js --name instagram-backend",
+    "dev": "NODE_ENV=development nodemon server.js",
+    "dev:watch": "NODE_ENV=development nodemon --inspect server.js",
+    "dev:debug": "NODE_ENV=development node --inspect-brk server.js",
+    "test": "NODE_ENV=test node ./routes/test.js",
+    "test:connection": "NODE_ENV=test node -e \"require('./config/supabase').initializeSupabase().then(() => console.log('✅ Connection successful')).catch(e => console.error('❌', e.message))\"",
+    "health": "curl -s http://localhost:3001/health | jq .",
+    "health:db": "curl -s http://localhost:3001/health/database | jq .",
+    "health:full": "curl -s http://localhost:3001/status | jq .",
+    "logs": "tail -f logs/*.log",
+    "logs:error": "tail -f logs/error.log",
+    "clean": "rm -rf node_modules package-lock.json",
+    "fresh-install": "npm run clean && npm install",
+    "check:env": "node -e \"console.log('NODE_ENV:', process.env.NODE_ENV || 'not set'); console.log('DB URL:', process.env.SUPABASE_URL ? '✅ Set' : '❌ Missing'); console.log('Service Key:', process.env.SUPABASE_SERVICE_KEY ? '✅ Set' : '❌ Missing')\"",
+    "start:win": "set NODE_ENV=production&& node server.js",
+    "dev:win": "set NODE_ENV=development&& nodemon server.js",
+    "test:full": "npm run test:connection && npm test"
+  },
+  "keywords": [
+    "instagram",
+    "automation",
+    "webhook",
+    "express",
+    "cloudflare",
+    "meta-api",
+    "supabase",
+    "backend",
+    "direct-connection"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.56.1",
+    "axios": "^1.13.1",
+    "bcryptjs": "^3.0.2",
+    "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "rate-limiter-flexible": "^7.2.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/instagram-automation-dashboard.git"
+  },
+  "nodemonConfig": {
+    "watch": [
+      "*.js",
+      "config/*.js",
+      "routes/*.js",
+      "middleware/*.js",
+      "services/*.js"
+    ],
+    "ext": "js,json",
+    "ignore": [
+      "node_modules/*",
+      "logs/*"
+    ],
+    "env": {
+      "NODE_ENV": "development"
+    },
+    "delay": 1000
+  }
+}
