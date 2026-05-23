@@ -5,48 +5,6 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-const axios = require('axios');
-
-// ============================================
-// AGENT WEBHOOK FORWARDING (Path A)
-// ============================================
-
-/**
- * Fire-and-forget forward of a single normalized webhook change to the agent.
- * Re-signs with META_APP_SECRET so the agent's HMAC verification passes.
- * Non-fatal — Meta's 200 ACK must never be delayed by agent availability.
- *
- * Forwards a single-change normalized payload (not the raw multi-change body)
- * to avoid the agent processing only entry[0].changes[0] multiple times when
- * a webhook batch contains more than one change.
- *
- * @param {string} agentRoute - e.g. '/webhook/comment' or '/webhook/dm'
- * @param {object} singleChangeBody - { object, entry: [{ ...entry, changes: [change] }] }
- */
-function forwardToAgent(agentRoute, singleChangeBody) {
-  const agentUrl = process.env.AGENT_URL;
-  if (!agentUrl) {
-    console.warn('[WebhookForward] AGENT_URL not set — skipping agent forward');
-    return;
-  }
-
-  const secret = process.env.META_APP_SECRET || process.env.INSTAGRAM_APP_SECRET || '';
-  const serialised = JSON.stringify(singleChangeBody);
-  const sig = secret
-    ? `sha256=${crypto.createHmac('sha256', secret).update(serialised).digest('hex')}`
-    : 'sha256=dev-bypass';
-
-  axios.post(`${agentUrl}${agentRoute}`, singleChangeBody, {
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Hub-Signature-256': sig,
-      'X-API-Key': process.env.AGENT_API_KEY || '',
-    },
-    timeout: 8000,
-  }).catch(err =>
-    console.warn(`[WebhookForward] ${agentRoute} failed (agent will catch on next poll):`, err.message)
-  );
-}
 
 // ============================================
 // META WEBHOOK SIGNATURE VERIFICATION
@@ -131,7 +89,6 @@ router.post('/instagram', verifyMetaWebhookSignature, async (req, res) => {
 
           console.log(`   Processing ${field} event for frontend`);
 
-          // Store in Supabase for archival
           if (supabase) {
             await supabase.from('audit_log').insert({
               event_type: `webhook_${field}`,
@@ -141,26 +98,6 @@ router.post('/instagram', verifyMetaWebhookSignature, async (req, res) => {
               details: { field, value },
               success: true
             }).catch(err => console.error('Webhook log failed:', err.message));
-          }
-
-          // Broadcast to frontend realtime cache
-          broadcastToFrontend(`webhook_${field}`, {
-            instagram_business_id: entry.id,
-            field,
-            value,
-            timestamp: new Date().toISOString()
-          });
-
-          // Path A: forward to agent for real-time automation.
-          // Normalize to a single-change payload so the agent doesn't see a
-          // multi-change batch and silently process only the first change.
-          if (field === 'comments' || field === 'messages') {
-            const agentRoute = field === 'comments' ? '/webhook/comment' : '/webhook/dm';
-            const singleChangeBody = {
-              object: body.object,
-              entry: [{ ...entry, changes: [change] }],
-            };
-            forwardToAgent(agentRoute, singleChangeBody);
           }
         }
       }
@@ -174,57 +111,6 @@ router.post('/instagram', verifyMetaWebhookSignature, async (req, res) => {
   } else {
     res.sendStatus(404);
   }
-});
-
-// ============================================
-// REAL-TIME FRONTEND COMMUNICATION
-// ============================================
-
-/**
- * Broadcasts webhook events to frontend via in-memory cache
- * Frontend polls /realtime-updates to retrieve new events
- */
-function broadcastToFrontend(eventType, data) {
-  // Initialize global cache if not exists
-  if (!global.realtimeCache) {
-    global.realtimeCache = [];
-  }
-
-  // Add event to cache
-  global.realtimeCache.push({
-    type: eventType,
-    data: data,
-    timestamp: new Date().toISOString()
-  });
-
-  // Keep only last 100 events
-  if (global.realtimeCache.length > 100) {
-    global.realtimeCache.shift();
-  }
-}
-
-// Frontend polls for real-time updates
-router.get('/realtime-updates', (req, res) => {
-  const since = req.query.since; // timestamp
-
-  if (!global.realtimeCache) {
-    return res.json({ events: [], latest_timestamp: null });
-  }
-
-  let events = global.realtimeCache;
-
-  if (since) {
-    events = events.filter(event =>
-      new Date(event.timestamp) > new Date(since)
-    );
-  }
-
-  res.json({
-    events: events,
-    latest_timestamp: events.length > 0 ?
-      events[events.length - 1].timestamp : null,
-    total_cached: global.realtimeCache.length
-  });
 });
 
 // ============================================

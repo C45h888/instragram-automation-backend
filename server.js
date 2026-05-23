@@ -14,11 +14,15 @@ const {
   logAudit
 } = require('./config/supabase');
 
-// Proactive sync (Bus 1: backend-driven cron data sync)
-const { initScheduledJobs } = require('./services/sync');
+// Token health + heartbeat failover (operational, no cron)
+const { runStartupHealthChecks } = require('./services/sync');
 
-// Post fallback (Bus 2: outgoing IG write retry queue)
-const { initPostFallbackJob } = require('./services/post-fallback');
+// Post fallback — retry queue for outgoing IG writes (persistent worker, no cron)
+const { startPostFallbackWorker } = require('./services/post-fallback');
+
+// Redis-driven AcquisitionWorker — primary data acquisition pipeline
+const { startAcquisitionWorkers, stopAcquisitionWorkers } = require('./workers/acquisition-worker');
+const { closeRedis } = require('./config/redis');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -541,7 +545,6 @@ app.use((err, req, res, next) => {
 // =============================================================================
 
 async function startServer() {
-  let stopCronJobs = () => {};
 
   console.log('\n' + '='.repeat(60));
   console.log('🚀 Instagram Automation Backend - Starting...');
@@ -597,19 +600,30 @@ async function startServer() {
     }
   }
 
-  // Initialize proactive sync cron jobs (Bus 1: backend-driven data sync)
+  // Run startup health checks (token validation, UA token refresh)
   try {
-    stopCronJobs = initScheduledJobs();
-  } catch (cronError) {
-    console.error('[ProactiveSync] Failed to initialize:', cronError.message);
+    await runStartupHealthChecks();
+  } catch (healthErr) {
+    console.error('[Health] Startup checks failed:', healthErr.message);
   }
 
-  // Initialize post fallback cron (Bus 2: outgoing IG write retry queue)
+  // Initialize Redis-driven AcquisitionWorker (primary data acquisition pipeline)
+  try {
+    await startAcquisitionWorkers();
+    console.log('✅ Redis-driven AcquisitionWorker started');
+  } catch (workerErr) {
+    console.error('[AcquisitionWorker] Failed to start:', workerErr.message);
+  }
+
+  // Initialize post-fallback retry worker (outgoing IG writes, no cron)
   let stopPostFallback = () => {};
   try {
-    stopPostFallback = initPostFallbackJob();
+    stopPostFallback = startPostFallbackWorker();
+    if (process.env.POST_FALLBACK_ENABLED === 'true') {
+      console.log('✅ Post-fallback retry worker started');
+    }
   } catch (fallbackErr) {
-    console.error('[PostFallback] Failed to initialize:', fallbackErr.message);
+    console.error('[PostFallback] Failed to start:', fallbackErr.message);
   }
 
   // Start Express server
@@ -637,9 +651,24 @@ async function startServer() {
   const gracefulShutdown = async (signal) => {
     console.log(`\n📴 ${signal} received, shutting down gracefully...`);
 
-    // Stop cron jobs before closing server
-    stopCronJobs();
+    // Stop acquisition workers before cron (if Redis mode)
+    if (process.env.ACQUISITION_MODE === 'redis') {
+      await stopAcquisitionWorkers().catch(err =>
+        console.error('[AcquisitionWorker] Shutdown error:', err.message)
+      );
+      await closeRedis().catch(err =>
+        console.error('[Redis] Shutdown error:', err.message)
+      );
+    }
+
+    // Stop background workers before closing server
     stopPostFallback();
+    await stopAcquisitionWorkers().catch(err =>
+      console.error('[AcquisitionWorker] Shutdown error:', err.message)
+    );
+    await closeRedis().catch(err =>
+      console.error('[Redis] Shutdown error:', err.message)
+    );
 
     server.close(async () => {
       console.log('🔒 HTTP server closed');

@@ -1,12 +1,12 @@
 // backend.api/services/post-fallback.js
-// Fallback cron: scans post_queue for pending/failed outgoing IG API calls and retries them.
+// Persistent retry worker: scans post_queue for pending/failed outgoing IG API
+// calls and retries them. Runs as a continuous loop (no cron).
 //
 // Toggle:   POST_FALLBACK_ENABLED=true (default: false — safe off in dev)
-// Schedule: POST_FALLBACK_CRON env var (default: */5 * * * *)
+// Poll interval: POST_FALLBACK_INTERVAL_MS env var (default: 30000ms)
 // Max retries before DLQ: MAX_RETRIES = 5
 // Batch size per tick: BATCH_SIZE = 20
 
-const cron = require('node-cron');
 const axios = require('axios');
 const { getSupabaseAdmin, logAudit } = require('../config/supabase');
 const {
@@ -20,9 +20,9 @@ const {
   markAccountRateLimited,
 } = require('./sync/helpers');
 
-const DEFAULT_CRON = '*/5 * * * *';
 const MAX_RETRIES = 5;
 const BATCH_SIZE = 20;
+const DEFAULT_POLL_INTERVAL_MS = 30000; // 30 seconds
 
 // ============================================
 // BACKOFF
@@ -401,58 +401,70 @@ async function runPostFallback() {
 }
 
 // ============================================
-// LIFECYCLE
+// LIFECYCLE — persistent while-loop (no cron)
 // ============================================
 
-let _cronJob = null;
-let _isRunning = false;
+let _running = false;
+let _stopRequested = false;
 
 /**
- * Initialises the post-fallback cron job.
- * Mirrors the initScheduledJobs() pattern from proactive-sync.js.
- * Returns a stop function for use in graceful shutdown.
- * @returns {function} stopPostFallbackJob
+ * Sleep for ms milliseconds.
  */
-function initPostFallbackJob() {
+function _sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Persistent retry loop — polls post_queue every POLL_INTERVAL_MS.
+ * Runs until _stopRequested is true.
+ */
+async function _postFallbackLoop() {
+  const pollInterval = parseInt(process.env.POST_FALLBACK_INTERVAL_MS || DEFAULT_POLL_INTERVAL_MS, 10);
+
+  console.log(`[PostFallback] Worker started — polling every ${pollInterval}ms, max_retries: ${MAX_RETRIES}, batch: ${BATCH_SIZE}`);
+
+  while (!_stopRequested) {
+    try {
+      await runPostFallback();
+    } catch (err) {
+      console.error('[PostFallback] Unhandled error in run:', err.message);
+    }
+    await _sleep(pollInterval);
+  }
+
+  console.log('[PostFallback] Worker stopped');
+}
+
+/**
+ * Starts the post-fallback worker as a background task.
+ * No-op if POST_FALLBACK_ENABLED is not 'true'.
+ *
+ * @returns {Function} stop function for graceful shutdown
+ */
+function startPostFallbackWorker() {
   if (process.env.POST_FALLBACK_ENABLED !== 'true') {
     console.log('[PostFallback] Disabled (POST_FALLBACK_ENABLED !== "true")');
     return () => {};
   }
 
-  const cronExpr = process.env.POST_FALLBACK_CRON || DEFAULT_CRON;
-
-  if (!cron.validate(cronExpr)) {
-    console.error(`[PostFallback] Invalid cron expression: "${cronExpr}" — job not started`);
-    return () => {};
+  if (_running) {
+    console.log('[PostFallback] Already running');
+    return () => stopPostFallbackWorker();
   }
 
-  console.log(
-    `[PostFallback] Initialized — cron: ${cronExpr}, ` +
-    `max_retries: ${MAX_RETRIES}, batch: ${BATCH_SIZE}`
+  _running = true;
+  _stopRequested = false;
+
+  // Fire-and-forget — loop runs in background
+  _postFallbackLoop().catch(err =>
+    console.error('[PostFallback] Loop crashed:', err.message)
   );
 
-  _cronJob = cron.schedule(cronExpr, async () => {
-    if (_isRunning) {
-      console.log('[PostFallback] Previous run still active, skipping tick');
-      return;
-    }
-    _isRunning = true;
-    try {
-      await runPostFallback();
-    } catch (err) {
-      console.error('[PostFallback] Unhandled error in run:', err.message);
-    } finally {
-      _isRunning = false;
-    }
-  }, { scheduled: true, timezone: 'UTC' });
-
-  return function stopPostFallbackJob() {
+  return function stopPostFallbackWorker() {
     console.log('[PostFallback] Stopping...');
-    if (_cronJob) {
-      _cronJob.stop();
-      _cronJob = null;
-    }
+    _stopRequested = true;
+    _running = false;
   };
 }
 
-module.exports = { initPostFallbackJob };
+module.exports = { startPostFallbackWorker };
