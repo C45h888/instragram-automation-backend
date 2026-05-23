@@ -15,10 +15,7 @@ const {
   GRAPH_API_BASE,
   pollMediaContainerStatus,
 } = require('../helpers/agent-helpers');
-const {
-  isAccountRateLimited,
-  markAccountRateLimited,
-} = require('./sync/helpers');
+const { isAccountRateLimited, markAccountRateLimited } = require('../substrates/retry');
 
 const MAX_RETRIES = 5;
 const BATCH_SIZE = 20;

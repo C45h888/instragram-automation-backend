@@ -13,16 +13,8 @@
 const crypto = require('crypto');
 const { getSupabaseAdmin, logAudit } = require('../../config/supabase');
 const { insertQueueRow } = require('../../helpers/agent-helpers');
-
-const { syncCommentsForAccount, syncEngagementForAccount } = require('./engagement');
-const { syncUgcForAccount }        = require('./ugc');
-const { syncMediaForAccount }      = require('./media');
-const { syncInsightsForAccount }   = require('./insights');
 const { runTokenHealthCheck, runUATRefreshCheck } = require('./token-health');
-const {
-  isAccountRateLimited,
-  markAccountRateLimited,
-} = require('./helpers');
+const { isAccountRateLimited, markAccountRateLimited } = require('../../substrates/retry');
 
 // ── Heartbeat Failover ───────────────────────────────────────────────────────
 
@@ -126,15 +118,8 @@ module.exports = {
   // Startup (called by server.js)
   runStartupHealthChecks,
 
-  // Heartbeat failover (called by acquisition worker periodic loop)
+  // Heartbeat failover (called by lifecycle refresh loop)
   proactiveHeartbeatFailover,
-
-  // Scoped (single-account) sync functions — consumed by Redis AcquisitionWorker
-  syncCommentsForAccount,
-  syncEngagementForAccount,
-  syncUgcForAccount,
-  syncMediaForAccount,
-  syncInsightsForAccount,
 
   // Token health (for manual invocation)
   runTokenHealthCheck,

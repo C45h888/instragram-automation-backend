@@ -21,7 +21,7 @@ const { runStartupHealthChecks } = require('./services/sync');
 const { startPostFallbackWorker } = require('./services/post-fallback');
 
 // Redis-driven AcquisitionWorker — primary data acquisition pipeline
-const { startAcquisitionWorkers, stopAcquisitionWorkers } = require('./workers/acquisition-worker');
+const { startAllWorkers, stopAllWorkers } = require('./control-plane/lifecycle');
 const { closeRedis } = require('./config/redis');
 
 const app = express();
@@ -609,8 +609,8 @@ async function startServer() {
 
   // Initialize Redis-driven AcquisitionWorker (primary data acquisition pipeline)
   try {
-    await startAcquisitionWorkers();
-    console.log('✅ Redis-driven AcquisitionWorker started');
+    await startAllWorkers();
+    console.log('✅ All domain workers started');
   } catch (workerErr) {
     console.error('[AcquisitionWorker] Failed to start:', workerErr.message);
   }
@@ -653,8 +653,8 @@ async function startServer() {
 
     // Stop acquisition workers before cron (if Redis mode)
     if (process.env.ACQUISITION_MODE === 'redis') {
-      await stopAcquisitionWorkers().catch(err =>
-        console.error('[AcquisitionWorker] Shutdown error:', err.message)
+      await stopAllWorkers().catch(err =>
+        console.error('[Lifecycle] Shutdown error:', err.message)
       );
       await closeRedis().catch(err =>
         console.error('[Redis] Shutdown error:', err.message)
@@ -663,8 +663,8 @@ async function startServer() {
 
     // Stop background workers before closing server
     stopPostFallback();
-    await stopAcquisitionWorkers().catch(err =>
-      console.error('[AcquisitionWorker] Shutdown error:', err.message)
+    await stopAllWorkers().catch(err =>
+      console.error('[Lifecycle] Shutdown error:', err.message)
     );
     await closeRedis().catch(err =>
       console.error('[Redis] Shutdown error:', err.message)
