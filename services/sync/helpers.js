@@ -46,25 +46,6 @@ function generateRunId() {
  * This is the authoritative source for the /sync/health endpoint and stale-domain watchdog.
  * Do NOT use logSyncAudit for run-level markers — those go here instead.
  */
-async function writeSyncRunLog(entry) {
-  const supabase = getSupabaseAdmin();
-  if (!supabase) return;
-  const { error } = await fireAndForgetInsert(supabase.from('sync_run_log').insert(entry));
-  if (error) console.warn('[Sync:helpers] writeSyncRunLog failed:', error.message);
-  // Part B: auto-resolve stale-domain alert when a domain recovers (run completes successfully)
-  if (entry.status === 'run_completed' && entry.domain) {
-    const { error: resolveErr } = await fireAndForgetInsert(
-      supabase
-        .from('system_alerts')
-        .update({ resolved: true, resolved_at: new Date().toISOString() })
-        .eq('alert_type', 'sync_stale')
-        .eq('details->>domain', entry.domain)
-        .eq('resolved', false)
-    );
-    if (resolveErr) console.warn(`[Sync:helpers] Failed to resolve stale alert for domain ${entry.domain}:`, resolveErr.message);
-  }
-}
-
 // ── Circuit Breaker ──────────────────────────────────────────────────────────
 
 function isAccountRateLimited(accountId) {
@@ -407,87 +388,14 @@ async function runConcurrent(items, asyncFn, concurrency = 3, batchDelayMs = 200
       );
     }
     if (i + concurrency < items.length) await delay(batchDelayMs);
-  }
-  return results;
-}
 
-// ── Stale Domain Watchdog ─────────────────────────────────────────────────────
-
-/**
- * Checks whether each sync domain has run within its expected window.
- * Inserts a system_alert if a domain is overdue.
- * Called from index.js every 5 min via the heartbeat failover cron.
- */
-async function checkStaleDomains() {
-  const THRESHOLDS = {
-    engagement:   9  * 60 * 1000,          // 9 min  (runs every 3 min)
-    ugc:          9  * 60 * 60 * 1000,      // 9 h    (runs every 3 h)
-    media:        18 * 60 * 60 * 1000,      // 18 h   (runs every 6 h)
-    insights:     48 * 60 * 60 * 1000,      // 48 h   (runs daily)
-    token_health: 48 * 60 * 60 * 1000,      // 48 h   (runs daily)
-  };
-  const supabase = getSupabaseAdmin();
-  if (!supabase) return;
-
-  for (const [domain, thresholdMs] of Object.entries(THRESHOLDS)) {
-    const { data } = await supabase
-      .from('sync_run_log')
-      .select('completed_at')
-      .eq('domain', domain)
-      .eq('status', 'run_completed')
-      .order('completed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const lastRun = data?.completed_at ? new Date(data.completed_at).getTime() : 0;
-    if (Date.now() - lastRun > thresholdMs) {
-      // Part A: dedup — skip insert if an unresolved stale alert already exists for this domain
-      let skipAlert = false;
-      try {
-        const { data: existingAlert } = await supabase
-          .from('system_alerts')
-          .select('id')
-          .eq('alert_type', 'sync_stale')
-          .eq('details->>domain', domain)
-          .eq('resolved', false)
-          .maybeSingle();
-        skipAlert = !!existingAlert;
-      } catch (dedupErr) {
-        console.warn(`[Sync:helpers] checkStaleDomains dedup query failed for ${domain}:`, dedupErr.message);
-      }
-
-      if (!skipAlert) {
-        const { error: alertErr } = await fireAndForgetInsert(
-          supabase
-            .from('system_alerts')
-            .insert({
-              alert_type: 'sync_stale',
-              message: `${domain} sync has not completed in expected window`,
-              details: {
-                domain,
-                last_completed_at: data?.completed_at || null,
-                threshold_ms: thresholdMs,
-                source: 'stale_domain_watchdog',
-              },
-              resolved: false,
-            })
-        );
-        if (alertErr) console.warn(`[Sync:helpers] checkStaleDomains alert insert failed for ${domain}:`, alertErr.message);
-        console.warn(`[Sync:helpers] Stale domain detected: ${domain} (last run: ${data?.completed_at || 'never'})`);
-      } else {
-        console.warn(`[Sync:helpers] Stale domain ${domain} already has an unresolved alert, skipping duplicate`);
-      }
-    }
   }
 }
-
 // ── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
   delay,
   generateRunId,
-  writeSyncRunLog,
-  checkStaleDomains,
   runConcurrent,
   _rateLimitedAccounts,
   _authFailureStrikes,

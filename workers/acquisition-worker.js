@@ -24,7 +24,6 @@ const {
   syncInsightsForAccount,
   proactiveHeartbeatFailover,
 } = require('../services/sync');
-const { checkStaleDomains } = require('../services/sync/helpers');
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -255,7 +254,7 @@ async function _refreshWorkerPool() {
 // ── Operational checks ──────────────────────────────────────────────────────
 
 /**
- * Runs operational checks: heartbeat failover + stale domain monitoring.
+ * Runs operational checks: heartbeat failover.
  * Called once per refresh interval alongside the worker pool refresh.
  * Non-fatal — errors are logged, not thrown.
  */
@@ -270,15 +269,7 @@ async function _runOperationalChecks() {
   } catch (err) {
     console.error('[AcquisitionWorker] Heartbeat failover error:', err.message);
   }
-
-  try {
-    await checkStaleDomains();
-  } catch (err) {
-    console.warn('[AcquisitionWorker] checkStaleDomains error:', err.message);
-  }
 }
-
-// ── Public API ───────────────────────────────────────────────────────────────
 
 /**
  * Starts all acquisition workers — one per active account.

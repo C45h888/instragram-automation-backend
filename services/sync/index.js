@@ -14,20 +14,14 @@ const crypto = require('crypto');
 const { getSupabaseAdmin, logAudit } = require('../../config/supabase');
 const { insertQueueRow } = require('../../helpers/agent-helpers');
 
-const { proactiveEngagementSync, proactiveCommentSync, syncCommentsForAccount, syncEngagementForAccount } = require('./engagement');
-const { proactiveUgcSync, syncUgcForAccount }        = require('./ugc');
-const { proactiveMediaSync, syncMediaForAccount }      = require('./media');
-const { proactiveInsightsSync, syncInsightsForAccount }   = require('./insights');
+const { syncCommentsForAccount, syncEngagementForAccount } = require('./engagement');
+const { syncUgcForAccount }        = require('./ugc');
+const { syncMediaForAccount }      = require('./media');
+const { syncInsightsForAccount }   = require('./insights');
 const { runTokenHealthCheck, runUATRefreshCheck } = require('./token-health');
 const {
   isAccountRateLimited,
   markAccountRateLimited,
-  handleFetchError,
-  getActiveAccounts,
-  getRecentMedia,
-  getMonitoredHashtags,
-  logSyncAudit,
-  checkStaleDomains,
 } = require('./helpers');
 
 // ── Heartbeat Failover ───────────────────────────────────────────────────────
@@ -135,13 +129,6 @@ module.exports = {
   // Heartbeat failover (called by acquisition worker periodic loop)
   proactiveHeartbeatFailover,
 
-  // Full-sweep domain sync functions (available for manual testing)
-  proactiveCommentSync,
-  proactiveEngagementSync,
-  proactiveUgcSync,
-  proactiveMediaSync,
-  proactiveInsightsSync,
-
   // Scoped (single-account) sync functions — consumed by Redis AcquisitionWorker
   syncCommentsForAccount,
   syncEngagementForAccount,
@@ -152,11 +139,6 @@ module.exports = {
   // Token health (for manual invocation)
   runTokenHealthCheck,
   runUATRefreshCheck,
-
-  // DB helpers (for unit testing)
-  getActiveAccounts,
-  getRecentMedia,
-  getMonitoredHashtags,
 
   // Circuit breaker — re-export for post-fallback.js compatibility
   isAccountRateLimited,
