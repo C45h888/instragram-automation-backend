@@ -12,13 +12,16 @@
 const { getRedisClient } = require('../config/redis');
 const { getActiveAccounts } = require('../substrates/persistence');
 const { proactiveHeartbeatFailover } = require('../services/sync');
+const evaluator = require('../control-plane/evaluator');
+const realtime = require('../substrates/realtime');
 
 // Domain worker constructors — each exports startWorker(accountId, signal)
-const commentsWorker = require('../workers/comments-worker');
-const messagesWorker = require('../workers/messages-worker');
-const mediaWorker    = require('../workers/media-worker');
-const insightsWorker = require('../workers/insights-worker');
-const ugcWorker      = require('../workers/ugc-worker');
+const commentsWorker  = require('../workers/comments-worker');
+const messagesWorker  = require('../workers/messages-worker');
+const mediaWorker     = require('../workers/media-worker');
+const insightsWorker  = require('../workers/insights-worker');
+const ugcWorker       = require('../workers/ugc-worker');
+const publishWorker   = require('../workers/publish-worker');
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -34,6 +37,7 @@ const WORKER_RECONNECT_DELAY_MS   = 5000;
  *   media:     { task: Promise, controller: AbortController },
  *   insights:  { task: Promise, controller: AbortController },
  *   ugc:       { task: Promise, controller: AbortController },
+ *   publish:   { task: Promise, controller: AbortController },
  * }
  */
 let _workerPools = new Map();
@@ -50,6 +54,7 @@ function _spawnDomainWorkers(accountId) {
     ['media', mediaWorker],
     ['insights', insightsWorker],
     ['ugc', ugcWorker],
+    ['publish', publishWorker],
   ]) {
     const controller = new AbortController();
     const task = worker.startWorker(accountId, controller.signal);
@@ -134,6 +139,14 @@ async function startAllWorkers() {
     return;
   }
 
+  // ── Start evaluator (10s loop: buffers realtime events, emits publish intents) ──
+  await evaluator.startEvaluator();
+
+  // ── Start realtime subscriptions for all active accounts ────────────────
+  const accounts = await getActiveAccounts();
+  await realtime.startRealtime(accounts);
+  console.log(`[Lifecycle] Realtime subscriptions started for ${accounts.length} account(s)`);
+
   // Initial pool
   await _refreshWorkerPool();
 
@@ -162,6 +175,10 @@ async function startAllWorkers() {
 async function stopAllWorkers() {
   console.log('[Lifecycle] Stopping all workers...');
   _stopping = true;
+
+  // Stop evaluator loop and realtime subscriptions
+  evaluator.stopEvaluator();
+  await realtime.stopRealtime();
 
   for (const accountId of _workerPools.keys()) {
     _stopDomainWorkers(accountId);

@@ -17,12 +17,19 @@ const { runTokenHealthCheck, runUATRefreshCheck } = require('./token-health');
 const { isAccountRateLimited, markAccountRateLimited } = require('../../substrates/retry');
 
 // ── Heartbeat Failover ───────────────────────────────────────────────────────
+// NOTE: This function is now a SUPERVISOR-LEVEL SAFETY NET only.
+// Primary publishing is handled by db-worker (DB scan) + publish-worker (governed execution).
+// proactiveHeartbeatFailover runs in the operational checks loop every 5 min and only
+// triggers when the agent is down AND there are stuck scheduled_posts that the db-worker
+// hasn't yet picked up. In normal operation, db-worker handles all scheduled_posts scans.
 
 /**
- * Heartbeat failover detector — runs every 5 min.
+ * Heartbeat failover detector — runs every 5 min via _runOperationalChecks.
  * If agent is silent > HEARTBEAT_STALE_MINUTES, marks it 'down' and
- * moves approved scheduled_posts into post_queue so post-fallback.js
- * can publish them.
+ * moves approved scheduled_posts into post_queue so publish-worker can publish them.
+ *
+ * This is a safety-net fallback: db-worker handles scheduled_posts scanning in the normal path.
+ * This only activates when the agent is down (indicating the normal path may be stalled).
  */
 async function proactiveHeartbeatFailover(supabase, HEARTBEAT_STALE_MINUTES) {
   const staleThreshold = new Date(Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000).toISOString();

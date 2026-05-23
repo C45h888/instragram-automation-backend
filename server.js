@@ -17,10 +17,8 @@ const {
 // Token health + heartbeat failover (operational, no cron)
 const { runStartupHealthChecks } = require('./services/sync');
 
-// Post fallback — retry queue for outgoing IG writes (persistent worker, no cron)
-const { startPostFallbackWorker } = require('./services/post-fallback');
-
 // Redis-driven AcquisitionWorker — primary data acquisition pipeline
+// (includes db-worker + publish-worker for publishing, controlled by lifecycle)
 const { startAllWorkers, stopAllWorkers } = require('./control-plane/lifecycle');
 const { closeRedis } = require('./config/redis');
 
@@ -615,17 +613,6 @@ async function startServer() {
     console.error('[AcquisitionWorker] Failed to start:', workerErr.message);
   }
 
-  // Initialize post-fallback retry worker (outgoing IG writes, no cron)
-  let stopPostFallback = () => {};
-  try {
-    stopPostFallback = startPostFallbackWorker();
-    if (process.env.POST_FALLBACK_ENABLED === 'true') {
-      console.log('✅ Post-fallback retry worker started');
-    }
-  } catch (fallbackErr) {
-    console.error('[PostFallback] Failed to start:', fallbackErr.message);
-  }
-
   // Start Express server
   const server = app.listen(PORT, '0.0.0.0', async () => {
     console.log('\n' + '='.repeat(60));
@@ -662,7 +649,6 @@ async function startServer() {
     }
 
     // Stop background workers before closing server
-    stopPostFallback();
     await stopAllWorkers().catch(err =>
       console.error('[Lifecycle] Shutdown error:', err.message)
     );

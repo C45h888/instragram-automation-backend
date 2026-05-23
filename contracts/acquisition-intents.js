@@ -12,6 +12,9 @@ const VALID_FETCH_TYPES = [
   'media_insights',
   'ugc_discovery',
   'post_comments',
+  'publish_media',      // publish_post — scheduled posts / own media publishing
+  'publish_ugc',       // repost_ugc — UGC content reposting after permission
+  'publish_messaging', // reply_comment, reply_dm, send_dm — outbound messaging actions
 ];
 
 const VALID_PRIORITIES = ['low', 'normal', 'high', 'critical'];

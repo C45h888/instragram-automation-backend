@@ -55,7 +55,7 @@ async function executeWithRetry(accountId, intentId, domain, executeFn, params =
     const error = result.error || (skip ? 'auth_failure' : 'rate_limit');
     const status = skip ? 'failed' : 'failed';
     await telemetry.recordAcquisition(domain, accountId, intentId, status, 0, latencyMs, error);
-    return { status, count: 0, error };
+    return { status, count: 0, error, instagram_id: null };
   }
 
   if (retryable) {
@@ -87,18 +87,18 @@ async function executeWithRetry(accountId, intentId, domain, executeFn, params =
 
     if (retryResult.success && !retryError.skip && !retryError.break) {
       await telemetry.recordAcquisition(domain, accountId, intentId, 'completed', retryResult.count, totalLatencyMs, null);
-      return { status: 'completed', count: retryResult.count, error: null };
+      return { status: 'completed', count: retryResult.count, error: null, instagram_id: retryResult.instagram_id || null };
     }
 
     const finalError = retryResult.error || 'retry_failed';
     await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, totalLatencyMs, finalError);
-    return { status: 'failed', count: 0, error: finalError };
+    return { status: 'failed', count: 0, error: finalError, instagram_id: null };
   }
 
   // ── Success or permanent failure ────────────────────────────────────────
   if (result.success) {
     await telemetry.recordAcquisition(domain, accountId, intentId, 'completed', result.count, latencyMs, null);
-    return { status: 'completed', count: result.count, error: null };
+    return { status: 'completed', count: result.count, error: null, instagram_id: result.instagram_id || null };
   }
 
   await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, latencyMs, result.error || 'unknown');
