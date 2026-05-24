@@ -9,7 +9,8 @@
 // Architecture (invariant: signals ↑, authority ↓):
 //
 //   ┌─ governance loop (10s tick) ───────────────────────────────────────┐
-//   │  watchdog: detects stale states → auto-transitions to DEGRADED/RECOVERY │
+//   │  watchdog: detects stale states → auto-transitions                 │
+//   │  intent discovery: polls Redis queues → ACQUISITION_INTENT_RECEIVED│
 //   └────────────────────────────────────────────────────────────────────┘
 //
 //   signalIntake ──► buffer.ingest()  +  governance.dispatch(BUFFER_EVENT_INGESTED)
@@ -22,8 +23,17 @@
 //                               └── emitter.emit()
 //                                    └── governance.dispatch(EMISSION_COMPLETE)
 //
-//   cadence.every(3min)
-//     ├─► workerPool.refresh()  ──► buffer.destroy(removed)
+//   governance.tick() discovers Redis intents → HSM → onAction(EXECUTE_ACQUISITION)
+//     └── executeGovernedAcquisition()
+//          ├── executionBridge.executeWithRetry()
+//          │    ├── persistence.resolveAccountCredentials()
+//          │    ├── igFetcher[domain].fetch()     ← pure transport
+//          │    └── persistence[domain].persist()  ← pure persistence
+//          └── governance.dispatch(ACQUISITION_COMPLETE)
+//
+//   cadence.every(90s)
+//     ├─► dbScanner.runScan()   ──► LPUSH intents to Redis
+//     ├─► lifecycle.refresh()   ──► buffer.destroy(removed)
 //     ├─► safety.runChecks()
 //     └─► executionBridge.getMetrics()
 //           ├── failureRate > 50%  → governance.dispatch(RETRY_PRESSURE_DETECTED)
@@ -32,25 +42,271 @@
 // This module is the SINGLE place where modules are wired together.
 // No module imports another module directly — all wiring lives here.
 
+const { getRedisClient } = require('../config/redis');
 const governance = require('./governance/governance-kernel');
 const executionBridge = require('./execution-bridge');
+const dbWorker = require('./execution/db-worker');
 const signalIntake = require('./runtime/signal-intake');
 const buffer = require('./runtime/buffer');
 const cadence = require('./runtime/cadence');
 const evaluator = require('./runtime/evaluation');
 const emitter = require('./runtime/emission');
-const workerPool = require('./runtime/lifecycle');
+const lifecycle = require('./runtime/lifecycle');
 const safety = require('./runtime/operational-safety');
+const dbScanner = require('./runtime/db-scanner');
+const persistence = require('../substrates/persistence');
 
-const REFRESH_INTERVAL_MS = 3 * 60 * 1000; // 3 min
+// IG Fetchers — pure transport, per domain. No DB writes. No orchestration.
+const igFetcherComments = require('./execution/ig-fetcher-comments');
+const igFetcherMessages = require('./execution/ig-fetcher-messages');
+const igFetcherUgc     = require('./execution/ig-fetcher-ugc');
+const igFetcherInsights = require('./execution/ig-fetcher-insights');
+const igFetcherMedia   = require('./execution/ig-fetcher-media');
+const igFetcherPublish = require('./execution/ig-fetcher-publish');
+
+const REFRESH_INTERVAL_MS = 90 * 1000; // 90s cadence
 const DEBOUNCE_MS = 500;
 const GOVERNANCE_TICK_MS = 10_000; // 10s watchdog tick
+
+// ── Domain routing: maps domain → { fetch, persist } ─────────────────────────
+// Used by executeGovernedAcquisition() to route intents to the correct
+// IG fetcher (pure transport) and persistence function (pure DB write).
+
+const DOMAIN_ROUTING = {
+  comments: {
+    fetch: (accountId, params, creds) => {
+      if (params.media_id) {
+        return igFetcherComments.fetchComments(accountId, params.media_id, params.limit, creds);
+      }
+      return igFetcherComments.fetchRecentMediaComments(accountId, params.maxPosts, params.limit, creds);
+    },
+    persist: (accountId, rawData) => {
+      if (rawData.batches) {
+        return persistence.storeCommentBatches(accountId, rawData.batches);
+      }
+      if (rawData.records) {
+        return persistence.storeCommentBatches(accountId, [{ mediaId: 'direct', comments: rawData.records }]);
+      }
+      return { count: 0 };
+    },
+  },
+  messages: {
+    fetch: (accountId, params, creds) => {
+      if (params.conversation_id) {
+        return igFetcherMessages.fetchMessages(accountId, params.conversation_id, params.limit, creds);
+      }
+      return igFetcherMessages.fetchConversations(accountId, params.convLimit || params.limit, creds);
+    },
+    persist: async (accountId, rawData) => {
+      if (rawData.rawMessages) {
+        const stored = await persistence.storeMessageBatches(
+          accountId, [{ conversationId: rawData.conversationId || 'direct', rawMessages: rawData.rawMessages }],
+          rawData.igUserId, rawData.pageId, null
+        );
+        return { count: stored?.count || rawData.count || 0 };
+      }
+      if (rawData.rawConversations) {
+        const stored = await persistence.storeConversationBatches(
+          accountId, rawData.rawConversations, rawData.igUserId, rawData.pageId
+        );
+        return { count: stored?.count || rawData.count || 0 };
+      }
+      return { count: 0 };
+    },
+  },
+  ugc: {
+    fetch: (accountId, params, creds) => {
+      if (params.hashtag) {
+        return igFetcherUgc.fetchHashtagMedia(accountId, params.hashtag, params.limit, creds);
+      }
+      return igFetcherUgc.fetchTaggedMedia(accountId, params.limit, creds);
+    },
+    persist: async (accountId, rawData) => {
+      if (!rawData.records || rawData.records.length === 0) return { count: 0 };
+      const { mapRawPostToUgcContent } = require('../substrates/normalization');
+      const source = rawData.cleanHashtag ? 'hashtag' : 'tagged';
+      const records = rawData.records
+        .filter(p => p.id)
+        .map(p => mapRawPostToUgcContent(p, accountId, source, rawData.cleanHashtag || null));
+      await persistence.storeUgcContentBatch(records);
+      return { count: records.length };
+    },
+  },
+  insights: {
+    fetch: async (accountId, params, creds) => {
+      const sevenDaysAgo = params.since || Math.floor((Date.now() - 7 * 24 * 3600000) / 1000);
+      const now = params.until || Math.floor(Date.now() / 1000);
+      const feedResult = await igFetcherInsights.fetchMediaFeed(accountId, sevenDaysAgo, now, creds);
+      if (!feedResult.success) return feedResult;
+      const insights = await igFetcherInsights.fetchMediaInsightsBatch(feedResult.mediaList, creds.pageToken);
+      return { success: true, insights, mediaList: feedResult.mediaList, _usagePct: feedResult._usagePct };
+    },
+    persist: async (accountId, rawData) => {
+      if (!rawData.insights || rawData.insights.length === 0) return { count: 0 };
+      const captions = (rawData.mediaList || []).map(m => m.caption).filter(Boolean);
+      await persistence.storeMediaInsightsBatch(accountId, rawData.insights, captions);
+      return { count: rawData.insights.length };
+    },
+  },
+  media: {
+    fetch: (accountId, params) => igFetcherMedia.fetchBusinessPosts(accountId, params.limit),
+    persist: (accountId, rawData) => {
+      if (!rawData.posts || rawData.posts.length === 0) return { count: 0 };
+      return persistence.storeBusinessPosts(accountId, rawData.posts);
+    },
+  },
+  'publish:media': {
+    fetch: async (accountId, params, creds) => {
+      const { action_type, payload, queue_row_id, scheduled_post_id, intent_type } = params;
+      const actionType = action_type || 'publish_post';
+
+      if (queue_row_id) {
+        await dbWorker.markPostQueueProcessing(queue_row_id, 'pending');
+      }
+
+      let resolvedPayload = payload || params;
+      if (intent_type === 'scheduled_post' && resolvedPayload?.asset_id) {
+        const asset = await dbWorker.resolveAsset(resolvedPayload.asset_id);
+        if (!asset?.storage_path) {
+          if (scheduled_post_id) {
+            await dbWorker.markScheduledPostFailed(scheduled_post_id);
+          }
+          return { success: false, count: 0, error: 'Asset not found', retryable: false, error_category: 'permanent' };
+        }
+        resolvedPayload = { image_url: asset.storage_path, caption: asset.caption || '', media_type: asset.media_type || 'IMAGE', scheduled_post_id };
+      }
+
+      return igFetcherPublish.executePublishAction(actionType, accountId, creds, resolvedPayload);
+    },
+    persist: async (accountId, rawData, execParams) => {
+      const { queue_row_id, scheduled_post_id } = execParams || {};
+      if (queue_row_id && rawData.instagram_id) {
+        await dbWorker.markPostQueueSent(queue_row_id, rawData.instagram_id);
+      }
+      if (scheduled_post_id && rawData.instagram_id) {
+        await dbWorker.markScheduledPostPublished(scheduled_post_id, rawData.instagram_id);
+      }
+      return { count: 1 };
+    },
+  },
+  'publish:ugc': {
+    fetch: async (accountId, params, creds) => {
+      const { queue_row_id } = params;
+      if (queue_row_id) {
+        await dbWorker.markPostQueueProcessing(queue_row_id, 'pending');
+      }
+      return igFetcherPublish.executePublishAction('repost_ugc', accountId, creds, params.payload || params);
+    },
+    persist: async (accountId, rawData, execParams) => {
+      const { queue_row_id, payload } = execParams || {};
+      if (queue_row_id && rawData.instagram_id) {
+        await dbWorker.markPostQueueSent(queue_row_id, rawData.instagram_id);
+      }
+      if (payload?.permission_id && rawData.instagram_id) {
+        await dbWorker.markUgcPermissionReposted(payload.permission_id, rawData.instagram_id);
+      }
+      return { count: 1 };
+    },
+  },
+  'publish:messaging': {
+    fetch: async (accountId, params, creds) => {
+      const { queue_row_id, action_type } = params;
+      if (queue_row_id) {
+        await dbWorker.markPostQueueProcessing(queue_row_id, 'pending');
+      }
+      return igFetcherPublish.executePublishAction(action_type, accountId, creds, params.payload || params);
+    },
+    persist: async (accountId, rawData, execParams) => {
+      const { queue_row_id } = execParams || {};
+      if (queue_row_id && rawData.instagram_id) {
+        await dbWorker.markPostQueueSent(queue_row_id, rawData.instagram_id);
+      }
+      return { count: 1 };
+    },
+  },
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function isDegraded() {
   const state = governance.getState();
   return state.startsWith('DEGRADED.');
+}
+
+// ── Governed Acquisition Pipeline ────────────────────────────────────────────
+
+/**
+ * Execute an HSM-governed acquisition for a single intent.
+ * Called by the governance action subscriber when EXECUTE_ACQUISITION is emitted.
+ *
+ * Flow:
+ *   1. Dispatch ACQUISITION_EXECUTING → HSM transitions EVALUATING → EMITTING
+ *   2. Call execution-bridge with domain-specific fetch + persist
+ *   3. Report ACQUISITION_COMPLETE → HSM transitions EMITTING → IDLE
+ *
+ * @param {string} accountId
+ * @param {string} domain - e.g. 'comments', 'messages', 'publish:media'
+ * @param {string} intentId
+ * @param {object} params - intent parameters
+ */
+async function executeGovernedAcquisition(accountId, domain, intentId, params) {
+  const routing = DOMAIN_ROUTING[domain];
+  if (!routing) {
+    console.error(`[orchestrator] Unknown acquisition domain: ${domain}`);
+    governance.dispatch({
+      type: 'ACQUISITION_COMPLETE', accountId, domain, intentId,
+      result: { status: 'failed', count: 0, error: `unknown domain: ${domain}` },
+    });
+    return;
+  }
+
+  governance.dispatch({ type: 'ACQUISITION_EXECUTING', accountId, domain, intentId });
+
+  const outcome = await executionBridge.executeWithRetry(
+    accountId, intentId, domain,
+    async (acctId, execParams) => {
+      const creds = await persistence.resolveAccountCredentials(acctId);
+      const rawData = await routing.fetch(acctId, execParams, creds);
+      if (!rawData.success) return rawData;
+      const persistResult = await routing.persist(acctId, rawData, execParams);
+      return {
+        success: true,
+        count: persistResult?.count || rawData.count || 0,
+        _usagePct: rawData._usagePct,
+        instagram_id: rawData.instagram_id,
+      };
+    },
+    params
+  );
+
+  governance.dispatch({
+    type: 'ACQUISITION_COMPLETE', accountId, domain, intentId,
+    result: { status: outcome.status, count: outcome.count, error: outcome.error || null },
+  });
+}
+
+/**
+ * Write acquisition result to Redis for agent consumption.
+ * Called by governance action subscriber when WRITE_ACQUISITION_RESULT is emitted.
+ */
+async function writeAcquisitionResult(accountId, domain, intentId, result) {
+  const redis = getRedisClient();
+  if (!redis || redis.status !== 'ready') return;
+
+  const resultKey = `supervisor:acquisition_results:${accountId}:${intentId}`;
+  try {
+    await redis.set(resultKey, JSON.stringify({
+      intent_id: intentId,
+      account_id: accountId,
+      domain,
+      status: result.status,
+      result: { count: result.count },
+      error: result.error,
+      completed_at: new Date().toISOString(),
+    }), 'EX', 3600);
+  } catch (err) {
+    console.error(`[orchestrator] Failed to write result key ${resultKey}:`, err.message);
+  }
 }
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
@@ -64,12 +320,10 @@ async function executeEvaluationPipeline(accountId, events) {
   try {
     const result = evaluator.evaluate(accountId, events);
 
-    // Apply mutations first (mark_failed rows)
     for (const mut of result.mutations) {
       await emitter.emitMutation(mut);
     }
 
-    // Emit intents to Redis for workers to consume
     if (result.intents.length > 0) {
       const emitResult = await emitter.emit(result.intents);
       if (emitResult.ok) {
@@ -93,14 +347,19 @@ async function executeEvaluationPipeline(accountId, events) {
  * flows DOWNWARD (onAction). The orchestrator is the sole routing fabric.
  */
 function _wire() {
-  // Buffer debounce window
   buffer.setDebounceMs(DEBOUNCE_MS);
 
   // Governance action subscriber — routes governance intents to runtime modules.
-  // The governance kernel emits WHAT should happen; the orchestrator executes HOW.
   governance.onAction((action) => {
     if (action.type === 'EVALUATE') {
       executeEvaluationPipeline(action.accountId, action.events);
+    }
+    // HSM-governed acquisition (replaces all BRPOP worker loops)
+    if (action.type === 'EXECUTE_ACQUISITION') {
+      executeGovernedAcquisition(action.accountId, action.domain, action.intentId, action.params);
+    }
+    if (action.type === 'WRITE_ACQUISITION_RESULT') {
+      writeAcquisitionResult(action.accountId, action.domain, action.intentId, action.result);
     }
     if (action.type === 'LOG_DEGRADED') {
       console.warn(`[orchestrator] Runtime DEGRADED.${action.substate}: ${action.reason}`);
@@ -113,14 +372,11 @@ function _wire() {
     }
   });
 
-  // Buffer flush → dispatch upward to governance kernel.
-  // The kernel decides whether EVALUATING is legal given current runtime state.
   buffer.onFlush(async (accountId, events) => {
     governance.dispatch({ type: 'BUFFER_FLUSH_READY', accountId, events, eventCount: events.length });
   });
 
-  // Worker pool removes account → cleanup buffer
-  workerPool.onRemove((accountId) => {
+  lifecycle.onRemove((accountId) => {
     buffer.destroy(accountId);
   });
 }
@@ -131,29 +387,45 @@ async function startAllWorkers() {
   console.log('[orchestrator] Starting governance kernel...');
   _wire();
 
-  // 1. Signal intake: subscribe to realtime → signal bus.
-  //    Each event is ingested into buffer AND dispatched upward to governance.
+  // 1. Inject Redis into governance kernel for intent discovery in tick()
+  const redis = getRedisClient();
+  if (redis && redis.status === 'ready') {
+    governance.setRedis(redis);
+  }
+
+  // 2. Signal intake: subscribe to realtime → signal bus.
   await signalIntake.start(null, (event) => {
     buffer.ingest(event);
     governance.dispatch({ type: 'BUFFER_EVENT_INGESTED', accountId: event.accountId });
   });
 
-  // 2. Worker pool: discover accounts and spawn workers
-  await workerPool.refresh();
+  // 3. Discover accounts and register with governance for queue polling
+  await lifecycle.refresh();
+  const accounts = await persistence.getActiveAccounts();
+  governance.setActiveAccounts(accounts.map(a => a.id));
 
-  // 3. Boot complete — governance transitions BOOTING → HEALTHY.IDLE
+  // 4. Boot complete — governance transitions BOOTING → HEALTHY.IDLE
   governance.dispatch({ type: 'BOOT_COMPLETE' });
 
-  // 4. Start governance watchdog loop (10s tick — detects stale states)
+  // 5. Start governance watchdog loop (10s tick — stale state detection + intent discovery)
   governance.startLoop(GOVERNANCE_TICK_MS);
 
-  // 5. Cadence: 3-minute maintenance loop
+  // 6. Cadence: 90-second maintenance loop
   cadence.every(REFRESH_INTERVAL_MS, async () => {
-    await workerPool.refresh();
+    // DB scanner: discover publishable items → LPUSH to Redis
+    // Governance.tick() discovers on next watchdog cycle → HSM → execute
+    const scanResult = await dbScanner.runScan();
+    if (scanResult.totalEmitted > 0) {
+      console.log(`[orchestrator] DB scanner emitted ${scanResult.totalEmitted} intents`);
+    }
+
+    await lifecycle.refresh();
+
+    const freshAccounts = await persistence.getActiveAccounts();
+    governance.setActiveAccounts(freshAccounts.map(a => a.id));
+
     await safety.runChecks();
 
-    // Report worker execution health into governance.
-    // If failure rate > 50% with at least 5 samples, escalate to degraded.
     const metrics = executionBridge.getMetrics();
     if (!metrics.isHealthy && metrics.total >= 5) {
       governance.dispatch({
@@ -165,26 +437,17 @@ async function startAllWorkers() {
     }
   });
 
-  console.log(`[orchestrator] Governance kernel running — ${workerPool.size()} workers across all accounts — state: ${governance.getState()}`);
+  console.log(`[orchestrator] Governance kernel running — ${accounts.length} account(s) — state: ${governance.getState()}`);
 }
 
 async function stopAllWorkers() {
   console.log('[orchestrator] Stopping governance kernel...');
 
-  // Stop governance watchdog loop first
   governance.stopLoop();
-
-  // Stop cadence loop so no new operations are scheduled
   await cadence.stop();
-
-  // Stop signal intake (realtime + signal bus)
   await signalIntake.stop();
-
-  // Clear all buffered events and pending debounce timers
   buffer.destroyAll();
-
-  // Stop all domain workers
-  workerPool.stopAll();
+  lifecycle.stopAll();
 
   console.log('[orchestrator] Governance kernel stopped');
 }

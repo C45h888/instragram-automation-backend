@@ -199,6 +199,52 @@ const TRANSITION_MAP = {
     buildActions: () => [],
   },
 
+  // ── HSM-governed acquisition: IDLE → EVALUATING → EMITTING → IDLE ─────────
+  ACQUISITION_INTENT_RECEIVED: {
+    target: 'HEALTHY.EVALUATING',
+    guard: (event, ctx) => {
+      if (ctx.state !== 'HEALTHY.IDLE') {
+        return { allowed: false, reason: `Cannot acquire from ${ctx.state}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => [{
+      type: 'EXECUTE_ACQUISITION',
+      accountId: event.accountId,
+      domain: event.domain,
+      intentId: event.intentId,
+      params: event.params,
+    }],
+  },
+
+  ACQUISITION_EXECUTING: {
+    target: 'HEALTHY.EMITTING',
+    guard: (event, ctx) => {
+      if (ctx.state !== 'HEALTHY.EVALUATING') {
+        return { allowed: false, reason: `Cannot execute from ${ctx.state}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: () => [],
+  },
+
+  ACQUISITION_COMPLETE: {
+    target: 'HEALTHY.IDLE',
+    guard: (event, ctx) => {
+      if (ctx.state !== 'HEALTHY.EMITTING') {
+        return { allowed: false, reason: `Cannot complete from ${ctx.state}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => (event.result ? [{
+      type: 'WRITE_ACQUISITION_RESULT',
+      accountId: event.accountId,
+      domain: event.domain,
+      intentId: event.intentId,
+      result: event.result,
+    }] : []),
+  },
+
   // ── Degradation ────────────────────────────────────────────────────────────
   BACKPRESSURE_DETECTED: {
     target: 'DEGRADED.BACKPRESSURE',
@@ -410,6 +456,15 @@ const _lineage = [];              // append-only
 let _actionSubscriber = null;
 let _loopInterval = null;         // watchdog setInterval handle
 
+// Redis injection — set by orchestrator after governance startup.
+// Used by tick() to discover acquisition intents from domain queues.
+let _redis = null;
+let _activeAccountIds = [];       // account UUIDs for queue polling
+let _lastPolledDomainIdx = 0;     // round-robin index across domains per tick
+
+const ACQUISITION_DOMAINS = ['comments','messages','ugc','insights','media'];
+const ACQUISITION_PUBLISH_DOMAINS = ['media','ugc','messaging'];
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 6. Lineage recorder
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -463,14 +518,23 @@ function _emitActions(actions) {
 
 /**
  * Watchdog tick — checks if the current state has exceeded its TTL and
- * triggers automatic recovery transitions. Called by the internal loop
- * interval. This is how the governance kernel self-corrects when external
- * events stop arriving (e.g., evaluation pipeline crash, Redis outage).
+ * triggers automatic recovery transitions. Also discovers acquisition
+ * intents from Redis domain queues when the runtime is idle.
+ *
+ * Called by the internal loop interval. This is how the governance kernel
+ * self-corrects when external events stop arriving AND how it discovers
+ * new acquisition intents from the agent-reachable Redis queues.
  *
  * Dispatches events through the normal dispatch() path, so all transitions
  * are guarded, lineage is recorded, and actions are emitted.
  */
 function tick() {
+  // ── Intent discovery: poll Redis queues when idle ──────────────────────
+  if (_currentState === 'HEALTHY.IDLE' && _redis && _activeAccountIds.length > 0) {
+    _discoverIntents();
+  }
+
+  // ── Staleness detection ────────────────────────────────────────────────
   const elapsed = Date.now() - _stateEnteredAt;
   const ttl = STATE_TTL_MS[_currentState];
   if (ttl == null || elapsed < ttl) return;
@@ -503,6 +567,50 @@ function tick() {
   }
 }
 
+// ── Intent discovery: round-robin poll across domain queues per account ─────
+
+/**
+ * Polls Redis domain queues for acquisition intents.
+ * Round-robin: one domain per account per tick to avoid queue starvation.
+ * Each tick discovers at most one intent — deterministic pacing.
+ *
+ * Called by tick() only when _currentState === 'HEALTHY.IDLE'.
+ */
+function _discoverIntents() {
+  const allDomains = [...ACQUISITION_DOMAINS, ...ACQUISITION_PUBLISH_DOMAINS.map(d => `publish:${d}`)];
+  const domain = allDomains[_lastPolledDomainIdx % allDomains.length];
+  _lastPolledDomainIdx = (_lastPolledDomainIdx + 1) % allDomains.length;
+
+  // Pick one account per tick (rotates across accounts across ticks)
+  const accountIdx = Math.floor(_lastPolledDomainIdx / allDomains.length) % _activeAccountIds.length;
+  const accountId = _activeAccountIds[accountIdx];
+
+  if (!accountId) return;
+
+  const queueKey = `supervisor:acquisitions:${domain}:${accountId}`;
+
+  // Non-blocking poll — if queue is empty, skip this tick
+  _redis.lpop(queueKey).then(raw => {
+    if (!raw) return;
+
+    let intent;
+    try { intent = JSON.parse(raw); } catch { return; }
+
+    if (!intent || !intent.intent_id) return;
+
+    dispatch({
+      type: 'ACQUISITION_INTENT_RECEIVED',
+      accountId,
+      domain,
+      intentId: intent.intent_id,
+      params: intent.payload || intent.parameters || {},
+    });
+  }).catch(err => {
+    // Redis error during poll — log, don't crash the watchdog
+    console.error(`[governance-kernel] Redis poll error (${queueKey}):`, err.message);
+  });
+}
+
 /**
  * Start the internal watchdog loop. Calls tick() every intervalMs.
  * Idempotent — safe to call on an already-running loop.
@@ -532,6 +640,35 @@ function stopLoop() {
     _loopInterval = null;
     console.log('[governance-kernel] Watchdog loop stopped');
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 7c. Redis + account injection — required for intent discovery in tick()
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Inject Redis client for queue polling in tick().
+ * Must be called before startLoop() for intent discovery to work.
+ * @param {object} redis - ioredis client instance
+ * @throws {Error} if redis is not an object
+ */
+function setRedis(redis) {
+  if (!redis || typeof redis !== 'object') {
+    throw new Error('[governance-kernel] setRedis requires a Redis client object');
+  }
+  _redis = redis;
+}
+
+/**
+ * Update the active account IDs for round-robin queue polling.
+ * Called by lifecycle.refresh() when accounts change.
+ * @param {Array<string>} accountIds
+ */
+function setActiveAccounts(accountIds) {
+  if (!Array.isArray(accountIds)) {
+    throw new Error('[governance-kernel] setActiveAccounts requires an array');
+  }
+  _activeAccountIds = accountIds;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -662,4 +799,4 @@ function getState() {
   return _currentState;
 }
 
-module.exports = { dispatch, onAction, tick, startLoop, stopLoop, status, getLineage, getState };
+module.exports = { dispatch, onAction, tick, startLoop, stopLoop, setRedis, setActiveAccounts, status, getLineage, getState };

@@ -18,7 +18,8 @@ const {
 const { runStartupHealthChecks } = require('./services/sync');
 
 // Redis-driven AcquisitionWorker — primary data acquisition pipeline
-// (includes db-worker + publish-worker for publishing, controlled by lifecycle)
+// Governed acquisition pipeline — all acquisition flows through HSM + execution-bridge
+// (no more BRPOP worker loops; governance discovers intents from Redis directly)
 const { startAllWorkers, stopAllWorkers } = require('./control-plane/orchastrator');
 const { closeRedis } = require('./config/redis');
 
@@ -422,13 +423,15 @@ try {
   console.error('❌ Failed to load oversight routes:', error.message);
 }
 
-// ✅ Agent proxy routes (Path C - Agent → Backend → Graph API)
+// ✅ Agent routes (HSM-governed — heartbeat + oversight only)
+// Acquisition routes have been migrated to the HSM governance pipeline.
+// Agents emit AcquisitionIntents directly to Redis queues.
 try {
-  const agentProxyRoutes = require('./routes/agent-proxy');
-  app.use('/api/instagram', agentProxyRoutes);
-  console.log('✅ Agent proxy routes loaded (12 endpoints: search-hashtag, tags, send-dm, publish-post, insights, account-insights, media-insights, reply-comment, reply-dm, post-comments, conversations, conversation-messages)');
+  const heartbeatRoutes = require('./routes/agents/heartbeat');
+  app.use('/api/agent', heartbeatRoutes);
+  console.log('✅ Agent heartbeat routes loaded');
 } catch (error) {
-  console.error('❌ Failed to load agent proxy routes:', error.message);
+  console.error('❌ Failed to load agent heartbeat routes:', error.message);
 }
 
 // ✅ Authentication routes REMOVED (Phase 3.7)

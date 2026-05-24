@@ -152,9 +152,39 @@ function normalizeMediaInsight(item, businessAccountId) {
 
 /**
  * Maps a raw IG post to a DB-ready ugc_content row.
- * Pure re-export from ugc-field-map for single import surface.
+ *
+ * @param {Object} post             - Raw post from Graph API (hashtag search or /tags)
+ * @param {string} businessAccountId - UUID from instagram_business_accounts
+ * @param {'hashtag'|'tagged'} source
+ * @param {string|null} sourceHashtag - Hashtag string (without #), null for tagged posts
+ * @returns {Object} Row ready for ugc_content upsert
  */
-const { mapRawPostToUgcContent } = require('../helpers/ugc-field-map');
+const VALID_MEDIA_TYPES = new Set(['IMAGE', 'VIDEO', 'CAROUSEL_ALBUM', 'TEXT', 'REELS']);
+
+function normaliseMediaType(raw) {
+  const upper = (raw || 'IMAGE').toUpperCase();
+  return VALID_MEDIA_TYPES.has(upper) ? upper : 'IMAGE';
+}
+
+function mapRawPostToUgcContent(post, businessAccountId, source, sourceHashtag = null) {
+  return {
+    business_account_id: businessAccountId,
+    visitor_post_id:     post.id,
+    author_id:           post.owner?.id || post.owner_id || null,
+    author_username:     post.username || null,
+    message:             (post.caption || '').slice(0, 2000),
+    media_type:          normaliseMediaType(post.media_type),
+    media_url:           post.media_url || post.thumbnail_url || null,
+    permalink_url:       post.permalink || null,
+    like_count:          post.like_count || 0,
+    comment_count:       post.comments_count || 0,
+    created_time:        post.timestamp || null,
+    source,
+    source_hashtag:      sourceHashtag,
+    quality_score:       null,
+    quality_tier:        null,
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HASHTAG SYNC (writes hashtags from captions — categorized as normalization)

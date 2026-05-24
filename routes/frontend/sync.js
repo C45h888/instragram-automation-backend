@@ -1,16 +1,15 @@
 // backend.api/routes/frontend/sync.js
 // Data sync routes: sync UGC tagged posts, sync business posts.
-//
-// Both routes delegate to domain fetchers which handle:
-//   - credential resolution (resolveAccountCredentials)
-//   - Instagram Graph API calls
-//   - Supabase write-through with domain-tagged logging
+// Frontend-facing — user-initiated, not governed by AcquisitionIntent contract.
+// Uses IG fetcher modules (pure transport) + persistence substrate (pure DB write).
 
 const express = require('express');
 const router = express.Router();
-const { fetchAndStoreTaggedMedia } = require('../../helpers/data-fetchers/ugc-fetchers');
-const { fetchAndStoreBusinessPosts } = require('../../helpers/data-fetchers/media-fetchers');
 const { logAudit: logAuditService } = require('../../config/supabase');
+const persistence = require('../../substrates/persistence');
+const { mapRawPostToUgcContent } = require('../../substrates/normalization');
+const igFetcherUgc = require('../../control-plane/execution/ig-fetcher-ugc');
+const igFetcherMedia = require('../../control-plane/execution/ig-fetcher-media');
 
 const logAudit = logAuditService;
 
@@ -20,9 +19,8 @@ const logAudit = logAuditService;
 
 /**
  * POST /api/instagram/sync/ugc
- * Triggers background sync of tagged posts from Instagram to database.
- * Delegates to ugc-fetchers (fetchAndStoreTaggedMedia) — handles credentials,
- * Graph API call, and ugc_content upsert with domain='ugc' logging.
+ * Triggers sync of tagged posts from Instagram to database.
+ * User-initiated (frontend) — direct transport + persistence.
  */
 router.post('/sync/ugc', async (req, res) => {
   try {
@@ -32,7 +30,8 @@ router.post('/sync/ugc', async (req, res) => {
       return res.status(400).json({ success: false, error: 'businessAccountId is required' });
     }
 
-    const result = await fetchAndStoreTaggedMedia(businessAccountId, 50);
+    const creds = await persistence.resolveAccountCredentials(businessAccountId);
+    const result = await igFetcherUgc.fetchTaggedMedia(businessAccountId, 50, creds);
 
     if (!result.success) {
       return res.status(result.retryable === false ? 401 : 500).json({
@@ -44,11 +43,18 @@ router.post('/sync/ugc', async (req, res) => {
       });
     }
 
-    res.json({ success: true, synced_count: result.count });
+    if (result.records?.length > 0) {
+      const records = result.records
+        .filter(p => p.id)
+        .map(p => mapRawPostToUgcContent(p, businessAccountId, 'tagged', null));
+      await persistence.storeUgcContentBatch(records);
+    }
+
+    res.json({ success: true, synced_count: result.count || 0 });
 
     await logAudit('ugc_sync_completed', null, {
       business_account_id: businessAccountId,
-      synced_count: result.count
+      synced_count: result.count || 0,
     });
 
   } catch (error) {
@@ -59,9 +65,8 @@ router.post('/sync/ugc', async (req, res) => {
 
 /**
  * POST /api/instagram/sync/posts
- * Triggers background sync of business media from Instagram to database.
- * Delegates to media-fetchers (fetchAndStoreBusinessPosts) — handles credentials,
- * Graph API call, and instagram_media upsert with domain='media' logging.
+ * Triggers sync of business media from Instagram to database.
+ * User-initiated (frontend) — direct transport + persistence.
  */
 router.post('/sync/posts', async (req, res) => {
   try {
@@ -71,7 +76,7 @@ router.post('/sync/posts', async (req, res) => {
       return res.status(400).json({ success: false, error: 'businessAccountId is required' });
     }
 
-    const result = await fetchAndStoreBusinessPosts(businessAccountId, 50);
+    const result = await igFetcherMedia.fetchBusinessPosts(businessAccountId, 50);
 
     if (!result.success) {
       return res.status(result.retryable === false ? 401 : 500).json({
@@ -83,11 +88,15 @@ router.post('/sync/posts', async (req, res) => {
       });
     }
 
-    res.json({ success: true, synced_count: result.count });
+    if (result.posts?.length > 0) {
+      await persistence.storeBusinessPosts(businessAccountId, result.posts);
+    }
+
+    res.json({ success: true, synced_count: result.count || 0 });
 
     await logAudit('business_posts_sync_completed', null, {
       business_account_id: businessAccountId,
-      synced_count: result.count
+      synced_count: result.count || 0,
     });
 
   } catch (error) {
