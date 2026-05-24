@@ -4,11 +4,11 @@
 // Consumes: supervisor:acquisitions:comments:{account_id}
 // Pipeline: resolveCredentials → getRecentMedia → runConcurrent(fetchComments)
 //           → storeCommentBatches
-// All wrapped in governor.executeWithRetry for retry + quota + telemetry.
+// All wrapped in execution-bridge.executeWithRetry for retry + quota + telemetry.
 
 const { getRedisClient } = require('../config/redis');
 const { validateIntent } = require('../contracts/acquisition-intents');
-const { executeWithRetry } = require('../control-plane/governor');
+const { executeWithRetry } = require('../control-plane/execution-bridge');
 const transport = require('../substrates/transport/instagram');
 const persistence = require('../substrates/persistence');
 const { recordAcquisition } = require('../substrates/telemetry');
@@ -22,7 +22,7 @@ const RECONNECT_DELAY_MS = 5000;
 const COMMENT_MAX_POSTS = 5;
 
 /**
- * Domain execution pipeline — called by governor.executeWithRetry.
+ * Domain execution pipeline — called by execution-bridge.executeWithRetry.
  */
 async function _execute(accountId, params = {}) {
   const maxPosts = params.maxPosts || COMMENT_MAX_POSTS;

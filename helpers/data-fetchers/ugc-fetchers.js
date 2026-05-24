@@ -1,129 +1,71 @@
-// backend.api/helpers/data-fetchers/ugc-fetchers.js
+// helpers/data-fetchers/ugc-fetchers.js
 // Domain: ugc — hashtag search, tagged media.
-// Fetches from Instagram Graph API and upserts to Supabase ugc_content.
+// Transport layer lives in substrates/transport/instagram.js.
+// This file is a thin wrapper: transport → normalize → persistence call.
 // No req/res dependencies — callable from routes and proactive-sync cron.
 //
 // All api_usage rows written with domain='ugc' for targeted debugging:
 //   SELECT * FROM api_usage WHERE domain = 'ugc' AND success = false ORDER BY created_at DESC
 //
 // Thin fetch/write split:
-//   fetchHashtagMedia()       — IG API calls only, returns shaped records (no DB write)
-//   fetchAndStoreHashtagMedia() — shim: fetchHashtagMedia + storeUgcContentBatch (route compat)
-//   fetchAndStoreTaggedMedia()  — unchanged (called once per account, no inner loop)
+//   fetchHashtagMedia()        → delegates to transport (no DB write)
+//   fetchAndStoreHashtagMedia() — shim: transport + storeUgcContentBatch
+//   fetchTaggedMedia()         → delegates to transport (no DB write)
+//   fetchAndStoreTaggedMedia()  — shim: transport + storeUgcContentBatch
 
 const {
-  axios,
-  getSupabaseAdmin,
-  resolveAccountCredentials,
   categorizeIgError,
   mapRawPostToUgcContent,
-  GRAPH_API_BASE,
   logWithDomain,
   storeUgcContentBatch,
-  parseUsageHeader,
 } = require('./base');
+const transport = require('../../substrates/transport/instagram');
 
 // ============================================
-// HASHTAG MEDIA — THIN FETCH
+// HASHTAG MEDIA — THIN FETCH (delegates to transport)
 // ============================================
 
 /**
  * Searches hashtag media from the Instagram Graph API.
- * NO DB write — shapes records via mapRawPostToUgcContent so they're ready for storeUgcContentBatch.
+ * Delegates to transport.fetchHashtagMedia, then shapes records via mapRawPostToUgcContent.
+ * NO DB write — callers use storeUgcContentBatch() for persistence.
  *
  * @param {string} businessAccountId - UUID
  * @param {string} hashtag - Hashtag string (with or without #)
  * @param {number} [limit=25] - Max media (capped at 50)
+ * @param {object} [credentials=null] - Pre-resolved credentials
  * @returns {Promise<{success: boolean, records: Array, count: number, hashtagId?: string, error?: string}>}
  */
 async function fetchHashtagMedia(businessAccountId, hashtag, limit = 25, credentials = null) {
   const startTime = Date.now();
-  const searchLimit = Math.min(parseInt(limit) || 25, 50);
-  const cleanHashtag = String(hashtag).replace(/^#/, '');
+  const result = await transport.fetchHashtagMedia(businessAccountId, hashtag, limit, credentials);
 
-  try {
-    const { igUserId, pageToken } = credentials || await resolveAccountCredentials(businessAccountId);
-
-    // Step 1: Search for hashtag ID
-    const hashtagSearchRes = await axios.get(`${GRAPH_API_BASE}/ig_hashtag_search`, {
-      params: {
-        user_id: igUserId,
-        q: cleanHashtag,
-        access_token: pageToken
-      }
-    });
-
-    const hashtagId = hashtagSearchRes.data?.data?.[0]?.id;
-    if (!hashtagId) {
-      return { success: false, records: [], count: 0, error: `Hashtag not found: #${cleanHashtag}` };
-    }
-
-    // Step 2: Get recent media for hashtag
-    const mediaRes = await axios.get(`${GRAPH_API_BASE}/${hashtagId}/recent_media`, {
-      params: {
-        user_id: igUserId,
-        fields: 'id,media_type,media_url,thumbnail_url,permalink,caption,timestamp,username,like_count,comments_count,owner{id}',
-        limit: searchLimit,
-        access_token: pageToken
-      }
-    });
-
-    const latency = Date.now() - startTime;
-
+  if (!result.success) {
+    const errorMessage = result.error || 'Unknown error';
+    const { retryable, error_category, retry_after_seconds } = result;
     await logWithDomain('ugc', {
-      endpoint: '/search-hashtag',
-      method: 'POST',
+      endpoint: '/search-hashtag', method: 'POST',
       business_account_id: businessAccountId,
-      user_id: igUserId,
-      success: true,
-      latency
+      success: false, error: errorMessage, latency: Date.now() - startTime,
+      status_code: null,
+      details: { action: 'proxy_failure', error_category, retryable, retry_after_seconds: retry_after_seconds || null },
     });
-
-    // Flatten owner{id} → owner_id then shape via mapRawPostToUgcContent (DB-ready rows)
-    const rawMedia = (mediaRes.data.data || []).map(item => ({
-      ...item,
-      owner_id: item.owner?.id || null,
-    }));
-
-    const records = rawMedia
-      .filter(m => m.id)
-      .map(m => mapRawPostToUgcContent(m, businessAccountId, 'hashtag', cleanHashtag));
-
-    if (rawMedia.length >= searchLimit) {
-      logWithDomain('ugc', {
-        endpoint: '/search-hashtag/paging', method: 'SYSTEM', success: true,
-        business_account_id: businessAccountId,
-        details: { action: 'paging_next_detected', items_this_page: rawMedia.length, next_cursor_present: true },
-      }).catch(() => {});
-    }
-
-    return {
-      success: true, records, count: records.length, hashtagId,
-      _usagePct: parseUsageHeader(mediaRes.headers?.['x-business-use-case-usage']),
-    };
-
-  } catch (error) {
-    const latency = Date.now() - startTime;
-    const errorMessage = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-
-    await logWithDomain('ugc', {
-      endpoint: '/search-hashtag',
-      method: 'POST',
-      business_account_id: businessAccountId,
-      success: false,
-      error: errorMessage,
-      latency,
-      status_code: error.response?.status || null,
-      details: { action: 'proxy_failure', error_category, retryable, retry_after_seconds: retry_after_seconds || null, latency_ms: latency },
-    });
-
-    return {
-      success: false, records: [], count: 0, error: errorMessage,
-      code: error.response?.data?.error?.code,
-      retryable, error_category, retry_after_seconds
-    };
+    return result;
   }
+
+  // Shape records via mapRawPostToUgcContent (DB-ready rows)
+  const cleanHashtag = result.cleanHashtag || String(hashtag).replace(/^#/, '');
+  const records = (result.rawMedia || result.records || [])
+    .filter(m => m.id)
+    .map(m => mapRawPostToUgcContent({ ...m, owner_id: m.owner_id || m.owner?.id || null }, businessAccountId, 'hashtag', cleanHashtag));
+
+  await logWithDomain('ugc', {
+    endpoint: '/search-hashtag', method: 'POST',
+    business_account_id: businessAccountId,
+    success: true, latency: Date.now() - startTime,
+  });
+
+  return { ...result, records, count: records.length };
 }
 
 // ============================================
@@ -150,15 +92,13 @@ async function fetchAndStoreHashtagMedia(businessAccountId, hashtag, limit = 25)
 }
 
 // ============================================
-// TAGGED MEDIA — THIN FETCH
+// TAGGED MEDIA — THIN FETCH (delegates to transport)
 // ============================================
 
 /**
  * Fetches posts where the business account is tagged by other users.
+ * Delegates to transport.fetchTaggedMedia, then shapes records via mapRawPostToUgcContent.
  * NO DB write — callers use storeUgcContentBatch() for persistence.
- *
- * Field fix: owner{id} added — previously missing, causing author_instagram_id to
- * always be null in ugc_content, breaking UGC creator DM permission flows.
  *
  * @param {string} businessAccountId - UUID
  * @param {number} [limit=25] - Max tagged posts (capped at 50)
@@ -167,74 +107,38 @@ async function fetchAndStoreHashtagMedia(businessAccountId, hashtag, limit = 25)
  */
 async function fetchTaggedMedia(businessAccountId, limit = 25, credentials = null) {
   const startTime = Date.now();
-  const fetchLimit = Math.min(parseInt(limit) || 25, 50);
+  const result = await transport.fetchTaggedMedia(businessAccountId, limit, credentials);
 
-  try {
-    const { igUserId, pageToken } = credentials || await resolveAccountCredentials(businessAccountId);
-
-    const tagsRes = await axios.get(`${GRAPH_API_BASE}/${igUserId}/tags`, {
-      params: {
-        // owner{id} added: was missing, causing author_instagram_id=null for all tagged UGC
-        fields: 'id,media_type,media_url,thumbnail_url,caption,permalink,timestamp,username,like_count,comments_count,owner{id}',
-        limit: fetchLimit,
-        access_token: pageToken,
-      },
-    });
-
-    const latency = Date.now() - startTime;
-
+  if (!result.success) {
+    const errorMessage = result.error || 'Unknown error';
+    const { retryable, error_category, retry_after_seconds } = result;
     await logWithDomain('ugc', {
-      endpoint: '/tags',
-      method: 'GET',
+      endpoint: '/tags', method: 'GET',
       business_account_id: businessAccountId,
-      user_id: igUserId,
-      success: true,
-      latency,
+      success: false, error: errorMessage, latency: Date.now() - startTime,
+      status_code: null,
+      details: { action: 'proxy_failure', error_category, retryable, retry_after_seconds: retry_after_seconds || null },
     });
-
-    const rawPosts = tagsRes.data.data || [];
-    const paging = tagsRes.data.paging || {};
-
-    // Flatten owner{id} → owner_id then shape via mapRawPostToUgcContent (DB-ready rows)
-    const records = rawPosts
-      .filter(p => p.id)
-      .map(p => mapRawPostToUgcContent(
-        { ...p, owner_id: p.owner?.id || null },
-        businessAccountId,
-        'tagged',
-        null
-      ));
-
-    return {
-      success: true,
-      records,
-      count: records.length,
-      paging,
-      _usagePct: parseUsageHeader(tagsRes.headers?.['x-business-use-case-usage']),
-    };
-
-  } catch (error) {
-    const latency = Date.now() - startTime;
-    const errorMessage = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-
-    await logWithDomain('ugc', {
-      endpoint: '/tags',
-      method: 'GET',
-      business_account_id: businessAccountId,
-      success: false,
-      error: errorMessage,
-      latency,
-      status_code: error.response?.status || null,
-      details: { action: 'proxy_failure', error_category, retryable, retry_after_seconds: retry_after_seconds || null, latency_ms: latency },
-    });
-
-    return {
-      success: false, records: [], count: 0, paging: {}, error: errorMessage,
-      code: error.response?.data?.error?.code,
-      retryable, error_category, retry_after_seconds,
-    };
+    return result;
   }
+
+  // Shape records via mapRawPostToUgcContent (DB-ready rows)
+  const records = (result.records || [])
+    .filter(p => p.id)
+    .map(p => mapRawPostToUgcContent(
+      { ...p, owner_id: p.owner_id || p.owner?.id || null },
+      businessAccountId,
+      'tagged',
+      null
+    ));
+
+  await logWithDomain('ugc', {
+    endpoint: '/tags', method: 'GET',
+    business_account_id: businessAccountId,
+    success: true, latency: Date.now() - startTime,
+  });
+
+  return { ...result, records, count: records.length };
 }
 
 // ============================================

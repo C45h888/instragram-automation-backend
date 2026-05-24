@@ -14,6 +14,83 @@ const { logWithDomain } = require('../telemetry');
 const { parseUsageHeader } = require('../quota');
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT INSIGHTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const V1_METRICS = ['reach'];
+const V2_METRICS_BASE = ['accounts_engaged', 'profile_views'];
+const V2_METRICS_WEBSITE = ['website_clicks'];
+
+/**
+ * Fetches account-level insights from the Instagram Graph API. NO DB write.
+ * Inlined from the former getAccountInsights in instagram-tokens.
+ *
+ * @param {string} businessAccountId - UUID
+ * @param {Object} [options] - {since, until, period}
+ * @param {object} [credentials=null] - Pre-resolved credentials
+ * @returns {Promise<object>} { success, v1Data, v2Data, period, hasWebsite, _usagePct, error? }
+ */
+async function fetchAccountInsights(businessAccountId, options = {}, credentials = null) {
+  const { period = '7d', until: untilParam } = options;
+  const periodMatch = period.match(/^(\d+)d$/);
+  if (!periodMatch) throw new Error(`Invalid period format: ${period}. Use format: '7d', '30d', '90d'`);
+
+  const periodDays = parseInt(periodMatch[1]);
+  if (periodDays < 1 || periodDays > 90) throw new Error(`Period must be between 1 and 90 days. Got: ${periodDays}`);
+
+  const until = untilParam || Math.floor(Date.now() / 1000);
+  const since = until - (periodDays * 24 * 60 * 60);
+
+  // Check if account has website (v2 total_value metric only for accounts with websites)
+  const { igUserId, pageToken } = credentials || await resolveAccountCredentials(businessAccountId);
+
+  const v2Metrics = [...V2_METRICS_BASE];
+  let hasWebsite = false;
+
+  if (businessAccountId && !credentials) {
+    // credentials not pre-resolved — check website flag via supabase
+    const { getSupabaseAdmin } = require('../../config/supabase');
+    const supabase = getSupabaseAdmin();
+    if (supabase) {
+      const { data: accountRow } = await supabase
+        .from('instagram_business_accounts')
+        .select('website')
+        .eq('id', businessAccountId)
+        .single();
+      hasWebsite = !!accountRow?.website;
+      if (hasWebsite) v2Metrics.push(...V2_METRICS_WEBSITE);
+    }
+  } else if (credentials?._hasWebsite) {
+    hasWebsite = credentials._hasWebsite;
+    if (hasWebsite) v2Metrics.push(...V2_METRICS_WEBSITE);
+  }
+
+  const [v1Response, v2Response] = await Promise.all([
+    axios.get(`${GRAPH_API_BASE}/${igUserId}/insights`, {
+      params: { metric: V1_METRICS.join(','), period: 'day', since, until, access_token: pageToken },
+      timeout: 15000,
+    }),
+    axios.get(`${GRAPH_API_BASE}/${igUserId}/insights`, {
+      params: { metric: v2Metrics.join(','), period: 'day', metric_type: 'total_value', since, until, access_token: pageToken },
+      timeout: 15000,
+    }),
+  ]);
+
+  if (v1Response.data.error) throw new Error(`Instagram API Error (v1): ${v1Response.data.error.message}`);
+  if (v2Response.data.error) throw new Error(`Instagram API Error (v2): ${v2Response.data.error.message}`);
+
+  return {
+    success: true,
+    v1Data: v1Response.data.data || [],
+    v2Data: v2Response.data.data || [],
+    period: { since, until, days: periodDays, start_date: new Date(since * 1000).toISOString(), end_date: new Date(until * 1000).toISOString() },
+    hasWebsite,
+    igUserId,
+    _usagePct: parseUsageHeader(v1Response.headers?.['x-business-use-case-usage']),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // COMMENTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -527,6 +604,7 @@ async function fetchTaggedMedia(businessAccountId, limit = 25, credentials = nul
 }
 
 module.exports = {
+  fetchAccountInsights,
   fetchComments,
   fetchConversations,
   fetchMessages,

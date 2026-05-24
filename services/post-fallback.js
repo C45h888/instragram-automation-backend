@@ -7,33 +7,15 @@
 // Max retries before DLQ: MAX_RETRIES = 5
 // Batch size per tick: BATCH_SIZE = 20
 
-const axios = require('axios');
 const { getSupabaseAdmin, logAudit } = require('../config/supabase');
-const {
-  resolveAccountCredentials,
-  categorizeIgError,
-  GRAPH_API_BASE,
-  pollMediaContainerStatus,
-} = require('../helpers/agent-helpers');
-const { isAccountRateLimited, markAccountRateLimited } = require('../substrates/retry');
+const { resolveAccountCredentials } = require('../helpers/agent-helpers');
+const { isAccountRateLimited } = require('../substrates/retry');
+const { executeWithRetry } = require('../control-plane/execution-bridge');
+const publishTransport = require('../substrates/transport/publishing');
 
 const MAX_RETRIES = 5;
 const BATCH_SIZE = 20;
 const DEFAULT_POLL_INTERVAL_MS = 30000; // 30 seconds
-
-// ============================================
-// BACKOFF
-// ============================================
-
-/**
- * Exponential backoff in milliseconds: 2^n minutes, capped at 60 minutes.
- * retry_count=1 → 2 min, =2 → 4 min, =3 → 8 min, =4 → 16 min, =5 → 32 min
- * @param {number} retryCount - current retry_count value (after increment)
- * @returns {number} milliseconds to wait
- */
-function backoffMs(retryCount) {
-  return Math.min(Math.pow(2, retryCount) * 60 * 1000, 60 * 60 * 1000);
-}
 
 // ============================================
 // ACTION DISPATCHER
@@ -42,7 +24,8 @@ function backoffMs(retryCount) {
 /**
  * Executes a single post_queue row against the Instagram Graph API.
  * Marks the row as 'processing' before the attempt to prevent concurrent pickup.
- * Updates status to 'sent', 'failed', or 'dlq' based on outcome.
+ * All retry logic is delegated to execution-bridge's executeWithRetry.
+ * Updates status to 'sent' or 'dlq' based on outcome.
  * @param {object} supabase - Supabase admin client
  * @param {object} row - post_queue row from Supabase
  */
@@ -55,211 +38,65 @@ async function dispatchAction(supabase, row) {
     .update({ status: 'processing' })
     .eq('id', id);
 
-  try {
-    const { igUserId, pageToken, pageId } = await resolveAccountCredentials(business_account_id);
-    let instagram_id;
+  // Resolve Instagram credentials for this account
+  const { igUserId, pageToken, pageId } = await resolveAccountCredentials(business_account_id);
 
-    switch (action_type) {
+  /**
+   * Thin execution wrapper — execution-bridge calls this function, handles all retries,
+   * backoff, error classification, and telemetry.
+   */
+  async function executePublish(accountId, params) {
+    const { credentials, payload: pubPayload } = params;
+    const result = await publishTransport.executeAction(
+      action_type,
+      accountId,
+      credentials,
+      pubPayload
+    );
+    return result;
+  }
 
-      // ------------------------------------------
-      case 'reply_comment': {
-        const res = await axios.post(
-          `${GRAPH_API_BASE}/${payload.comment_id}/replies`,
-          null,
-          {
-            params: { message: payload.reply_text.trim(), access_token: pageToken },
-            timeout: 10000
-          }
-        );
-        instagram_id = res.data.id;
-        break;
-      }
+  const outcome = await executeWithRetry(
+    business_account_id,
+    `fallback-${id}`,            // intentId
+    'publish',                   // domain
+    executePublish,
+    { credentials: { igUserId, pageToken, pageId }, payload },
+    { maxRetries: MAX_RETRIES }  // total attempts = 5
+  );
 
-      // ------------------------------------------
-      case 'reply_dm': {
-        const res = await axios.post(
-          `${GRAPH_API_BASE}/${payload.conversation_id}/messages`,
-          null,
-          {
-            params: { message: payload.message_text.trim(), access_token: pageToken },
-            timeout: 10000
-          }
-        );
-        instagram_id = res.data.id;
-        break;
-      }
+  // ── Map outcome to post_queue status ────────────────────────────────────
 
-      // ------------------------------------------
-      case 'send_dm': {
-        // Meta requires Facebook Page ID node for Instagram DM send; fall back to igUserId
-        const dmNode = pageId || igUserId;
-        const res = await axios.post(
-          `${GRAPH_API_BASE}/${dmNode}/messages`,
-          {
-            recipient: { id: String(payload.recipient_id) },
-            message: { text: payload.message_text.trim() }
-          },
-          {
-            params: { access_token: pageToken },
-            timeout: 10000
-          }
-        );
-        instagram_id = res.data.message_id || res.data.id;
-        break;
-      }
+  if (outcome.status === 'completed') {
+    const instagram_id = outcome.instagram_id || null;
 
-      // ------------------------------------------
-      case 'publish_post': {
-        let creationId = payload.creation_id;
-
-        if (!creationId) {
-          // Step 1: create media container
-          const type = (payload.media_type || 'IMAGE').toUpperCase();
-          const createParams = { caption: payload.caption, access_token: pageToken };
-          if (type === 'VIDEO' || type === 'REELS') {
-            createParams.video_url = payload.image_url;
-            createParams.media_type = type;
-          } else {
-            createParams.image_url = payload.image_url;
-          }
-
-          const createRes = await axios.post(
-            `${GRAPH_API_BASE}/${igUserId}/media`,
-            null,
-            { params: createParams, timeout: 15000 }
-          );
-          creationId = createRes.data.id;
-
-          // Persist creation_id so next retry skips Step 1
-          await supabase
-            .from('post_queue')
-            .update({ payload: { ...payload, creation_id: creationId } })
-            .eq('id', id);
-        }
-
-        // For VIDEO/REELS: poll until FINISHED before publishing
-        const publishType = (payload.media_type || 'IMAGE').toUpperCase();
-        if (publishType === 'VIDEO' || publishType === 'REELS') {
-          await pollMediaContainerStatus(creationId, pageToken);
-        }
-
-        // Step 2: publish
-        const publishRes = await axios.post(
-          `${GRAPH_API_BASE}/${igUserId}/media_publish`,
-          null,
-          {
-            params: { creation_id: creationId, access_token: pageToken },
-            timeout: 15000
-          }
-        );
-        instagram_id = publishRes.data.id;
-
-        // Keep scheduled_posts in sync
-        if (payload.scheduled_post_id && instagram_id) {
-          await supabase
-            .from('scheduled_posts')
-            .update({
-              status: 'published',
-              instagram_media_id: instagram_id,
-              published_at: new Date().toISOString()
-            })
-            .eq('id', payload.scheduled_post_id);
-        }
-        break;
-      }
-
-      // ------------------------------------------
-      case 'repost_ugc': {
-        let creationId = payload.creation_id;
-
-        if (!creationId) {
-          // Re-fetch media URL via ugc_permissions → ugc_content (unified schema, Feb 2026)
-          const { data: perm, error: permErr } = await supabase
-            .from('ugc_permissions')
-            .select('ugc_content_id')
-            .eq('id', payload.permission_id)
-            .single();
-
-          if (permErr || !perm) {
-            throw new Error('Permission record not found for repost_ugc retry');
-          }
-
-          const { data: ugc, error: ugcErr } = await supabase
-            .from('ugc_content')
-            .select('media_url, message, author_username, media_type')
-            .eq('id', perm.ugc_content_id)
-            .single();
-
-          if (ugcErr || !ugc || !ugc.media_url) {
-            throw new Error('UGC media not found for repost_ugc retry');
-          }
-
-          const caption = ugc.message
-            ? `📸 @${ugc.author_username}: ${ugc.message}\n\n#repost`
-            : `📸 @${ugc.author_username}\n\n#repost`;
-
-          const ugcMediaType = (ugc.media_type || 'IMAGE').toUpperCase();
-          const ugcCreateParams = { caption, access_token: pageToken };
-          if (ugcMediaType === 'VIDEO' || ugcMediaType === 'REELS') {
-            ugcCreateParams.video_url = ugc.media_url;
-            ugcCreateParams.media_type = ugcMediaType;
-          } else {
-            ugcCreateParams.image_url = ugc.media_url;
-          }
-
-          const createRes = await axios.post(
-            `${GRAPH_API_BASE}/${igUserId}/media`,
-            null,
-            { params: ugcCreateParams, timeout: 15000 }
-          );
-          creationId = createRes.data.id;
-
-          // Persist creation_id + ugc_media_type so retry can poll and branch correctly
-          await supabase
-            .from('post_queue')
-            .update({ payload: { ...payload, creation_id: creationId, ugc_media_type: ugcMediaType } })
-            .eq('id', id);
-        }
-
-        // For VIDEO/REELS: poll until FINISHED before publishing.
-        // ugc_media_type is persisted in payload so retries (where creation_id is already set) can check.
-        const repostMediaType = payload.ugc_media_type || 'IMAGE';
-        if (repostMediaType === 'VIDEO' || repostMediaType === 'REELS') {
-          await pollMediaContainerStatus(creationId, pageToken);
-        }
-
-        // Step 2: publish
-        const publishRes = await axios.post(
-          `${GRAPH_API_BASE}/${igUserId}/media_publish`,
-          null,
-          {
-            params: { creation_id: creationId, access_token: pageToken },
-            timeout: 15000
-          }
-        );
-        instagram_id = publishRes.data.id;
-
-        // Mark permission as reposted
-        await supabase
-          .from('ugc_permissions')
-          .update({
-            status: 'reposted',
-            instagram_media_id: instagram_id,
-            reposted_at: new Date().toISOString()
-          })
-          .eq('id', payload.permission_id);
-        break;
-      }
-
-      // ------------------------------------------
-      default:
-        throw new Error(`Unknown action_type: ${action_type}`);
+    // Keep scheduled_posts in sync
+    if (action_type === 'publish_post' && payload.scheduled_post_id && instagram_id) {
+      await supabase
+        .from('scheduled_posts')
+        .update({
+          status: 'published',
+          instagram_media_id: instagram_id,
+          published_at: new Date().toISOString()
+        })
+        .eq('id', payload.scheduled_post_id);
     }
 
-    // ── SUCCESS ──────────────────────────────────
+    // Mark permission as reposted
+    if (action_type === 'repost_ugc' && payload.permission_id && instagram_id) {
+      await supabase
+        .from('ugc_permissions')
+        .update({
+          status: 'reposted',
+          instagram_media_id: instagram_id,
+          reposted_at: new Date().toISOString()
+        })
+        .eq('id', payload.permission_id);
+    }
+
     await supabase
       .from('post_queue')
-      .update({ status: 'sent', instagram_id })
+      .update({ status: 'sent', instagram_id, error: null, error_category: null })
       .eq('id', id);
 
     logAudit({
@@ -272,74 +109,43 @@ async function dispatchAction(supabase, row) {
     }).catch(() => {});
 
     console.log(`[PostFallback] ✅ ${action_type} row ${id} sent (instagram_id: ${instagram_id})`);
-
-  } catch (error) {
-    // ── FAILURE ──────────────────────────────────
-    const errorMessage = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-    const newRetryCount = retry_count + 1;
-
-    // Feed rate-limit signal into shared circuit breaker
-    if (error_category === 'rate_limit') {
-      markAccountRateLimited(business_account_id, retry_after_seconds);
-    }
-
-    if (!retryable || newRetryCount >= MAX_RETRIES) {
-      // ── DEAD LETTER QUEUE ──────────────────────
-      await supabase
-        .from('post_queue')
-        .update({ status: 'dlq', retry_count: newRetryCount, error: errorMessage, error_category })
-        .eq('id', id);
-
-      await logAudit({
-        event_type: 'post_failed_permanent',
-        action: 'post_queue_dlq',
-        resource_type: 'post_queue',
-        resource_id: id,
-        details: {
-          action_type,
-          error: errorMessage,
-          error_category,
-          retry_count: newRetryCount,
-          business_account_id
-        },
-        success: false
-      }).catch(() => {});
-
-      console.error(
-        `[PostFallback] 💀 ${action_type} row ${id} → DLQ after ${newRetryCount} attempts: ${errorMessage}`
-      );
-
-    } else {
-      // ── RETRYABLE — exponential backoff ────────
-      const nextRetryAt = new Date(Date.now() + backoffMs(newRetryCount)).toISOString();
-
-      await supabase
-        .from('post_queue')
-        .update({
-          status: 'failed',
-          retry_count: newRetryCount,
-          error: errorMessage,
-          error_category,
-          next_retry_at: nextRetryAt
-        })
-        .eq('id', id);
-
-      logAudit({
-        event_type: 'post_queue_retry_scheduled',
-        action: 'post_queue_dispatch',
-        resource_type: 'post_queue',
-        resource_id: id,
-        details: { action_type, retry_count: newRetryCount, next_retry_at: nextRetryAt, error_category, business_account_id },
-        success: false,
-      }).catch(() => {});
-
-      console.warn(
-        `[PostFallback] ⚠️ ${action_type} row ${id} failed (${newRetryCount}/${MAX_RETRIES}), ` +
-        `retry at ${nextRetryAt}: ${errorMessage}`
-      );
-    }
+    return;
   }
+
+  // ── Failed ───────────────────────────────────────────────────────────────
+  const errorMessage = outcome.error || 'unknown';
+  const newRetryCount = retry_count + MAX_RETRIES; // execution-bridge already consumed retries
+
+  if (outcome.error === 'rate_limited') {
+    // Rate-limited — execution-bridge already called markAccountRateLimited.
+    // Leave status as 'failed' so next poll picks it up after cooldown.
+    console.warn(`[PostFallback] ⚠️ ${action_type} row ${id} rate-limited, will retry on next poll`);
+    return;
+  }
+
+  // Permanent failure or max retries exceeded → DLQ
+  await supabase
+    .from('post_queue')
+    .update({ status: 'dlq', retry_count: newRetryCount, error: errorMessage, error_category: null })
+    .eq('id', id);
+
+  logAudit({
+    event_type: outcome.error === 'max_retries_exceeded' ? 'post_failed_max_retries' : 'post_failed_permanent',
+    action: 'post_queue_dlq',
+    resource_type: 'post_queue',
+    resource_id: id,
+    details: {
+      action_type,
+      error: errorMessage,
+      retry_count: newRetryCount,
+      business_account_id
+    },
+    success: false
+  }).catch(() => {});
+
+  console.error(
+    `[PostFallback] 💀 ${action_type} row ${id} → DLQ after ${MAX_RETRIES} attempts: ${errorMessage}`
+  );
 }
 
 // ============================================

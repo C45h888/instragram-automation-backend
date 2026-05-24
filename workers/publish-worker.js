@@ -3,12 +3,12 @@
 //
 // Consumes: supervisor:acquisitions:publish:{media|ugc|messaging}:{account_id}
 // Pipeline: resolveCredentials → publish-transport → update post_queue / scheduled_posts
-// All wrapped in governor.executeWithRetry for retry + quota + telemetry.
+// All wrapped in execution-bridge.executeWithRetry for retry + quota + telemetry.
 
 const { getRedisClient } = require('../config/redis');
 const { getSupabaseAdmin } = require('../config/supabase');
 const { validateIntent } = require('../contracts/acquisition-intents');
-const { executeWithRetry } = require('../control-plane/governor');
+const { executeWithRetry } = require('../control-plane/execution-bridge');
 const publishTransport = require('../substrates/transport/publishing');
 const persistence = require('../substrates/persistence');
 const { recordAcquisition } = require('../substrates/telemetry');
@@ -48,7 +48,7 @@ function domainForAction(actionType) {
 // ── Execution pipeline ────────────────────────────────────────────────────────
 
 /**
- * Main _execute — called by governor.executeWithRetry.
+ * Main _execute — called by execution-bridge.executeWithRetry.
  * Resolves credentials, executes the publish action via transport, updates post_queue/scheduled_posts.
  *
  * For scheduled_post intents (asset_id in payload): fetches asset from instagram_assets
@@ -112,7 +112,7 @@ async function _execute(accountId, params = {}) {
   );
 
   if (!result.success) {
-    // Return error result — governor will handle retry classification
+    // Return error result — execution-bridge will handle retry classification
     return {
       success: false,
       count: 0,

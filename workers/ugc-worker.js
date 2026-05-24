@@ -5,11 +5,11 @@
 // Pipeline: resolveCredentials → fetchTaggedMedia → storeUgcContentBatch
 //           → getMonitoredHashtags → runConcurrent(fetchHashtagMedia)
 //           → normalize → storeUgcContentBatch
-// All wrapped in governor.executeWithRetry.
+// All wrapped in execution-bridge.executeWithRetry.
 
 const { getRedisClient } = require('../config/redis');
 const { validateIntent } = require('../contracts/acquisition-intents');
-const { executeWithRetry } = require('../control-plane/governor');
+const { executeWithRetry } = require('../control-plane/execution-bridge');
 const transport = require('../substrates/transport/instagram');
 const persistence = require('../substrates/persistence');
 const { mapRawPostToUgcContent } = require('../substrates/normalization');
