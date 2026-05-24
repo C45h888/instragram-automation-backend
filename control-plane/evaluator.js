@@ -1,25 +1,37 @@
 // control-plane/evaluator.js
 // Control Plane: deterministic publishing evaluation loop.
 //
-// Owns: buffering realtime events, evaluating deterministic conditions per tick,
-//        emitting publish intents to Redis queues.
-// Does NOT own: IG API calls, persistence writes, retry logic.
+// Owns: buffering events via signal bus, 10s evaluation cadence,
+//        intent emission to Redis queues.
+// Does NOT own: IG API calls, persistence writes, retry logic,
+//               business-domain evaluation semantics, deduplication semantics.
 //
 // Architecture:
-//   Supabase Realtime ── INSERT events ──► evaluator buffer (in-memory Map)
-//                                           │
-//                        10s tick ──────────┘ evaluate
-//                                           │
-//                        emit intent ──► Redis queue (supervisor:acquisitions:publish:{domain}:{account})
+//   Supabase Realtime ──► signalBus.emit('db:insert', {...})
+//                              ↓
+//                     signalBus (decoupled bus)
+//                              ↓
+//                     bufferEvent() [subscribed]
+//                              ↓
+//                     10s tick ──► _evaluateAccount()
+//                                          │
+//                     ┌────────────────────┴────────────────────┐
+//                     │  policy.evaluateRecord() — business logic  │ ← policies/
+//                     │  dedup.isInFlight()        — dedup         │ ← governance/
+//                     │  mutationSubstrate.apply() — state mut.    │ ← mutation-substrate
+//                     └────────────────────┬────────────────────┘
+//                                          │
+//                     emitIntent() ──► Redis queues
 //
-// Evaluation conditions are deterministic and run every EVALUATOR_INTERVAL_MS.
-// Only one intent per (account, action_type, resource_id) per tick — dedup via in-flight Set.
+// Only one intent per (account, action_type, resourceId) per tick.
 
 const { getRedisClient } = require('../config/redis');
 const { getSupabaseAdmin } = require('../config/supabase');
 const { getActiveAccounts } = require('../substrates/persistence');
-const realtime = require('../substrates/realtime');
-const { buildIdempotencyKey } = require('../helpers/agent-helpers');
+const signalBus = require('./signal-bus');
+const dedup = require('./governance/dedup');
+const mutationSubstrate = require('./mutation-substrate');
+const publishingPolicy = require('./policies/publishing');
 
 const EVALUATOR_INTERVAL_MS = parseInt(process.env.EVALUATOR_INTERVAL_MS || '10000', 10); // 10s
 const RESULT_TTL_SEC = 3600;
@@ -33,47 +45,32 @@ function domainForAction(actionType) {
 }
 
 function fetchTypeForAction(actionType) {
+  if (actionType === 'publish_media') return 'publish_media';
+  if (actionType === 'publish_ugc') return 'publish_ugc';
+  if (actionType === 'publish_messaging') return 'publish_messaging';
+  // Fallback for raw action types
   if (actionType === 'publish_post') return 'publish_media';
   if (actionType === 'repost_ugc') return 'publish_ugc';
   return 'publish_messaging';
-}
-
-// ── In-flight deduplication ───────────────────────────────────────────────────
-
-/**
- * In-flight intents: prevents double-emitting the same resource in one tick.
- * Key: `${accountId}:${actionType}:${resourceId}`
- * Cleared after every EVALUATOR_INTERVAL_MS tick.
- */
-const _inFlight = new Set();
-
-function _markInFlight(accountId, actionType, resourceId) {
-  _inFlight.add(`${accountId}:${actionType}:${resourceId}`);
-}
-
-function _isInFlight(accountId, actionType, resourceId) {
-  return _inFlight.has(`${accountId}:${actionType}:${resourceId}`);
-}
-
-function _clearInFlight() {
-  _inFlight.clear();
 }
 
 // ── Event buffer ──────────────────────────────────────────────────────────────
 
 /**
  * accountId → [
- *   { table: 'scheduled_posts'|'post_queue', record: {...}, receivedAt: ms }
+ *   { table: string, record: object, receivedAt: number }
  * ]
  * Buffered events accumulate between ticks. Cleared after each evaluation.
  */
 const _buffer = new Map(); // accountId → event[]
 
 /**
- * Called by realtime substrate on every INSERT event.
+ * Called by signalBus when a db:insert event fires.
  * Accumulates events into the buffer for the next evaluation tick.
  */
-function bufferEvent(accountId, table, record) {
+function bufferEvent(data) {
+  const { accountId, table, record } = data;
+  if (!accountId || !table || !record) return;
   if (!_buffer.has(accountId)) {
     _buffer.set(accountId, []);
   }
@@ -84,75 +81,51 @@ function bufferEvent(accountId, table, record) {
 
 /**
  * Evaluates buffered events for one account.
+ * Delegates business logic to publishingPolicy.
+ * Handles mutation outcomes via mutationSubstrate.
  * Returns an array of intent objects to emit.
  */
 async function _evaluateAccount(accountId, events) {
   const intents = [];
+  const supabase = getSupabaseAdmin();
 
   for (const { table, record } of events) {
-    if (table === 'scheduled_posts') {
-      // Only process approved posts
-      if (record.status !== 'approved') continue;
+    const outcome = publishingPolicy.evaluateRecord(table, record);
 
+    if (outcome.action === 'skip') {
+      continue;
+    }
+
+    if (outcome.action === 'mark_failed') {
+      // Delegate state mutation to mutation substrate — evaluator does NOT mutate persistence
+      await mutationSubstrate.applyMutation(
+        table,
+        record.id,
+        outcome.updates,
+        outcome.reason
+      );
+      continue;
+    }
+
+    if (outcome.action === 'emit') {
+      const { intent } = outcome;
       const resourceId = record.id;
-      if (_isInFlight(accountId, 'publish_post', resourceId)) continue;
 
-      // Inline asset resolution — fetch from instagram_assets before emitting intent
-      const supabase = getSupabaseAdmin();
-      if (!supabase) continue;
-
-      const { data: asset } = await supabase
-        .from('instagram_assets')
-        .select('storage_path, media_type, caption')
-        .eq('id', record.asset_id)
-        .single();
-
-      if (!asset?.storage_path) {
-        console.warn(`[evaluator] Scheduled post ${record.id} missing asset — marking failed`);
-        await supabase
-          .from('scheduled_posts')
-          .update({ status: 'failed' })
-          .eq('id', record.id)
-          .eq('status', 'approved');
+      // Check dedup via governance substrate
+      if (dedup.isInFlight(accountId, intent.action_type, resourceId)) {
         continue;
       }
-
-      _markInFlight(accountId, 'publish_post', resourceId);
-
-      intents.push({
-        account_id: accountId,
-        fetch_type: 'publish_media',
-        action_type: 'publish_post',
-        resource_id: resourceId,
-        payload: {
-          image_url: asset.storage_path,
-          caption: asset.caption || '',
-          media_type: asset.media_type || 'IMAGE',
-          asset_id: record.asset_id,
-          scheduled_post_id: record.id,
-        },
-        intent_type: 'scheduled_post',
-      });
-
-    } else if (table === 'post_queue') {
-      if (!['pending', 'failed'].includes(record.status)) continue;
-
-      const resourceId = record.id;
-      if (_isInFlight(accountId, record.action_type, resourceId)) continue;
-
-      // Skip if next_retry_at is in the future
-      if (record.next_retry_at && new Date(record.next_retry_at) > new Date()) continue;
-
-      _markInFlight(accountId, record.action_type, resourceId);
+      dedup.markInFlight(accountId, intent.action_type, resourceId);
 
       intents.push({
         account_id: accountId,
-        fetch_type: fetchTypeForAction(record.action_type),
-        action_type: record.action_type,
+        fetch_type: fetchTypeForAction(intent.action_type),
+        action_type: intent.action_type,
         resource_id: resourceId,
-        payload: record.payload || {},
-        queue_row_id: record.id,
-        intent_type: 'post_queue',
+        payload: intent.payload,
+        queue_row_id: intent.queue_row_id || null,
+        scheduled_post_id: intent.scheduled_post_id || null,
+        intent_type: table === 'scheduled_posts' ? 'scheduled_post' : 'post_queue',
       });
     }
   }
@@ -162,9 +135,6 @@ async function _evaluateAccount(accountId, events) {
 
 // ── Intent emission ──────────────────────────────────────────────────────────
 
-/**
- * Serialises and emits intents to Redis queues.
- */
 async function _emitIntents(redis, intents) {
   for (const intent of intents) {
     const { account_id, fetch_type, action_type, resource_id, payload, queue_row_id, scheduled_post_id, intent_type } = intent;
@@ -188,7 +158,6 @@ async function _emitIntents(redis, intents) {
     const queueKey = `supervisor:acquisitions:publish:${domain}:${account_id}`;
     await redis.lpush(queueKey, JSON.stringify(queueIntent));
 
-    // Write result key for traceability
     const resultKey = `supervisor:acquisition_results:publish:${domain}:${account_id}:${intent_id}`;
     await redis.set(resultKey, JSON.stringify({
       intent_id,
@@ -216,7 +185,7 @@ async function _tick() {
   const accounts = await getActiveAccounts();
   const accountIds = new Set(accounts.map(a => a.id));
 
-  // Remove buffer entries for accounts that no longer exist
+  // Prune buffer entries for de-activated accounts
   for (const bufferedAccountId of _buffer.keys()) {
     if (!accountIds.has(bufferedAccountId)) {
       _buffer.delete(bufferedAccountId);
@@ -224,6 +193,7 @@ async function _tick() {
   }
 
   // Evaluate each account's buffered events
+  // NOTE: Serial evaluation — bounded deterministic concurrency is future work.
   for (const [accountId, events] of _buffer.entries()) {
     if (events.length === 0) continue;
 
@@ -237,16 +207,15 @@ async function _tick() {
     }
   }
 
-  // Clear buffer and in-flight set after evaluation
+  // Clear buffer and dedup state after evaluation tick
   _buffer.clear();
-  _clearInFlight();
+  dedup.clearTick();
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 let _running = false;
 let _stopRequested = false;
-let _intervalHandle = null;
 
 function _sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -255,8 +224,8 @@ function _sleep(ms) {
 async function _evaluatorLoop() {
   console.log(`[evaluator] Started — evaluating every ${EVALUATOR_INTERVAL_MS}ms`);
 
-  // Register buffer callback so realtime knows where to send events
-  realtime.registerBufferCallback(bufferEvent);
+  // Subscribe to signal bus — decouples evaluator from realtime topology
+  signalBus.subscribe('db:insert', bufferEvent);
 
   while (!_stopRequested) {
     await _sleep(EVALUATOR_INTERVAL_MS);
@@ -272,10 +241,6 @@ async function _evaluatorLoop() {
   console.log('[evaluator] Stopped');
 }
 
-/**
- * Starts the evaluator loop.
- * Idempotent — no-op if already running.
- */
 async function startEvaluator() {
   if (_running) {
     console.log('[evaluator] Already running');
@@ -290,13 +255,12 @@ async function startEvaluator() {
   );
 }
 
-/**
- * Stops the evaluator loop.
- */
 function stopEvaluator() {
   console.log('[evaluator] Stopping...');
   _stopRequested = true;
   _running = false;
+  // Unsubscribe from signal bus
+  signalBus.unsubscribe('db:insert', bufferEvent);
 }
 
 module.exports = {
