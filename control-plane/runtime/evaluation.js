@@ -1,0 +1,72 @@
+// control-plane/runtime/evaluation.js
+// Evaluation: bounded policy evaluation with dedup and mutation classification.
+//
+// Owns: applying publishing policy to buffered events, dedup checking,
+//        classifying mutations (mark_failed).
+// Does NOT own: intent emission, Redis, worker lifecycle, signal intake.
+//
+// Contract:
+//   evaluator.evaluate(accountId, events) → { intents: [...], mutations: [...] }
+//
+// Pure function — no side effects, no Redis, no DB writes.
+// Caller handles emission and mutation execution.
+
+const publishingPolicy = require('../policies/publishing');
+const dedup = require('../governance/dedup');
+
+/**
+ * Evaluates a batch of events for one account.
+ * Returns intents to emit and mutations to apply (mark_failed).
+ * Caller is responsible for actually emitting and mutating.
+ *
+ * @param {string} accountId
+ * @param {Array<{table: string, record: object}>} events
+ * @returns {{ intents: Array<object>, mutations: Array<object> }}
+ */
+function evaluate(accountId, events) {
+  const intents = [];
+  const mutations = [];
+
+  for (const { table, record } of events) {
+    const outcome = publishingPolicy.evaluateRecord(table, record);
+
+    if (outcome.action === 'skip') {
+      continue;
+    }
+
+    if (outcome.action === 'mark_failed') {
+      mutations.push({
+        table,
+        id: record.id,
+        updates: outcome.updates,
+        reason: outcome.reason,
+      });
+      continue;
+    }
+
+    if (outcome.action === 'emit') {
+      const { intent } = outcome;
+      const resourceId = record.id;
+
+      if (dedup.isInFlight(accountId, intent.action_type, resourceId)) {
+        continue;
+      }
+      dedup.markInFlight(accountId, intent.action_type, resourceId);
+
+      intents.push({
+        account_id: accountId,
+        action_type: intent.action_type,
+        resource_id: resourceId,
+        payload: intent.payload,
+        queue_row_id: intent.queue_row_id || null,
+        scheduled_post_id: intent.scheduled_post_id || null,
+        intent_type: table === 'scheduled_posts' ? 'scheduled_post' : 'post_queue',
+      });
+    }
+  }
+
+  dedup.clearTick();
+  return { intents, mutations };
+}
+
+module.exports = { evaluate };
