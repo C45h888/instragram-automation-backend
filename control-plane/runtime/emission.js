@@ -14,6 +14,19 @@ const mutationSubstrate = require('../mutation-substrate');
 
 const RESULT_TTL_SEC = 3600;
 
+// ── Status ───────────────────────────────────────────────────────────────────
+
+/**
+ * Returns live runtime state. Checks Redis connection health.
+ * @returns {{ redis: 'connected'|'disconnected' }}
+ */
+function status() {
+  const redis = getRedisClient();
+  return {
+    redis: (redis && redis.status === 'ready') ? 'connected' : 'disconnected',
+  };
+}
+
 // ── Routing helpers ──────────────────────────────────────────────────────────
 
 function domainForAction(actionType) {
@@ -36,15 +49,26 @@ function fetchTypeForAction(actionType) {
 /**
  * Emit intents to Redis publish queues. Each intent is LPUSHed to its
  * domain-specific queue key. A result key is set for observability.
- * @param {Array<object>} intents — from evaluator.evaluate()
+ *
+ * @param {Array<object>} intents — from evaluator.evaluate(), must be an array
+ * @returns {Promise<{ok: boolean, error?: string, count: number}>}
+ *   ok=false and error is set when Redis is unavailable.
  */
 async function emit(intents) {
+  if (!Array.isArray(intents)) {
+    return { ok: false, error: `intents must be an array, got ${typeof intents}`, count: 0 };
+  }
+  if (intents.length === 0) {
+    return { ok: true, count: 0 };
+  }
+
   const redis = getRedisClient();
   if (!redis || redis.status !== 'ready') {
     console.warn('[emission] Redis not ready — cannot emit intents');
-    return;
+    return { ok: false, error: 'redis unavailable', count: 0 };
   }
 
+  let emitted = 0;
   for (const intent of intents) {
     const { account_id, action_type, resource_id, payload, queue_row_id, scheduled_post_id, intent_type } = intent;
 
@@ -80,15 +104,28 @@ async function emit(intents) {
     }), 'EX', RESULT_TTL_SEC);
 
     console.log(`[emission] Emitted publish:${domain} intent ${intent_id} for ${intent_type} ${resource_id}`);
+    emitted++;
   }
+
+  return { ok: true, count: emitted };
 }
 
 /**
  * Apply a state mutation via the mutation substrate.
+ *
  * @param {{ table: string, id: string, updates: object, reason: string }} mut
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ *   ok=false when mutation substrate fails or input is invalid.
  */
 async function emitMutation(mut) {
+  if (!mut || typeof mut !== 'object') {
+    return { ok: false, error: `mutation must be an object, got ${typeof mut}` };
+  }
+  if (!mut.table || !mut.id || !mut.updates) {
+    return { ok: false, error: 'mutation requires { table, id, updates }' };
+  }
   await mutationSubstrate.applyMutation(mut.table, mut.id, mut.updates, mut.reason);
+  return { ok: true };
 }
 
-module.exports = { emit, emitMutation };
+module.exports = { status, emit, emitMutation };

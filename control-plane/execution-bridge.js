@@ -18,6 +18,22 @@ const retry = require('../substrates/retry');
 const quota = require('../substrates/quota');
 const telemetry = require('../substrates/telemetry');
 
+// ── Aggregate metrics (rolling window for worker health visibility) ─────────
+
+const METRICS_WINDOW_MS = 60_000; // 60-second rolling window
+const _metrics = { entries: [] }; // [{ ts, domain, status, latencyMs }]
+
+function _recordMetric(domain, status, latencyMs) {
+  _metrics.entries.push({ ts: Date.now(), domain, status, latencyMs });
+  const cutoff = Date.now() - METRICS_WINDOW_MS;
+  while (_metrics.entries.length > 0 && _metrics.entries[0].ts < cutoff) {
+    _metrics.entries.shift();
+  }
+  if (_metrics.entries.length > 1000) {
+    _metrics.entries = _metrics.entries.slice(-1000);
+  }
+}
+
 /**
  * Wraps a single acquisition execution with retry governance, quota tracking,
  * and telemetry recording.
@@ -38,6 +54,7 @@ async function executeWithRetry(accountId, intentId, domain, executeFn, params =
   if (retry.isAccountRateLimited(accountId)) {
     console.log(`[execution-bridge] ${domain}/${accountId} rate-limited, skipping intent ${intentId}`);
     await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, 0, 'rate_limited');
+    _recordMetric(domain, 'failed', 0);
     return { status: 'failed', count: 0, error: 'rate_limited', instagram_id: null };
   }
 
@@ -66,18 +83,21 @@ async function executeWithRetry(accountId, intentId, domain, executeFn, params =
     if (skip) {
       // Auth failure — do not retry
       await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, latencyMs, 'auth_failure');
+      _recordMetric(domain, 'failed', latencyMs);
       return { status: 'failed', count: 0, error: 'auth_failure', instagram_id: null };
     }
 
     if (brk) {
       // Rate limit — circuit breaker engaged, do not retry
       await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, latencyMs, 'rate_limited');
+      _recordMetric(domain, 'failed', latencyMs);
       return { status: 'failed', count: 0, error: 'rate_limited', instagram_id: null };
     }
 
     if (result.success) {
       // Success
       await telemetry.recordAcquisition(domain, accountId, intentId, 'completed', result.count, latencyMs, null);
+      _recordMetric(domain, 'completed', latencyMs);
       return { status: 'completed', count: result.count, error: null, instagram_id: result.instagram_id || null };
     }
 
@@ -93,18 +113,49 @@ async function executeWithRetry(accountId, intentId, domain, executeFn, params =
         // Exhausted all attempts
         const totalLatencyMs = Date.now() - startTime;
         await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, totalLatencyMs, 'max_retries_exceeded');
+        _recordMetric(domain, 'failed', totalLatencyMs);
         return { status: 'failed', count: 0, error: 'max_retries_exceeded', instagram_id: null };
       }
     } else {
       // Permanent failure (non-retryable, non-skip, non-break, not success)
       await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, latencyMs, result.error || 'unknown');
+      _recordMetric(domain, 'failed', latencyMs);
       return { status: 'failed', count: 0, error: result.error || 'unknown', instagram_id: null };
     }
   }
 
   // Loop exhausted without success (fallback return — should not reach here normally)
   await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, 0, 'max_retries_exceeded');
+  _recordMetric(domain, 'failed', 0);
   return { status: 'failed', count: 0, error: 'max_retries_exceeded', instagram_id: null };
 }
 
-module.exports = { executeWithRetry };
+/**
+ * Returns aggregate execution metrics for the rolling window.
+ * Used by the orchestrator's cadence loop to report worker health into governance.
+ * @returns {{ total: number, completed: number, failed: number, failureRate: number, isHealthy: boolean, windowMs: number }}
+ */
+function getMetrics() {
+  const cutoff = Date.now() - METRICS_WINDOW_MS;
+  const recent = _metrics.entries.filter(e => e.ts >= cutoff);
+  const completed = recent.filter(e => e.status === 'completed').length;
+  const failed = recent.filter(e => e.status === 'failed').length;
+  const total = recent.length;
+  return {
+    windowMs: METRICS_WINDOW_MS,
+    total,
+    completed,
+    failed,
+    failureRate: total > 0 ? failed / total : 0,
+    isHealthy: total === 0 || failed / total < 0.5,
+  };
+}
+
+/**
+ * Reset all aggregate metrics. Useful between tests or after recovery.
+ */
+function resetMetrics() {
+  _metrics.entries = [];
+}
+
+module.exports = { executeWithRetry, getMetrics, resetMetrics };

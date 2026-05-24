@@ -45,17 +45,42 @@ const _workerPools = new Map();
 let _onRemove = null;
 
 /**
+ * Returns live runtime state. Deterministic, no side effects.
+ * @returns {{ accounts: number, totalWorkers: number }}
+ */
+function status() {
+  let totalWorkers = 0;
+  for (const entry of _workerPools.values()) {
+    totalWorkers += Object.keys(entry).length;
+  }
+  return {
+    accounts: _workerPools.size,
+    totalWorkers,
+  };
+}
+
+/**
  * Register a callback invoked when an account is removed during refresh.
- * @param {Function} fn — (accountId) => void
+ * @param {Function} fn — (accountId: string) => void
+ * @throws {Error} if fn is not a function
  */
 function onRemove(fn) {
+  if (typeof fn !== 'function') {
+    throw new Error(`[worker-pool] onRemove handler must be a function, got ${typeof fn}`);
+  }
   _onRemove = fn;
 }
 
 /**
  * Spawn all 6 domain workers for one account.
+ * Idempotent — calling for an already-spawned account is a no-op.
+ * @param {string} accountId
+ * @throws {Error} if accountId is not a non-empty string
  */
 function spawn(accountId) {
+  if (typeof accountId !== 'string' || !accountId) {
+    throw new Error(`[worker-pool] accountId must be a non-empty string, got ${typeof accountId}`);
+  }
   if (_workerPools.has(accountId)) return;
 
   const entry = {};
@@ -70,6 +95,8 @@ function spawn(accountId) {
 
 /**
  * Abort all domain workers for one account.
+ * Idempotent — calling for an unknown account is a no-op.
+ * @param {string} accountId
  */
 function stop(accountId) {
   const entry = _workerPools.get(accountId);
@@ -85,21 +112,28 @@ function stop(accountId) {
 /**
  * Discover active accounts, spawn workers for new ones, stop workers for
  * removed ones. Notifies the onRemove callback for cleanup in other modules.
+ *
+ * @returns {Promise<{ok: boolean, error?: string, spawned: number, stopped: number}>}
+ *   ok=false when Redis is unavailable (refresh skipped). spawned/stopped are 0.
  */
 async function refresh() {
   const redis = getRedisClient();
   if (!redis || redis.status !== 'ready') {
     console.warn('[worker-pool] Redis not ready — skipping refresh');
-    return;
+    return { ok: false, error: 'redis unavailable', spawned: 0, stopped: 0 };
   }
 
   const accounts = await getActiveAccounts();
   const currentIds = new Set(accounts.map(a => a.id));
 
+  let spawned = 0;
+  let stopped = 0;
+
   // Spawn workers for new accounts
   for (const accountId of currentIds) {
     if (!_workerPools.has(accountId)) {
       spawn(accountId);
+      spawned++;
     }
   }
 
@@ -107,9 +141,12 @@ async function refresh() {
   for (const accountId of _workerPools.keys()) {
     if (!currentIds.has(accountId)) {
       stop(accountId);
+      stopped++;
       if (_onRemove) _onRemove(accountId);
     }
   }
+
+  return { ok: true, spawned, stopped };
 }
 
 /**
@@ -129,4 +166,4 @@ function size() {
   return [..._workerPools.values()].reduce((sum, e) => sum + Object.keys(e).length, 0);
 }
 
-module.exports = { spawn, stop, refresh, stopAll, size, onRemove };
+module.exports = { status, spawn, stop, refresh, stopAll, size, onRemove };

@@ -16,14 +16,22 @@ const dedup = require('../governance/dedup');
 
 /**
  * Evaluates a batch of events for one account.
- * Returns intents to emit and mutations to apply (mark_failed).
- * Caller is responsible for actually emitting and mutating.
+ * Pure function — no side effects, no Redis, no DB writes.
+ * Always returns a valid shape even for empty input.
  *
- * @param {string} accountId
- * @param {Array<{table: string, record: object}>} events
+ * @param {string} accountId — non-empty string
+ * @param {Array<{table: string, record: object}>} events — array of DB events
  * @returns {{ intents: Array<object>, mutations: Array<object> }}
+ * @throws {Error} if accountId is not a string or events is not an array
  */
 function evaluate(accountId, events) {
+  if (typeof accountId !== 'string' || !accountId) {
+    throw new Error(`[evaluation] accountId must be a non-empty string, got ${typeof accountId}`);
+  }
+  if (!Array.isArray(events)) {
+    throw new Error(`[evaluation] events must be an array, got ${typeof events}`);
+  }
+
   const intents = [];
   const mutations = [];
 

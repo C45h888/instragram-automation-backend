@@ -19,7 +19,7 @@ const { runStartupHealthChecks } = require('./services/sync');
 
 // Redis-driven AcquisitionWorker — primary data acquisition pipeline
 // (includes db-worker + publish-worker for publishing, controlled by lifecycle)
-const { startAllWorkers, stopAllWorkers } = require('./control-plane/lifecycle');
+const { startAllWorkers, stopAllWorkers } = require('./control-plane/orchastrator');
 const { closeRedis } = require('./config/redis');
 
 const app = express();

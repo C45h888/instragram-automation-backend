@@ -23,18 +23,39 @@ const _debounceTimers = new Map();
 let _onFlush = null;
 
 /**
+ * Returns live runtime state. Deterministic, no side effects.
+ * @returns {{ accounts: number, pendingTimers: number, debounceMs: number }}
+ */
+function status() {
+  return {
+    accounts: _buffer.size,
+    pendingTimers: _debounceTimers.size,
+    debounceMs: _debounceMs,
+  };
+}
+
+/**
  * Configure the debounce window in milliseconds.
+ * @param {number} ms — must be > 0
+ * @throws {Error} if ms is not a positive number
  */
 function setDebounceMs(ms) {
+  if (typeof ms !== 'number' || ms <= 0) {
+    throw new Error(`[buffer] debounceMs must be > 0, got ${ms}`);
+  }
   _debounceMs = ms;
 }
 
 /**
  * Register the flush handler. Called when a debounce timer elapses with
  * the accumulated events for an account.
- * @param {Function} fn — async (accountId, events) => void
+ * @param {Function} fn — async (accountId: string, events: Array) => void
+ * @throws {Error} if fn is not a function
  */
 function onFlush(fn) {
+  if (typeof fn !== 'function') {
+    throw new Error(`[buffer] onFlush handler must be a function, got ${typeof fn}`);
+  }
   _onFlush = fn;
 }
 
@@ -42,10 +63,16 @@ function onFlush(fn) {
  * Ingest a signal event. Accumulates into account buffer and resets
  * the debounce timer. When the timer elapses, the flush handler is called.
  * @param {{ accountId: string, table: string, record: object }} event
+ * @throws {Error} if event is missing required fields
  */
 function ingest(event) {
+  if (!event || typeof event !== 'object') {
+    throw new Error(`[buffer] ingest requires an event object, got ${typeof event}`);
+  }
   const { accountId, table, record } = event;
-  if (!accountId || !table || !record) return;
+  if (!accountId || !table || !record) {
+    throw new Error(`[buffer] ingest requires { accountId, table, record }, missing: ${!accountId ? 'accountId' : !table ? 'table' : 'record'}`);
+  }
 
   if (!_buffer.has(accountId)) {
     _buffer.set(accountId, []);
@@ -72,6 +99,8 @@ function ingest(event) {
 
 /**
  * Destroy buffer and debounce timer for a specific account.
+ * Idempotent — safe to call on unknown account (no-op).
+ * @param {string} accountId
  */
 function destroy(accountId) {
   _buffer.delete(accountId);
@@ -84,6 +113,7 @@ function destroy(accountId) {
 
 /**
  * Destroy all buffers and cancel all pending debounce timers.
+ * Idempotent — safe to call on empty buffer (no-op).
  */
 function destroyAll() {
   for (const timer of _debounceTimers.values()) {
@@ -93,4 +123,4 @@ function destroyAll() {
   _buffer.clear();
 }
 
-module.exports = { ingest, setDebounceMs, onFlush, destroy, destroyAll };
+module.exports = { status, ingest, setDebounceMs, onFlush, destroy, destroyAll };

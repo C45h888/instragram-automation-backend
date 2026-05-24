@@ -6,19 +6,19 @@
 //
 // Uses a simple in-memory Set for in-flight deduplication.
 // Key format: `${accountId}:${actionType}:${resourceId}`
-// Cleared after each evaluator tick.
+// Cleared after each evaluation cycle (per debounced event batch).
 
 const _inFlight = new Set();
 
 /**
- * Marks a resource as in-flight for the current tick.
+ * Marks a resource as in-flight for the current evaluation cycle.
  */
 function markInFlight(accountId, actionType, resourceId) {
   _inFlight.add(`${accountId}:${actionType}:${resourceId}`);
 }
 
 /**
- * Checks if a resource is already in-flight this tick.
+ * Checks if a resource is already in-flight this evaluation cycle.
  * @returns {boolean}
  */
 function isInFlight(accountId, actionType, resourceId) {
@@ -26,7 +26,8 @@ function isInFlight(accountId, actionType, resourceId) {
 }
 
 /**
- * Clears all in-flight entries after an evaluation tick.
+ * Clears all in-flight entries after an evaluation cycle.
+ * Called by evaluator after each batch.
  */
 function clearTick() {
   _inFlight.clear();

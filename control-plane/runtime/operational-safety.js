@@ -17,17 +17,36 @@ const { proactiveHeartbeatFailover } = require('../../services/sync');
 const HEARTBEAT_STALE_MINUTES = parseInt(process.env.HEARTBEAT_STALE_MINUTES || '30', 10);
 
 /**
+ * Returns live runtime state. Checks Supabase connection health.
+ * @returns {{ supabase: 'connected'|'disconnected' }}
+ */
+function status() {
+  const supabase = getSupabaseAdmin();
+  return {
+    supabase: supabase ? 'connected' : 'disconnected',
+  };
+}
+
+/**
  * Run operational safety checks. Currently only heartbeat failover.
+ * Errors are caught and logged — this function never throws.
+ *
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ *   ok=false when Supabase is unavailable or failover throws.
  */
 async function runChecks() {
   const supabase = getSupabaseAdmin();
-  if (!supabase) return;
+  if (!supabase) {
+    return { ok: false, error: 'supabase unavailable' };
+  }
 
   try {
     await proactiveHeartbeatFailover(supabase, HEARTBEAT_STALE_MINUTES);
+    return { ok: true };
   } catch (err) {
     console.error('[safety] Heartbeat failover error:', err.message);
+    return { ok: false, error: err.message };
   }
 }
 
-module.exports = { runChecks };
+module.exports = { status, runChecks };
