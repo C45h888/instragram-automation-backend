@@ -136,7 +136,7 @@ const TRANSITION_MAP = {
   // ── Boot ───────────────────────────────────────────────────────────────────
   BOOT_COMPLETE: {
     target: 'HEALTHY.IDLE',
-    buildActions: () => [],
+    buildActions: () => [{ type: 'START_INTENT_DISCOVERY' }],
   },
 
   // ── Operational flow: IDLE → BUFFERING → EVALUATING → EMITTING → IDLE ─────
@@ -166,37 +166,26 @@ const TRANSITION_MAP = {
     }],
   },
 
-  EVALUATION_COMPLETE: {
-    target: 'HEALTHY.EMITTING',
+  EMISSION_OBSERVATION: {
+    target: (event) => {
+      if (event.status === 'error') return 'DEGRADED.PARTIAL_FAILURE';
+      return 'HEALTHY.IDLE';
+    },
     guard: (event, ctx) => {
-      if (ctx.state !== 'HEALTHY.EVALUATING') {
-        return { allowed: false, reason: `Cannot emit from ${ctx.state}` };
+      if (!['HEALTHY.EVALUATING', 'HEALTHY.EMITTING'].includes(ctx.state)) {
+        return { allowed: false };
       }
       return { allowed: true };
     },
-    buildActions: () => [],
-  },
-
-  EVALUATION_EMPTY: {
-    target: 'HEALTHY.IDLE',
-    guard: (event, ctx) => {
-      if (ctx.state !== 'HEALTHY.EVALUATING') {
-        return { allowed: false, reason: `Cannot go idle from ${ctx.state}` };
+    buildActions: (event) => {
+      if (event.status === 'error') {
+        return [
+          { type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: event.metadata?.reason },
+          { type: 'STOP_INTENT_DISCOVERY' },
+        ];
       }
-      return { allowed: true };
+      return [{ type: 'START_INTENT_DISCOVERY' }];
     },
-    buildActions: () => [],
-  },
-
-  EMISSION_COMPLETE: {
-    target: 'HEALTHY.IDLE',
-    guard: (event, ctx) => {
-      if (ctx.state !== 'HEALTHY.EMITTING') {
-        return { allowed: false, reason: `Cannot complete emission from ${ctx.state}` };
-      }
-      return { allowed: true };
-    },
-    buildActions: () => [],
   },
 
   // ── HSM-governed acquisition: IDLE → EVALUATING → EMITTING → IDLE ─────────
@@ -225,7 +214,9 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: () => [],
+    buildActions: (event) => [{
+      type: 'STOP_INTENT_DISCOVERY',
+    }],
   },
 
   ACQUISITION_COMPLETE: {
@@ -236,13 +227,17 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => (event.result ? [{
-      type: 'WRITE_ACQUISITION_RESULT',
-      accountId: event.accountId,
-      domain: event.domain,
-      intentId: event.intentId,
-      result: event.result,
-    }] : []),
+    buildActions: (event) => {
+      const actions = event.result ? [{
+        type: 'WRITE_ACQUISITION_RESULT',
+        accountId: event.accountId,
+        domain: event.domain,
+        intentId: event.intentId,
+        result: event.result,
+      }] : [];
+      actions.push({ type: 'START_INTENT_DISCOVERY' });
+      return actions;
+    },
   },
 
   // ── Degradation ────────────────────────────────────────────────────────────
@@ -285,20 +280,7 @@ const TRANSITION_MAP = {
     buildActions: () => [],
   },
 
-  EMISSION_FAILED: {
-    target: 'DEGRADED.PARTIAL_FAILURE',
-    guard: (event, ctx) => {
-      if (ctx.state !== 'HEALTHY.EMITTING' && ctx.state !== 'HEALTHY.EVALUATING') {
-        return { allowed: false, reason: `Emission failure only from EMITTING/EVALUATING, got ${ctx.state}` };
-      }
-      return { allowed: true };
-    },
-    buildActions: (event) => [{
-      type: 'LOG_DEGRADED',
-      substate: 'PARTIAL_FAILURE',
-      reason: event.reason || 'Emission to Redis failed',
-    }],
-  },
+
 
   // ── Recovery ───────────────────────────────────────────────────────────────
   RECOVERY_INITIATED: {
@@ -323,7 +305,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: () => [],
+    buildActions: () => [{ type: 'START_INTENT_DISCOVERY' }],
   },
 
   // ── Halt ───────────────────────────────────────────────────────────────────
@@ -364,6 +346,81 @@ const TRANSITION_MAP = {
       substate: 'SIGNAL_DESYNC',
       reason: event.reason || 'Signal intake desynchronized',
     }],
+  },
+
+  // ── Metrics governance: HSM evaluates thresholds, not orchestrator ─────────
+  // Raw worker telemetry flows in from the cadence loop via WORKER_METRICS_REPORTED.
+  // The governance kernel applies policy — no pre-classification in the substrate.
+  //
+  // Policy: DEGRADED.RETRY_PRESSURE when total >= 5 samples AND failureRate >= 50%
+  // Recovery: general guard PRESSURE_CLEARED handles any DEGRADED substate → HEALTHY.IDLE
+  //          when subsequent healthy metrics are reported.
+  WORKER_METRICS_REPORTED: {
+    target: (event) => {
+      if (event.total >= 5 && event.failureRate >= 0.5) return 'DEGRADED.RETRY_PRESSURE';
+      return null; // no state change — lineage recorded, governance observes
+    },
+    guard: (event, ctx) => {
+      if (!isDescendantOf(ctx.state, 'HEALTHY') && !isDescendantOf(ctx.state, 'DEGRADED')) {
+        return { allowed: false, reason: `Metrics only from HEALTHY or DEGRADED, got ${ctx.state}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      if (event.total >= 5 && event.failureRate >= 0.5) {
+        return [{
+          type: 'LOG_DEGRADED',
+          substate: 'RETRY_PRESSURE',
+          reason: `Worker failure rate ${Math.round(event.failureRate * 100)}% (${event.failed}/${event.total} in ${((event.windowMs || 60000) / 1000).toFixed(0)}s)`,
+        }];
+      }
+      return [];
+    },
+  },
+
+  // ── Cadence: maintenance loop tick — orchestration cadence, not lifecycle ──
+  // The 90s cadence sends CADENCE_TICK. The kernel sequences maintenance actions.
+  // No state change — lineage recorded, actions emitted for orchestrator to execute.
+  CADENCE_TICK: {
+    target: (event, ctx) => ctx.state, // no lifecycle transition
+    guard: (event, ctx) => {
+      if (!isDescendantOf(ctx.state, 'HEALTHY') &&
+          !isDescendantOf(ctx.state, 'DEGRADED') &&
+          ctx.state !== 'RECOVERY.RECONCILING') {
+        return { allowed: false };
+      }
+      return { allowed: true };
+    },
+    buildActions: () => [
+      { type: 'SCAN_DATABASE' },
+      { type: 'REFRESH_LIFECYCLE' },
+      { type: 'CHECK_SAFETY' },
+      { type: 'REPORT_METRICS' },
+    ],
+  },
+
+  // ── Maintenance action acknowledgements — record lineage, no state change ──
+  DATABASE_SCANNED: {
+    target: (event, ctx) => ctx.state,
+    guard: () => ({ allowed: true }),
+    buildActions: () => [],
+  },
+
+  LIFECYCLE_REFRESHED: {
+    target: (event, ctx) => ctx.state,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      if (event.accountIds && event.accountIds.length > 0) {
+        return [{ type: 'UPDATE_ACCOUNTS', accountIds: event.accountIds }];
+      }
+      return [];
+    },
+  },
+
+  SAFETY_CHECK_COMPLETE: {
+    target: (event, ctx) => ctx.state,
+    guard: () => ({ allowed: true }),
+    buildActions: () => [],
   },
 };
 
@@ -456,14 +513,7 @@ const _lineage = [];              // append-only
 let _actionSubscriber = null;
 let _loopInterval = null;         // watchdog setInterval handle
 
-// Redis injection — set by orchestrator after governance startup.
-// Used by tick() to discover acquisition intents from domain queues.
-let _redis = null;
-let _activeAccountIds = [];       // account UUIDs for queue polling
-let _lastPolledDomainIdx = 0;     // round-robin index across domains per tick
-
-const ACQUISITION_DOMAINS = ['comments','messages','ugc','insights','media'];
-const ACQUISITION_PUBLISH_DOMAINS = ['media','ugc','messaging'];
+let _accountIds = [];             // active account UUIDs, updated via UPDATE_ACCOUNTS action
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 6. Lineage recorder
@@ -504,6 +554,11 @@ function _recordLineage(from, to, trigger, guardResults, actions, meta) {
 function _emitActions(actions) {
   if (!_actionSubscriber || actions.length === 0) return;
   for (const action of actions) {
+    // Kernel-internal actions — mutate state directly, no orchestrator involvement
+    if (action.type === 'UPDATE_ACCOUNTS') {
+      _accountIds = Array.isArray(action.accountIds) ? action.accountIds : [];
+      continue;
+    }
     try {
       _actionSubscriber(action);
     } catch (err) {
@@ -518,22 +573,16 @@ function _emitActions(actions) {
 
 /**
  * Watchdog tick — checks if the current state has exceeded its TTL and
- * triggers automatic recovery transitions. Also discovers acquisition
- * intents from Redis domain queues when the runtime is idle.
+ * triggers automatic recovery transitions.
  *
- * Called by the internal loop interval. This is how the governance kernel
- * self-corrects when external events stop arriving AND how it discovers
- * new acquisition intents from the agent-reachable Redis queues.
+ * Called by the internal loop interval. Self-corrects when external events
+ * stop arriving. Intent discovery is handled by the sync substrate —
+ * not by the kernel directly.
  *
  * Dispatches events through the normal dispatch() path, so all transitions
  * are guarded, lineage is recorded, and actions are emitted.
  */
 function tick() {
-  // ── Intent discovery: poll Redis queues when idle ──────────────────────
-  if (_currentState === 'HEALTHY.IDLE' && _redis && _activeAccountIds.length > 0) {
-    _discoverIntents();
-  }
-
   // ── Staleness detection ────────────────────────────────────────────────
   const elapsed = Date.now() - _stateEnteredAt;
   const ttl = STATE_TTL_MS[_currentState];
@@ -550,7 +599,7 @@ function tick() {
       break;
     case 'HEALTHY.EVALUATING':
     case 'HEALTHY.EMITTING':
-      dispatch({ type: 'EMISSION_FAILED', reason });
+      dispatch({ type: 'EMISSION_OBSERVATION', status: 'error', accountId: null, metadata: { reason, intentCount: 0, mutationsApplied: 0, latencyMs: 0 } });
       break;
     case 'DEGRADED.BACKPRESSURE':
     case 'DEGRADED.RETRY_PRESSURE':
@@ -565,50 +614,6 @@ function tick() {
       break;
     // HEALTHY.IDLE and HALTED have Infinity TTL — never auto-transition
   }
-}
-
-// ── Intent discovery: round-robin poll across domain queues per account ─────
-
-/**
- * Polls Redis domain queues for acquisition intents.
- * Round-robin: one domain per account per tick to avoid queue starvation.
- * Each tick discovers at most one intent — deterministic pacing.
- *
- * Called by tick() only when _currentState === 'HEALTHY.IDLE'.
- */
-function _discoverIntents() {
-  const allDomains = [...ACQUISITION_DOMAINS, ...ACQUISITION_PUBLISH_DOMAINS.map(d => `publish:${d}`)];
-  const domain = allDomains[_lastPolledDomainIdx % allDomains.length];
-  _lastPolledDomainIdx = (_lastPolledDomainIdx + 1) % allDomains.length;
-
-  // Pick one account per tick (rotates across accounts across ticks)
-  const accountIdx = Math.floor(_lastPolledDomainIdx / allDomains.length) % _activeAccountIds.length;
-  const accountId = _activeAccountIds[accountIdx];
-
-  if (!accountId) return;
-
-  const queueKey = `supervisor:acquisitions:${domain}:${accountId}`;
-
-  // Non-blocking poll — if queue is empty, skip this tick
-  _redis.lpop(queueKey).then(raw => {
-    if (!raw) return;
-
-    let intent;
-    try { intent = JSON.parse(raw); } catch { return; }
-
-    if (!intent || !intent.intent_id) return;
-
-    dispatch({
-      type: 'ACQUISITION_INTENT_RECEIVED',
-      accountId,
-      domain,
-      intentId: intent.intent_id,
-      params: intent.payload || intent.parameters || {},
-    });
-  }).catch(err => {
-    // Redis error during poll — log, don't crash the watchdog
-    console.error(`[governance-kernel] Redis poll error (${queueKey}):`, err.message);
-  });
 }
 
 /**
@@ -643,35 +648,6 @@ function stopLoop() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 7c. Redis + account injection — required for intent discovery in tick()
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Inject Redis client for queue polling in tick().
- * Must be called before startLoop() for intent discovery to work.
- * @param {object} redis - ioredis client instance
- * @throws {Error} if redis is not an object
- */
-function setRedis(redis) {
-  if (!redis || typeof redis !== 'object') {
-    throw new Error('[governance-kernel] setRedis requires a Redis client object');
-  }
-  _redis = redis;
-}
-
-/**
- * Update the active account IDs for round-robin queue polling.
- * Called by lifecycle.refresh() when accounts change.
- * @param {Array<string>} accountIds
- */
-function setActiveAccounts(accountIds) {
-  if (!Array.isArray(accountIds)) {
-    throw new Error('[governance-kernel] setActiveAccounts requires an array');
-  }
-  _activeAccountIds = accountIds;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // 8. Public API
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -697,8 +673,28 @@ function dispatch(event) {
     return { allowed: false, reason: `unknown event type: ${event.type}` };
   }
 
-  const target = txn.target;
   const from = _currentState;
+
+  // Resolve target — may be a function (event-driven target) or a static string
+  const rawTarget = txn.target;
+  const target = typeof rawTarget === 'function' ? rawTarget(event) : rawTarget;
+
+  // null target means no state change — record lineage only, skip transition
+  if (target === null) {
+    _recordLineage(from, from, event.type, [{ name: `transition:${event.type}`, passed: true }], [], {
+      accountId: event.accountId || null,
+      eventCount: event.eventCount || null,
+      intentCount: event.intentCount || null,
+    });
+    return {
+      allowed: true,
+      from,
+      to: from,
+      lineageId: null,
+      actionsEmitted: 0,
+      reason: 'no-transition: event recorded',
+    };
+  }
 
   // 1. Run per-transition guard (if defined)
   let perGuardResults = [];
@@ -799,4 +795,13 @@ function getState() {
   return _currentState;
 }
 
-module.exports = { dispatch, onAction, tick, startLoop, stopLoop, setRedis, setActiveAccounts, status, getLineage, getState };
+/**
+ * Returns active account IDs (set via UPDATE_ACCOUNTS action from LIFECYCLE_REFRESHED).
+ * Used by sync substrate to know which accounts to poll.
+ * @returns {Array<string>}
+ */
+function getAccountIds() {
+  return _accountIds;
+}
+
+module.exports = { dispatch, onAction, tick, startLoop, stopLoop, getAccountIds, status, getLineage, getState };

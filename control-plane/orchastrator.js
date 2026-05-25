@@ -8,10 +8,10 @@
 //
 // Architecture (invariant: signals ↑, authority ↓):
 //
-//   ┌─ governance loop (10s tick) ───────────────────────────────────────┐
-//   │  watchdog: detects stale states → auto-transitions                 │
-//   │  intent discovery: polls Redis queues → ACQUISITION_INTENT_RECEIVED│
-//   └────────────────────────────────────────────────────────────────────┘
+//   Cadence (90s) ──► governance.dispatch(CADENCE_TICK)
+//                          │
+//                          └── Kernel evaluates → emits [SCAN_DATABASE, REFRESH_LIFECYCLE, CHECK_SAFETY, REPORT_METRICS]
+//                               └── Orchestrator executes actions, dispatches results back
 //
 //   signalIntake ──► buffer.ingest()  +  governance.dispatch(BUFFER_EVENT_INGESTED)
 //   buffer.onFlush ──► governance.dispatch(BUFFER_FLUSH_READY)
@@ -21,23 +21,11 @@
 //                               ├── evaluator.evaluate()
 //                               ├── emitter.emitMutation()
 //                               └── emitter.emit()
-//                                    └── governance.dispatch(EMISSION_COMPLETE)
+//                                    └── governance.dispatch(EMISSION_OBSERVATION)
 //
-//   governance.tick() discovers Redis intents → HSM → onAction(EXECUTE_ACQUISITION)
-//     └── executeGovernedAcquisition()
-//          ├── executionBridge.executeWithRetry()
-//          │    ├── persistence.resolveAccountCredentials()
-//          │    ├── igFetcher[domain].fetch()     ← pure transport
-//          │    └── persistence[domain].persist()  ← pure persistence
-//          └── governance.dispatch(ACQUISITION_COMPLETE)
+//   Sync substrate: START_INTENT_DISCOVERY → poll Redis → ACQUISITION_INTENT_RECEIVED → Kernel → EXECUTE_ACQUISITION
 //
-//   cadence.every(90s)
-//     ├─► dbScanner.runScan()   ──► LPUSH intents to Redis
-//     ├─► lifecycle.refresh()   ──► buffer.destroy(removed)
-//     ├─► safety.runChecks()
-//     └─► executionBridge.getMetrics()
-//           ├── failureRate > 50%  → governance.dispatch(RETRY_PRESSURE_DETECTED)
-//           └── healthy + degraded → governance.dispatch(PRESSURE_CLEARED)
+// Metrics substrate rehydrates from Redis on boot for crash-survival.
 //
 // This module is the SINGLE place where modules are wired together.
 // No module imports another module directly — all wiring lives here.
@@ -45,6 +33,8 @@
 const { getRedisClient } = require('../config/redis');
 const governance = require('./governance/governance-kernel');
 const executionBridge = require('./execution-bridge');
+const metricsSubstrate = require('../substrates/metrics-substrate');
+const syncSubstrate = require('../substrates/sync-substrate');
 const dbWorker = require('./execution/db-worker');
 const signalIntake = require('./runtime/signal-intake');
 const buffer = require('./runtime/buffer');
@@ -317,6 +307,7 @@ async function writeAcquisitionResult(accountId, domain, intentId, result) {
  * After execution, reports completion back to governance.
  */
 async function executeEvaluationPipeline(accountId, events) {
+  const startTime = Date.now();
   try {
     const result = evaluator.evaluate(accountId, events);
 
@@ -324,19 +315,34 @@ async function executeEvaluationPipeline(accountId, events) {
       await emitter.emitMutation(mut);
     }
 
-    if (result.intents.length > 0) {
-      const emitResult = await emitter.emit(result.intents);
-      if (emitResult.ok) {
-        governance.dispatch({ type: 'EMISSION_COMPLETE', accountId, intentCount: result.intents.length });
-      } else {
-        governance.dispatch({ type: 'EMISSION_FAILED', accountId, reason: emitResult.error });
-      }
-    } else {
-      governance.dispatch({ type: 'EVALUATION_EMPTY', accountId, intentCount: 0 });
-    }
+    const emitResult = result.intents.length > 0
+      ? await emitter.emit(result.intents)
+      : { ok: true, error: null };
+
+    governance.dispatch({
+      type: 'EMISSION_OBSERVATION',
+      status: result.intents.length === 0 ? 'empty' : (emitResult.ok ? 'ok' : 'error'),
+      accountId,
+      metadata: {
+        intentCount: result.intents.length,
+        mutationsApplied: result.mutations.length,
+        reason: emitResult.error || null,
+        latencyMs: Date.now() - startTime,
+      },
+    });
   } catch (err) {
     console.error(`[orchestrator] Evaluation pipeline error for ${accountId}:`, err.message);
-    governance.dispatch({ type: 'EMISSION_FAILED', accountId, reason: err.message });
+    governance.dispatch({
+      type: 'EMISSION_OBSERVATION',
+      status: 'error',
+      accountId,
+      metadata: {
+        intentCount: 0,
+        mutationsApplied: 0,
+        reason: err.message,
+        latencyMs: Date.now() - startTime,
+      },
+    });
   }
 }
 
@@ -351,10 +357,10 @@ function _wire() {
 
   // Governance action subscriber — routes governance intents to runtime modules.
   governance.onAction((action) => {
+    // Existing lifecycle actions
     if (action.type === 'EVALUATE') {
       executeEvaluationPipeline(action.accountId, action.events);
     }
-    // HSM-governed acquisition (replaces all BRPOP worker loops)
     if (action.type === 'EXECUTE_ACQUISITION') {
       executeGovernedAcquisition(action.accountId, action.domain, action.intentId, action.params);
     }
@@ -369,6 +375,55 @@ function _wire() {
     }
     if (action.type === 'LOG_HALT') {
       console.error(`[orchestrator] Runtime HALTED: ${action.reason}`);
+    }
+
+    // Maintenance actions (from CADENCE_TICK kernel dispatch)
+    if (action.type === 'SCAN_DATABASE') {
+      dbScanner.runScan().then(r => {
+        if (r.totalEmitted > 0) {
+          console.log(`[orchestrator] DB scanner emitted ${r.totalEmitted} intents`);
+        }
+        governance.dispatch({ type: 'DATABASE_SCANNED', intentCount: r.totalEmitted });
+      }).catch(err => {
+        console.error('[orchestrator] DB scanner error:', err.message);
+        governance.dispatch({ type: 'DATABASE_SCANNED', intentCount: 0 });
+      });
+    }
+    if (action.type === 'REFRESH_LIFECYCLE') {
+      lifecycle.refresh().then(() => {
+        return persistence.getActiveAccounts();
+      }).then(accounts => {
+        governance.dispatch({ type: 'LIFECYCLE_REFRESHED', accountIds: accounts.map(a => a.id) });
+      }).catch(err => {
+        console.error('[orchestrator] Lifecycle refresh error:', err.message);
+        governance.dispatch({ type: 'LIFECYCLE_REFRESHED', accountIds: [] });
+      });
+    }
+    if (action.type === 'CHECK_SAFETY') {
+      safety.runChecks().then(() => {
+        governance.dispatch({ type: 'SAFETY_CHECK_COMPLETE' });
+      }).catch(err => {
+        console.error('[orchestrator] Safety check error:', err.message);
+        governance.dispatch({ type: 'SAFETY_CHECK_COMPLETE' });
+      });
+    }
+    if (action.type === 'REPORT_METRICS') {
+      const signals = metricsSubstrate.getHealthSignals();
+      governance.dispatch({
+        type: 'WORKER_METRICS_REPORTED',
+        total: signals.total,
+        failed: signals.failed,
+        failureRate: signals.failureRate,
+        windowMs: signals.windowMs,
+      });
+    }
+
+    // Sync substrate control
+    if (action.type === 'START_INTENT_DISCOVERY') {
+      syncSubstrate.start(getRedisClient(), governance);
+    }
+    if (action.type === 'STOP_INTENT_DISCOVERY') {
+      syncSubstrate.stop();
     }
   });
 
@@ -387,54 +442,36 @@ async function startAllWorkers() {
   console.log('[orchestrator] Starting governance kernel...');
   _wire();
 
-  // 1. Inject Redis into governance kernel for intent discovery in tick()
-  const redis = getRedisClient();
-  if (redis && redis.status === 'ready') {
-    governance.setRedis(redis);
-  }
+  // Metrics substrate: rehydrate from Redis for crash-survival
+  await metricsSubstrate.init();
 
-  // 2. Signal intake: subscribe to realtime → signal bus.
+  // 1. Signal intake: subscribe to realtime → signal bus.
   await signalIntake.start(null, (event) => {
     buffer.ingest(event);
     governance.dispatch({ type: 'BUFFER_EVENT_INGESTED', accountId: event.accountId });
   });
 
-  // 3. Discover accounts and register with governance for queue polling
+  // 2. Initial account discovery (orchestrator fetches, dispatches to kernel)
   await lifecycle.refresh();
   const accounts = await persistence.getActiveAccounts();
-  governance.setActiveAccounts(accounts.map(a => a.id));
+  governance.dispatch({ type: 'LIFECYCLE_REFRESHED', accountIds: accounts.map(a => a.id) });
 
-  // 4. Boot complete — governance transitions BOOTING → HEALTHY.IDLE
+  // 3. Boot complete — governance transitions BOOTING → HEALTHY.IDLE
   governance.dispatch({ type: 'BOOT_COMPLETE' });
 
-  // 5. Start governance watchdog loop (10s tick — stale state detection + intent discovery)
+  // 4. Start governance watchdog loop (10s tick — stale state detection only)
   governance.startLoop(GOVERNANCE_TICK_MS);
 
-  // 6. Cadence: 90-second maintenance loop
+  // 5. Sync substrate starts polling when kernel is HEALTHY.IDLE
+  // Kernel emits START_INTENT_DISCOVERY on IDLE entry, STOP on leave
+  const redis = getRedisClient();
+  if (redis && redis.status === 'ready') {
+    syncSubstrate.start(redis, governance);
+  }
+
+  // 6. Cadence: 90-second maintenance loop — dumb signal only
   cadence.every(REFRESH_INTERVAL_MS, async () => {
-    // DB scanner: discover publishable items → LPUSH to Redis
-    // Governance.tick() discovers on next watchdog cycle → HSM → execute
-    const scanResult = await dbScanner.runScan();
-    if (scanResult.totalEmitted > 0) {
-      console.log(`[orchestrator] DB scanner emitted ${scanResult.totalEmitted} intents`);
-    }
-
-    await lifecycle.refresh();
-
-    const freshAccounts = await persistence.getActiveAccounts();
-    governance.setActiveAccounts(freshAccounts.map(a => a.id));
-
-    await safety.runChecks();
-
-    const metrics = executionBridge.getMetrics();
-    if (!metrics.isHealthy && metrics.total >= 5) {
-      governance.dispatch({
-        type: 'RETRY_PRESSURE_DETECTED',
-        reason: `Worker failure rate ${Math.round(metrics.failureRate * 100)}% (${metrics.failed}/${metrics.total} in ${metrics.windowMs / 1000}s)`,
-      });
-    } else if (metrics.isHealthy && isDegraded()) {
-      governance.dispatch({ type: 'PRESSURE_CLEARED' });
-    }
+    governance.dispatch({ type: 'CADENCE_TICK' });
   });
 
   console.log(`[orchestrator] Governance kernel running — ${accounts.length} account(s) — state: ${governance.getState()}`);
@@ -444,6 +481,7 @@ async function stopAllWorkers() {
   console.log('[orchestrator] Stopping governance kernel...');
 
   governance.stopLoop();
+  syncSubstrate.stop();
   await cadence.stop();
   await signalIntake.stop();
   buffer.destroyAll();
