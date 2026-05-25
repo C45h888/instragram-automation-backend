@@ -309,7 +309,7 @@ async function writeAcquisitionResult(accountId, domain, intentId, result) {
 async function executeEvaluationPipeline(accountId, events) {
   const startTime = Date.now();
   try {
-    const result = evaluator.evaluate(accountId, events);
+    const result = await evaluator.evaluate(accountId, events);
 
     for (const mut of result.mutations) {
       await emitter.emitMutation(mut);

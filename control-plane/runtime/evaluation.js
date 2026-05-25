@@ -6,25 +6,25 @@
 // Does NOT own: intent emission, Redis, worker lifecycle, signal intake.
 //
 // Contract:
-//   evaluator.evaluate(accountId, events) → { intents: [...], mutations: [...] }
+//   evaluator.evaluate(accountId, events) → Promise<{ intents: [...], mutations: [...] }>
 //
-// Pure function — no side effects, no Redis, no DB writes.
+// Dedup is Redis-backed — must be async to check/set Redis keys.
 // Caller handles emission and mutation execution.
 
 const publishingPolicy = require('../policies/publishing');
-const dedup = require('../governance/dedup');
+const dedupSubstrate = require('../../substrates/dedup-substrate');
 
 /**
  * Evaluates a batch of events for one account.
- * Pure function — no side effects, no Redis, no DB writes.
+ * Async — dedup checks and marks require Redis-backed idempotency.
  * Always returns a valid shape even for empty input.
  *
  * @param {string} accountId — non-empty string
  * @param {Array<{table: string, record: object}>} events — array of DB events
- * @returns {{ intents: Array<object>, mutations: Array<object> }}
+ * @returns {Promise<{ intents: Array<object>, mutations: Array<object> }>}
  * @throws {Error} if accountId is not a string or events is not an array
  */
-function evaluate(accountId, events) {
+async function evaluate(accountId, events) {
   if (typeof accountId !== 'string' || !accountId) {
     throw new Error(`[evaluation] accountId must be a non-empty string, got ${typeof accountId}`);
   }
@@ -56,10 +56,10 @@ function evaluate(accountId, events) {
       const { intent } = outcome;
       const resourceId = record.id;
 
-      if (dedup.isInFlight(accountId, intent.action_type, resourceId)) {
+      if (await dedupSubstrate.isInFlight(accountId, intent.action_type, resourceId)) {
         continue;
       }
-      dedup.markInFlight(accountId, intent.action_type, resourceId);
+      await dedupSubstrate.markInFlight(accountId, intent.action_type, resourceId);
 
       intents.push({
         account_id: accountId,
@@ -73,7 +73,7 @@ function evaluate(accountId, events) {
     }
   }
 
-  dedup.clearTick();
+  dedupSubstrate.clearTick();
   return { intents, mutations };
 }
 
