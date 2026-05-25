@@ -7,62 +7,51 @@
 //               execution intelligence, credential resolution logic.
 //
 // Constitutional purity: this orchestrator is a PACKET ROUTER.
-// It mechanically dispatches EXECUTE_ACQUISITION to the domain registry
-// and execution bridge. It NEVER interprets what a domain means.
+// It mechanically dispatches EXECUTE_ACQUISITION / RETRY_ACQUISITION to the
+// retry worker. It NEVER interprets what a domain means.
 // All execution intelligence lives in governance + domain registry.
 
 const { getRedisClient } = require('../../config/redis');
-const governance = require('../governance/governance-kernel');
 const domainRegistry = require('../execution/domain-registry');
-const executionBridge = require('../execution-bridge');
+const retryWorker = require('./retry-worker');
 const persistence = require('../../substrates/persistence');
 const syncSubstrate = require('../../substrates/sync-substrate');
 
 /**
- * Execute a governed acquisition for a single intent.
- * Pure mechanical routing: lookup domain → call bridge → forward observation.
- * NEVER interprets domain semantics, retry policy, or error meaning.
+ * Execute a single bounded acquisition attempt via retry worker.
+ * Governance evaluates EXECUTION_OBSERVATION and decides next action.
  *
  * @param {string} accountId
  * @param {string} domain
  * @param {string} intentId
  * @param {object} params
  */
-async function executeGovernedAcquisition(accountId, domain, intentId, params) {
+async function executeAcquisition(gov, accountId, domain, intentId, params) {
   const routing = domainRegistry.lookup(domain);
   if (!routing) {
     console.error(`[acquisition-orchestrator] Unknown acquisition domain: ${domain}`);
-    governance.dispatch({
+    gov.dispatch({
       type: 'ACQUISITION_COMPLETE', accountId, domain, intentId,
       result: { status: 'failed', count: 0, error: `unknown domain: ${domain}` },
     });
     return;
   }
 
-  governance.dispatch({ type: 'ACQUISITION_EXECUTING', accountId, domain, intentId });
+  gov.dispatch({ type: 'ACQUISITION_EXECUTING', accountId, domain, intentId });
 
-  // Mechanical execution — no policy interpretation
-  const outcome = await executionBridge.executeWithRetry(
-    accountId, intentId, domain,
-    async (acctId, execParams) => {
+  // Wire up fetch + persist via domain registry
+  const wiredRouting = {
+    fetch: async (acctId, execParams) => {
       const creds = await persistence.resolveAccountCredentials(acctId);
-      const rawData = await routing.fetch(acctId, execParams, creds);
-      if (!rawData.success) return rawData;
-      const persistResult = await routing.persist(acctId, rawData, execParams);
-      return {
-        success: true,
-        count: persistResult?.count || rawData.count || 0,
-        _usagePct: rawData._usagePct,
-        instagram_id: rawData.instagram_id,
-      };
+      return routing.fetch(acctId, execParams, creds);
     },
-    params
-  );
+    persist: async (acctId, rawData) => {
+      return routing.persist(acctId, rawData);
+    },
+  };
 
-  governance.dispatch({
-    type: 'ACQUISITION_COMPLETE', accountId, domain, intentId,
-    result: { status: outcome.status, count: outcome.count, error: outcome.error || null },
-  });
+  // Bounded single attempt via retry worker — governance sees every attempt
+  await retryWorker.executeSingle(accountId, domain, params, intentId, gov, wiredRouting);
 }
 
 /**
@@ -90,15 +79,16 @@ async function writeAcquisitionResult(accountId, domain, intentId, result) {
 }
 
 /**
- * Wire this orchestrator to the governance kernel.
+ * Wire this orchestrator to the constitutional kernel.
  * Registers per-action-type subscribers for acquisition actions.
  *
- * @param {object} gov — governance kernel module
+ * @param {object} gov — constitutional kernel module
+ * @param {object} [acquisitionFsm] — acquisition domain FSM (for state queries)
  */
-function wire(gov) {
-  // ── EXECUTE_ACQUISITION → domain registry → execution bridge ───────────
+function wire(gov, acquisitionFsm) {
+  // ── EXECUTE_ACQUISITION → retry worker (first attempt) ─────────────────
   gov.subscribeAction('EXECUTE_ACQUISITION', (action) => {
-    executeGovernedAcquisition(action.accountId, action.domain, action.intentId, action.params);
+    executeAcquisition(gov, action.accountId, action.domain, action.intentId, action.params);
   });
 
   // ── WRITE_ACQUISITION_RESULT → Redis ───────────────────────────────────
@@ -106,11 +96,13 @@ function wire(gov) {
     writeAcquisitionResult(action.accountId, action.domain, action.intentId, action.result);
   });
 
-  // ── RETRY_ACQUISITION → re-execute with delay ──────────────────────────
+  // ── RETRY_ACQUISITION → retry worker (subsequent attempts) ──────────────
+  // Each retry is a separate governance action. The acquisition domain FSM
+  // evaluates EXECUTION_OBSERVATION and decides whether to retry or fail permanently.
   gov.subscribeAction('RETRY_ACQUISITION', (action) => {
     const { accountId, domain, intentId, params, delayMs } = action;
     setTimeout(() => {
-      executeGovernedAcquisition(accountId, domain, intentId, params);
+      executeAcquisition(gov, accountId, domain, intentId, params);
     }, delayMs || 30000);
   });
 
@@ -121,7 +113,7 @@ function wire(gov) {
     });
   });
 
-  // ── ENGAGE_CIRCUIT_BREAKER → no routing needed (governance owns state) ─
+  // ── ENGAGE_CIRCUIT_BREAKER → logging only (acquisition FSM owns state) ──
   gov.subscribeAction('ENGAGE_CIRCUIT_BREAKER', (action) => {
     console.warn(`[acquisition-orchestrator] Circuit breaker engaged for ${action.accountId}/${action.domain || 'all'}, cooldown ${(action.cooldownMs || 3600000) / 1000}s`);
   });
@@ -130,13 +122,20 @@ function wire(gov) {
   gov.subscribeAction('START_INTENT_DISCOVERY', (action) => {
     const redis = getRedisClient();
     if (redis && redis.status === 'ready') {
-      syncSubstrate.start(redis, gov);
+      syncSubstrate.start(redis, (event) => {
+        gov.dispatch(event);
+      });
     }
   });
 
   // ── STOP_INTENT_DISCOVERY → sync substrate ─────────────────────────────
   gov.subscribeAction('STOP_INTENT_DISCOVERY', (action) => {
     syncSubstrate.stop();
+  });
+
+  // ── UPDATE_ACCOUNT_LIST → sync substrate (authority flows DOWN) ────────
+  gov.subscribeAction('UPDATE_ACCOUNT_LIST', (action) => {
+    syncSubstrate.onKernelSignal({ type: 'UPDATE_ACCOUNT_LIST', accountIds: action.accountIds });
   });
 }
 

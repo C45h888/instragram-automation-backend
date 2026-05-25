@@ -1,22 +1,21 @@
 // control-plane/orchastrator.js
 // Orchestrator: constitutional composition root.
 //
-// Owns: wiring 6 constitutional orchestrators to governance,
+// Owns: wiring constitutional kernel + 3 domain FSMs + 6 membrane orchestrators,
 //        boot/shutdown sequencing.
 // Does NOT own: domain semantics, execution intelligence, governance policy,
 //               retry decisions, degradation logic, signal interpretation.
 //
 // Architecture (invariant: signals ↑, authority ↓):
-//   Governance kernel → subscribeAction(type, handler)
-//   6 constitutional orchestrators each subscribe to their action types
+//   Constitutional kernel → subscribeAction(type, handler)
+//   3 domain FSMs are registered with the constitutional kernel
+//   6 membrane orchestrators each subscribe to their action types
 //   Each orchestrator is a THIN MEMBRANE — routes mechanically, never interprets
 //
-// Constitutional purity: this composition root is ~60 lines of wiring.
-// All execution intelligence lives in governance + domain registry.
-// All coordination lives in the 6 bounded orchestrators.
-// This file only wires them together and sequences boot/shutdown.
+// This is the SINGLE place where modules are wired together.
+// No module imports another module directly — all wiring lives here.
 
-const governance = require('./governance/governance-kernel');
+const constitutional = require('./governance/constitutional-kernel');
 const executionBridge = require('./execution-bridge');
 const metricsSubstrate = require('../substrates/metrics-substrate');
 const { getRedisClient } = require('../config/redis');
@@ -26,7 +25,12 @@ const lifecycle = require('./runtime/lifecycle');
 const persistence = require('../substrates/persistence');
 const syncSubstrate = require('../substrates/sync-substrate');
 
-// ── 6 Constitutional orchestrators ───────────────────────────────────────────
+// ── 3 Domain FSMs ───────────────────────────────────────────────────────────
+const acquisitionFsm = require('./governance/domains/acquisition-fsm');
+const publishingFsm = require('./governance/domains/publishing-fsm');
+const schedulingFsm = require('./governance/domains/scheduling-fsm');
+
+// ── 6 Membrane orchestrators ─────────────────────────────────────────────────
 const cadenceOrchestrator     = require('./orchestration/cadence-orchestrator');
 const acquisitionOrchestrator = require('./orchestration/acquisition-orchestrator');
 const emissionOrchestrator    = require('./orchestration/emission-orchestrator');
@@ -40,74 +44,70 @@ const GOVERNANCE_TICK_MS = 10_000; // 10s watchdog tick
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
 
-/**
- * Wire all 6 constitutional orchestrators to the governance kernel.
- * Each orchestrator subscribes to its own action types via subscribeAction().
- * Called once on startup.
- */
 function _wire() {
   buffer.setDebounceMs(DEBOUNCE_MS);
 
-  // Wire execution bridge's governance reference for observation emission
-  executionBridge.setGovernance(governance);
+  // Register domain FSMs — must happen before wiring membranes
+  constitutional.registerDomain(acquisitionFsm);
+  constitutional.registerDomain(publishingFsm);
+  constitutional.registerDomain(schedulingFsm);
 
-  // Wire each constitutional orchestrator
-  cadenceOrchestrator.wire(governance);
-  acquisitionOrchestrator.wire(governance);
-  emissionOrchestrator.wire(governance);
-  signalOrchestrator.wire(governance);
-  lifecycleOrchestrator.wire(governance);
-  degradationOrchestrator.wire(governance);
+  // Wire execution bridge's governance reference for observation emission
+  executionBridge.setGovernance(constitutional);
+
+  // Wire each membrane orchestrator
+  cadenceOrchestrator.wire(constitutional);
+  acquisitionOrchestrator.wire(constitutional, acquisitionFsm);
+  emissionOrchestrator.wire(constitutional);
+  signalOrchestrator.wire(constitutional);
+  lifecycleOrchestrator.wire(constitutional);
+  degradationOrchestrator.wire(constitutional);
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
 async function startAllWorkers() {
-  console.log('[orchestrator] Starting governance kernel with 6 constitutional orchestrators...');
+  console.log('[orchestrator] Starting constitutional kernel with 3 domain FSMs...');
   _wire();
 
-  // Metrics substrate: rehydrate from Redis for crash-survival
   await metricsSubstrate.init();
 
-  // Signal intake: subscribe to realtime → signal bus
-  await signalOrchestrator.start(governance);
+  await signalOrchestrator.start(constitutional);
 
-  // Initial account discovery → dispatch to governance
   await lifecycle.refresh();
   const accounts = await persistence.getActiveAccounts();
-  governance.dispatch({ type: 'LIFECYCLE_REFRESHED', accountIds: accounts.map(a => a.id) });
+  constitutional.dispatch({ type: 'LIFECYCLE_REFRESHED', accountIds: accounts.map(a => a.id) });
 
-  // Boot complete → governance transitions BOOTING → HEALTHY.IDLE
-  governance.dispatch({ type: 'BOOT_COMPLETE' });
+  constitutional.dispatch({ type: 'BOOT_COMPLETE' });
 
-  // Start governance watchdog loop (10s tick — stale state detection only)
-  governance.startLoop(GOVERNANCE_TICK_MS);
+  constitutional.startLoop(GOVERNANCE_TICK_MS);
 
-  // Sync substrate starts polling when kernel is HEALTHY.IDLE
   const redis = getRedisClient();
   if (redis && redis.status === 'ready') {
-    syncSubstrate.start(redis, governance);
+    syncSubstrate.start(redis, (event) => {
+      constitutional.dispatch(event);
+    });
   }
 
-  // Cadence: 90-second maintenance loop → dumb signal only
   cadence.every(REFRESH_INTERVAL_MS, async () => {
-    governance.dispatch({ type: 'CADENCE_TICK' });
+    constitutional.dispatch({ type: 'CADENCE_TICK' });
   });
 
-  console.log(`[orchestrator] Governance kernel running — ${accounts.length} account(s) — state: ${governance.getState()}`);
+  const st = constitutional.status();
+  console.log(`[orchestrator] Constitutional kernel running — ${accounts.length} account(s) — global: ${st.state} — domains: ${Object.keys(st.domains).join(', ')}`);
 }
 
 async function stopAllWorkers() {
-  console.log('[orchestrator] Stopping governance kernel...');
+  console.log('[orchestrator] Stopping constitutional kernel...');
 
-  governance.stopLoop();
+  constitutional.stopLoop();
   syncSubstrate.stop();
   await cadence.stop();
   await signalOrchestrator.stop();
   buffer.destroyAll();
   lifecycle.stopAll();
 
-  console.log('[orchestrator] Governance kernel stopped');
+  console.log('[orchestrator] Constitutional kernel stopped');
 }
 
 module.exports = { startAllWorkers, stopAllWorkers };

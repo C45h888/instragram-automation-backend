@@ -2,44 +2,43 @@
 // Sync Substrate: intent polling cadence.
 //
 // Owns: Redis queue polling for acquisition intents, round-robin domain/account
-//        rotation. Polls at 10s interval when kernel is HEALTHY.IDLE
-//        (signaled via START/STOP actions).
-// Does NOT own: state transitions, governance decisions.
+//        rotation. Polls at 10s interval when kernel signals HEALTHY.IDLE
+//        (controlled via START/STOP actions from governance).
+// Does NOT own: state transitions, governance decisions, account discovery.
 //
 // Architecture invariant:
-//   Signals UP → governance.dispatch(ACQUISITION_INTENT_RECEIVED)
-//   Authority DOWN → kernel controls start/stop via actions
-//   Orchestrator wires the action subscriber to this module.
+//   Signals UP   → emit via onIntent callback (no governance reference)
+//   Authority DOWN → kernel controls polling via START/STOP actions
+//   Account list DOWN → kernel sends UPDATE_ACCOUNT_LIST for polling targets
 //
 // Polling interval is 10s — driven internally by this substrate.
 // Kernel sends START/STOP to control polling state.
 
 const ACQUISITION_DOMAINS = ['comments', 'messages', 'ugc', 'insights', 'media'];
-const ACQUISITION_PUBLISH_DOMAINS = ['media', 'ugc', 'messaging'];
+const ACQUISITION_PUBLISH_DOMAINS = ['publish:media', 'publish:ugc', 'publish:messaging'];
 const POLL_INTERVAL_MS = 10_000;
 
 let _redis = null;
-let _governance = null;
+let _onIntent = null; // (event) => void — no governance reference
 let _running = false;
 let _pollInterval = null;
 let _lastPolledDomainIdx = 0;
+let _accountIds = []; // received via UPDATE_ACCOUNT_LIST action from governance
 
 function _allDomains() {
-  return [...ACQUISITION_DOMAINS, ...ACQUISITION_PUBLISH_DOMAINS.map(d => `publish:${d}`)];
+  return [...ACQUISITION_DOMAINS, ...ACQUISITION_PUBLISH_DOMAINS];
 }
 
 function _poll() {
-  if (!_running || !_redis || !_governance) return;
-
-  const accountIds = _governance.getAccountIds();
-  if (!accountIds || accountIds.length === 0) return;
+  if (!_running || !_redis || !_onIntent) return;
+  if (!_accountIds || _accountIds.length === 0) return;
 
   const allDomains = _allDomains();
   const domain = allDomains[_lastPolledDomainIdx % allDomains.length];
   _lastPolledDomainIdx = (_lastPolledDomainIdx + 1) % allDomains.length;
 
-  const accountIdx = Math.floor(_lastPolledDomainIdx / allDomains.length) % accountIds.length;
-  const accountId = accountIds[accountIdx];
+  const accountIdx = Math.floor(_lastPolledDomainIdx / allDomains.length) % _accountIds.length;
+  const accountId = _accountIds[accountIdx];
   if (!accountId) return;
 
   const queueKey = `supervisor:acquisitions:${domain}:${accountId}`;
@@ -50,7 +49,8 @@ function _poll() {
     try { intent = JSON.parse(raw); } catch { return; }
     if (!intent || !intent.intent_id) return;
 
-    _governance.dispatch({
+    // Emit upward via callback — no governance reference
+    _onIntent({
       type: 'ACQUISITION_INTENT_RECEIVED',
       accountId,
       domain,
@@ -66,6 +66,7 @@ function _poll() {
  * Handle kernel actions. Called by orchestrator's onAction subscriber.
  * START_INTENT_DISCOVERY → begin polling at 10s interval
  * STOP_INTENT_DISCOVERY  → stop polling
+ * UPDATE_ACCOUNT_LIST    → update account list for round-robin polling
  */
 function onKernelSignal(action) {
   if (action.type === 'START_INTENT_DISCOVERY') {
@@ -80,21 +81,23 @@ function onKernelSignal(action) {
       clearInterval(_pollInterval);
       _pollInterval = null;
     }
+  } else if (action.type === 'UPDATE_ACCOUNT_LIST') {
+    _accountIds = Array.isArray(action.accountIds) ? action.accountIds : [];
   }
 }
 
 /**
  * Start the sync substrate.
  * @param {object} redis — ioredis client instance
- * @param {object} governance — governance kernel module
+ * @param {Function} onIntent — signal callback: (event) => void, receives ACQUISITION_INTENT_RECEIVED
  */
-function start(redis, governance) {
-  if (!redis || !governance) {
-    console.error('[sync-substrate] start() requires redis client and governance module');
+function start(redis, onIntent) {
+  if (!redis || typeof onIntent !== 'function') {
+    console.error('[sync-substrate] start() requires redis client and onIntent callback');
     return;
   }
   _redis = redis;
-  _governance = governance;
+  _onIntent = onIntent;
   console.log('[sync-substrate] Started — waiting for START_INTENT_DISCOVERY from kernel');
 }
 
