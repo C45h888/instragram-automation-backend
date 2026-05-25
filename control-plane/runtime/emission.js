@@ -11,6 +11,7 @@
 
 const { getRedisClient } = require('../../config/redis');
 const mutationSubstrate = require('../mutation-substrate');
+const { domainForAction, fetchTypeForAction } = require('../execution/domain-registry');
 
 const RESULT_TTL_SEC = 3600;
 
@@ -25,23 +26,6 @@ function status() {
   return {
     redis: (redis && redis.status === 'ready') ? 'connected' : 'disconnected',
   };
-}
-
-// ── Routing helpers ──────────────────────────────────────────────────────────
-
-function domainForAction(actionType) {
-  if (actionType === 'publish_post') return 'media';
-  if (actionType === 'repost_ugc') return 'ugc';
-  return 'messaging';
-}
-
-function fetchTypeForAction(actionType) {
-  if (actionType === 'publish_media') return 'publish_media';
-  if (actionType === 'publish_ugc') return 'publish_ugc';
-  if (actionType === 'publish_messaging') return 'publish_messaging';
-  if (actionType === 'publish_post') return 'publish_media';
-  if (actionType === 'repost_ugc') return 'publish_ugc';
-  return 'publish_messaging';
 }
 
 // ── Intent emission ──────────────────────────────────────────────────────────

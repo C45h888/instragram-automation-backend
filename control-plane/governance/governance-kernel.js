@@ -9,18 +9,24 @@
 //
 // Architecture invariant:
 //   Runtime modules emit signals UPWARD   → governance.dispatch(event)
-//   Governance emits authority DOWNWARD  → governance.onAction(action)
-//   Orchestrator executes actions mechanically.
+//   Governance emits authority DOWNWARD  → governance.subscribeAction(type, fn)
+//   Constitutional orchestrators execute actions mechanically.
 //
 // Contract:
-//   governance.dispatch(event)    → evaluate event, transition if legal, emit actions
-//   governance.onAction(fn)       → register action subscriber (one subscriber max)
-//   governance.tick()             → watchdog: checks state staleness, auto-recovers stuck states
-//   governance.startLoop(ms)      → start internal watchdog interval (default 10s)
-//   governance.stopLoop()         → stop internal watchdog interval
-//   governance.status()           → { state, parentState, lineageSize, uptimeMs, stateDurationMs }
-//   governance.getLineage([n])    → append-only lineage records
-//   governance.getState()         → current full state string
+//   governance.dispatch(event)         → evaluate event, transition if legal, emit actions
+//   governance.subscribeAction(type,fn)→ register per-action-type subscriber (multi supported)
+//   governance.onAction(fn)            → legacy: register catch-all subscriber (backward compat)
+//   governance.tick()                  → watchdog: checks state staleness, auto-recovers stuck states
+//   governance.startLoop(ms)           → start internal watchdog interval (default 10s)
+//   governance.stopLoop()              → stop internal watchdog interval
+//   governance.status()                → { state, parentState, lineageSize, uptimeMs, stateDurationMs,
+//                                          authFailureAccounts, activeCircuitBreakers, pendingRetries }
+//   governance.getLineage([n])         → append-only lineage records
+//   governance.getState()              → current full state string
+//   governance.getAccountIds()         → active account UUIDs
+//   governance.getAuthStrikes(id)      → auth failure strike count for account
+//   governance.isCircuitBreakerActive(id) → whether circuit breaker is engaged for account
+//   governance.getRetryCount(intentId) → retry count for an acquisition intent
 //
 // This is a PURE state machine — no I/O, no Redis, no Supabase, no side effects.
 // The runtime is not "controlled" — it is GOVERNED. The governance kernel
@@ -29,6 +35,14 @@
 const crypto = require('crypto');
 
 const STARTED_AT = Date.now();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0. Execution Policy Constants — governance-owned thresholds
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const AUTH_FAILURE_MAX_STRIKES = 3;           // strikes before account disconnect
+const MAX_ACQUISITION_RETRIES = 1;            // max retries per acquisition intent
+const CIRCUIT_BREAKER_COOLDOWN_MS = 3600000;  // 1 hour circuit breaker cooldown
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. State Registry — defines all legal runtime states and their hierarchy
@@ -422,6 +436,170 @@ const TRANSITION_MAP = {
     guard: () => ({ allowed: true }),
     buildActions: () => [],
   },
+
+  // ── Execution observations (governance-owned execution intelligence) ───────
+  // Substrates emit raw observations upward. Governance alone decides policy.
+  // This is the constitutional boundary: substrates observe, governance decides.
+
+  EXECUTION_OBSERVATION: {
+    target: (event, ctx) => ctx.state, // no lifecycle state change
+    guard: (event, ctx) => {
+      if (!isDescendantOf(ctx.state, 'HEALTHY') && !isDescendantOf(ctx.state, 'DEGRADED')) {
+        return { allowed: false };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { accountId, domain, intentId, params, status, error_category, retryable, count, latencyMs } = event;
+
+      // Track execution state for retry decisions
+      _executionState.set(intentId, { accountId, domain, params, lastError: event.error || null });
+
+      // Success → complete the acquisition normally
+      if (status === 'completed') {
+        _executionRetries.delete(intentId);
+        _executionState.delete(intentId);
+        // Auth success clears strikes
+        if (_authFailureStrikes.has(accountId)) {
+          _authFailureStrikes.delete(accountId);
+        }
+        return [{
+          type: 'WRITE_ACQUISITION_RESULT',
+          accountId, domain, intentId,
+          result: { status: 'completed', count: count || 0 },
+        }];
+      }
+
+      // Auth failure → increment strikes, evaluate threshold
+      if (error_category === 'auth_failure') {
+        const strikes = (_authFailureStrikes.get(accountId) || 0) + 1;
+        _authFailureStrikes.set(accountId, strikes);
+        _executionRetries.delete(intentId);
+        _executionState.delete(intentId);
+
+        if (strikes >= AUTH_FAILURE_MAX_STRIKES) {
+          return [
+            { type: 'DISCONNECT_ACCOUNT', accountId, reason: `Auth failure strike ${strikes}/${AUTH_FAILURE_MAX_STRIKES}` },
+            { type: 'CREATE_SYSTEM_ALERT', alertType: 'auth_failure', accountId,
+              message: `Acquisition auth failure: ${event.error || 'unknown'}`,
+              details: { source: 'execution_bridge', error: event.error, strikes } },
+          ];
+        }
+        return [{ type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: `Auth failure strike ${strikes}/${AUTH_FAILURE_MAX_STRIKES} for ${accountId}` }];
+      }
+
+      // Rate limit → engage circuit breaker
+      if (error_category === 'rate_limit') {
+        _executionRetries.delete(intentId);
+        _executionState.delete(intentId);
+        return [
+          { type: 'ENGAGE_CIRCUIT_BREAKER', accountId, domain, cooldownMs: CIRCUIT_BREAKER_COOLDOWN_MS },
+          { type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: `Rate limit detected for ${accountId}/${domain}` },
+        ];
+      }
+
+      // Transient/retryable → increment retry count, decide retry or exhaust
+      if (retryable) {
+        const retryCount = (_executionRetries.get(intentId) || 0) + 1;
+        _executionRetries.set(intentId, retryCount);
+
+        if (retryCount <= MAX_ACQUISITION_RETRIES) {
+          const delayMs = event.retryAfterMs || 30000;
+          return [{
+            type: 'RETRY_ACQUISITION',
+            accountId, domain, intentId, params,
+            retryCount,
+            delayMs: Math.min(delayMs, 300000), // cap at 5 min
+          }];
+        }
+
+        // Retries exhausted
+        _executionRetries.delete(intentId);
+        _executionState.delete(intentId);
+        return [
+          { type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId, error: 'max_retries_exceeded' },
+          { type: 'CREATE_SYSTEM_ALERT', alertType: 'retry_exhausted', accountId,
+            message: `Acquisition retries exhausted for ${domain}/${accountId} intent ${intentId}`,
+            details: { domain, intentId, attempts: retryCount, lastError: event.error } },
+        ];
+      }
+
+      // Permanent failure (non-retryable, non-auth, non-rate)
+      _executionRetries.delete(intentId);
+      _executionState.delete(intentId);
+      return [{
+        type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId, error: event.error || 'unknown',
+      }];
+    },
+  },
+
+  // ── Auth failure strike (emitted by retry substrate on auth errors) ────────
+  AUTH_FAILURE_STRIKE: {
+    target: (event, ctx) => ctx.state,
+    guard: (event, ctx) => {
+      if (!isDescendantOf(ctx.state, 'HEALTHY') && !isDescendantOf(ctx.state, 'DEGRADED')) {
+        return { allowed: false };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { accountId, error } = event;
+      const strikes = (_authFailureStrikes.get(accountId) || 0) + 1;
+      _authFailureStrikes.set(accountId, strikes);
+
+      if (strikes >= AUTH_FAILURE_MAX_STRIKES) {
+        return [
+          { type: 'DISCONNECT_ACCOUNT', accountId, reason: `Auth failure strikes exceeded: ${strikes}` },
+          { type: 'CREATE_SYSTEM_ALERT', alertType: 'auth_failure', accountId,
+            message: `Account disconnected: ${strikes} auth failures. Last error: ${error || 'unknown'}`,
+            details: { source: 'retry_substrate', error, strikes } },
+        ];
+      }
+      return [];
+    },
+  },
+
+  // ── Rate limit detected (emitted by retry substrate) ───────────────────────
+  RATE_LIMIT_DETECTED: {
+    target: (event, ctx) => ctx.state,
+    guard: (event, ctx) => {
+      if (!isDescendantOf(ctx.state, 'HEALTHY') && !isDescendantOf(ctx.state, 'DEGRADED')) {
+        return { allowed: false };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { accountId, retryAfterSeconds } = event;
+      const cooldownMs = (retryAfterSeconds || 3600) * 1000;
+      return [
+        { type: 'ENGAGE_CIRCUIT_BREAKER', accountId, cooldownMs },
+        { type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE',
+          reason: `Rate limit for ${accountId}, cooldown ${cooldownMs / 1000}s` },
+      ];
+    },
+  },
+
+  // ── Retry exhausted (emitted when all retries consumed) ────────────────────
+  RETRY_EXHAUSTED: {
+    target: (event, ctx) => ctx.state,
+    guard: (event, ctx) => {
+      if (!isDescendantOf(ctx.state, 'HEALTHY') && !isDescendantOf(ctx.state, 'DEGRADED')) {
+        return { allowed: false };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { accountId, domain, intentId, error } = event;
+      _executionRetries.delete(intentId);
+      _executionState.delete(intentId);
+      return [
+        { type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId, error: error || 'retry_exhausted' },
+        { type: 'CREATE_SYSTEM_ALERT', alertType: 'retry_exhausted', accountId,
+          message: `Retries exhausted for ${domain}/${accountId}`,
+          details: { domain, intentId, error } },
+      ];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -510,10 +688,24 @@ function isDescendantOf(state, ancestor) {
 let _currentState = 'BOOTING';
 let _stateEnteredAt = Date.now(); // when we entered _currentState — watchdog uses this
 const _lineage = [];              // append-only
-let _actionSubscriber = null;
 let _loopInterval = null;         // watchdog setInterval handle
 
 let _accountIds = [];             // active account UUIDs, updated via UPDATE_ACCOUNTS action
+
+// ── Multi-subscriber action dispatch ─────────────────────────────────────────
+// Per-action-type subscribers: Map<actionType, Set<handlerFn>>
+// Replaces the old single _actionSubscriber for constitutional orchestration.
+const _actionSubscribers = new Map();
+
+// Legacy catch-all subscriber — receives ALL actions regardless of type.
+// Maintained for backward compatibility during migration.
+let _legacyActionSubscriber = null;
+
+// ── Execution state tracking (governance-owned, migrated from retry.js) ──────
+const _authFailureStrikes = new Map();  // accountId → strike count
+const _circuitBreakers = new Map();     // accountId → { until: timestampMs }
+const _executionRetries = new Map();    // intentId → retry count
+const _executionState = new Map();      // intentId → { accountId, domain, params, lastError }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 6. Lineage recorder
@@ -548,21 +740,56 @@ function _recordLineage(from, to, trigger, guardResults, actions, meta) {
 
 /**
  * Emit governance actions after a successful transition.
- * Actions are routing intents — they describe WHAT should happen, not HOW.
- * The orchestrator subscriber executes them mechanically.
+ * Routes each action to:
+ *   1. Per-action-type subscribers (constitutional orchestrators)
+ *   2. Legacy catch-all subscriber (backward compat)
+ * Kernel-internal actions (UPDATE_ACCOUNTS, DISCONNECT_ACCOUNT, ENGAGE_CIRCUIT_BREAKER)
+ * mutate kernel state directly — no orchestrator involvement needed.
  */
 function _emitActions(actions) {
-  if (!_actionSubscriber || actions.length === 0) return;
+  if (actions.length === 0) return;
   for (const action of actions) {
-    // Kernel-internal actions — mutate state directly, no orchestrator involvement
+    // ── Kernel-internal actions — mutate state directly ──────────────────
     if (action.type === 'UPDATE_ACCOUNTS') {
       _accountIds = Array.isArray(action.accountIds) ? action.accountIds : [];
       continue;
     }
-    try {
-      _actionSubscriber(action);
-    } catch (err) {
-      console.error(`[governance-kernel] Action subscriber error for ${action.type}:`, err.message);
+    if (action.type === 'DISCONNECT_ACCOUNT') {
+      _authFailureStrikes.delete(action.accountId);
+      _circuitBreakers.set(action.accountId, { until: Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS });
+      // Falls through to subscribers so lifecycle orchestrator can act
+    }
+    if (action.type === 'ENGAGE_CIRCUIT_BREAKER') {
+      _circuitBreakers.set(action.accountId || action.domain, {
+        until: Date.now() + (action.cooldownMs || CIRCUIT_BREAKER_COOLDOWN_MS),
+      });
+      // Falls through to subscribers so acquisition orchestrator can act
+    }
+    if (action.type === 'MARK_PERMANENT_FAILURE') {
+      _executionRetries.delete(action.intentId);
+      _executionState.delete(action.intentId);
+      // Falls through to subscribers
+    }
+
+    // ── Route to per-action-type subscribers ──────────────────────────────
+    const subscribers = _actionSubscribers.get(action.type);
+    if (subscribers && subscribers.size > 0) {
+      for (const fn of subscribers) {
+        try {
+          fn(action);
+        } catch (err) {
+          console.error(`[governance-kernel] Subscriber error for ${action.type}:`, err.message);
+        }
+      }
+    }
+
+    // ── Legacy catch-all subscriber ───────────────────────────────────────
+    if (_legacyActionSubscriber) {
+      try {
+        _legacyActionSubscriber(action);
+      } catch (err) {
+        console.error(`[governance-kernel] Legacy subscriber error for ${action.type}:`, err.message);
+      }
     }
   }
 }
@@ -677,7 +904,7 @@ function dispatch(event) {
 
   // Resolve target — may be a function (event-driven target) or a static string
   const rawTarget = txn.target;
-  const target = typeof rawTarget === 'function' ? rawTarget(event) : rawTarget;
+  const target = typeof rawTarget === 'function' ? rawTarget(event, { state: from }) : rawTarget;
 
   // null target means no state change — record lineage only, skip transition
   if (target === null) {
@@ -746,9 +973,31 @@ function dispatch(event) {
 }
 
 /**
- * Register the governance action subscriber. Only one subscriber is supported.
- * The subscriber receives governance actions emitted after successful transitions.
- * It is the orchestrator's responsibility to route actions to runtime modules.
+ * Subscribe to governance actions of a specific type.
+ * Multiple subscribers per action type are supported (constitutional orchestrators).
+ * Each constitutional orchestrator subscribes only to its own action types.
+ *
+ * @param {string} actionType — the action type to subscribe to (e.g. 'EVALUATE', 'EXECUTE_ACQUISITION')
+ * @param {Function} fn — (action: object) => void
+ * @throws {Error} if actionType is not a string or fn is not a function
+ */
+function subscribeAction(actionType, fn) {
+  if (typeof actionType !== 'string' || !actionType) {
+    throw new Error(`[governance-kernel] subscribeAction requires a non-empty actionType string`);
+  }
+  if (typeof fn !== 'function') {
+    throw new Error(`[governance-kernel] subscribeAction handler must be a function, got ${typeof fn}`);
+  }
+  if (!_actionSubscribers.has(actionType)) {
+    _actionSubscribers.set(actionType, new Set());
+  }
+  _actionSubscribers.get(actionType).add(fn);
+}
+
+/**
+ * Legacy: register a catch-all action subscriber that receives ALL actions.
+ * Maintained for backward compatibility during constitutional migration.
+ * Prefer subscribeAction() for new code.
  *
  * @param {Function} fn — (action: object) => void
  * @throws {Error} if fn is not a function
@@ -757,20 +1006,26 @@ function onAction(fn) {
   if (typeof fn !== 'function') {
     throw new Error(`[governance-kernel] onAction handler must be a function, got ${typeof fn}`);
   }
-  _actionSubscriber = fn;
+  _legacyActionSubscriber = fn;
 }
 
 /**
  * Returns live governance state. Deterministic, no side effects.
- * @returns {{ state: string, parentState: string|null, lineageSize: number, uptimeMs: number }}
+ * @returns {{ state: string, parentState: string|null, lineageSize: number, uptimeMs: number,
+ *             stateDurationMs: number, authFailureAccounts: number, activeCircuitBreakers: number,
+ *             pendingRetries: number }}
  */
 function status() {
+  const now = Date.now();
   return {
     state: _currentState,
     parentState: parentOf(_currentState),
     lineageSize: _lineage.length,
-    uptimeMs: Date.now() - STARTED_AT,
-    stateDurationMs: Date.now() - _stateEnteredAt,
+    uptimeMs: now - STARTED_AT,
+    stateDurationMs: now - _stateEnteredAt,
+    authFailureAccounts: _authFailureStrikes.size,
+    activeCircuitBreakers: Array.from(_circuitBreakers.values()).filter(c => c.until > now).length,
+    pendingRetries: _executionRetries.size,
   };
 }
 
@@ -804,4 +1059,59 @@ function getAccountIds() {
   return _accountIds;
 }
 
-module.exports = { dispatch, onAction, tick, startLoop, stopLoop, getAccountIds, status, getLineage, getState };
+/**
+ * Returns the number of auth failure strikes for an account.
+ * Governance-owned tracking — migrated from retry substrate.
+ * @param {string} accountId
+ * @returns {number}
+ */
+function getAuthStrikes(accountId) {
+  return _authFailureStrikes.get(accountId) || 0;
+}
+
+/**
+ * Returns whether the circuit breaker is currently engaged for an account.
+ * Governance-owned state — migrated from retry substrate.
+ * @param {string} accountId
+ * @returns {boolean}
+ */
+function isCircuitBreakerActive(accountId) {
+  const breaker = _circuitBreakers.get(accountId);
+  if (!breaker) return false;
+  if (Date.now() >= breaker.until) {
+    _circuitBreakers.delete(accountId);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Returns the current retry count for an acquisition intent.
+ * Governance-owned tracking — migrated from execution bridge.
+ * @param {string} intentId
+ * @returns {number}
+ */
+function getRetryCount(intentId) {
+  return _executionRetries.get(intentId) || 0;
+}
+
+/**
+ * Resets auth failure strikes for an account (e.g. after manual token refresh).
+ * @param {string} accountId
+ */
+function resetAuthStrikes(accountId) {
+  _authFailureStrikes.delete(accountId);
+}
+
+/**
+ * Clears circuit breaker for an account (e.g. after manual intervention).
+ * @param {string} accountId
+ */
+function clearCircuitBreaker(accountId) {
+  _circuitBreakers.delete(accountId);
+}
+
+module.exports = { dispatch, subscribeAction, onAction, tick, startLoop, stopLoop,
+  getAccountIds, getAuthStrikes, isCircuitBreakerActive, getRetryCount,
+  resetAuthStrikes, clearCircuitBreaker,
+  status, getLineage, getState };

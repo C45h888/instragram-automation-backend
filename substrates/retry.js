@@ -1,22 +1,26 @@
 // substrates/retry.js
-// Bounded substrate: retry governance.
+// Bounded substrate: mechanical retry classification.
 //
 // Owns: circuit breaker state, error classification, backoff computation.
-// Does NOT own: Instagram API knowledge, orchestration, persistence.
+// Does NOT own: governance policy, auth escalation, system alerts,
+//               account disconnection, strike tracking.
 //
-// Shared state (_rateLimitedAccounts, _authFailureStrikes) is module-level
-// singleton — all domain workers and post-fallback.js share the same circuit.
-// An IG-level rate limit on one domain blocks all domains for that account
-// (correct behavior — Meta rate limits are app-level, not endpoint-level).
+// Constitutional boundary:
+//   This substrate mechanically classifies errors and maintains circuit
+//   breaker state. It NEVER governs — no account disconnection, no system
+//   alerts, no auth strike escalation. All governance decisions belong
+//   to the HSM governance kernel.
+//
+// Architecture invariant:
+//   Mechanical classification only → execution bridge consumes classification
+//   Execution bridge emits EXECUTION_OBSERVATION upward → governance decides
+//   Governance emits DISCONNECT_ACCOUNT, ENGAGE_CIRCUIT_BREAKER downward
 
-const { getSupabaseAdmin, logAudit } = require('../config/supabase');
-const { clearCredentialCache, logDataBusEvent } = require('../helpers/agent-helpers');
+const { clearCredentialCache } = require('../helpers/agent-helpers');
 
-// ── In-memory circuit breaker state ─────────────────────────────────────────
+// ── In-memory circuit breaker state (mechanical only) ───────────────────────
 
 const _rateLimitedAccounts = new Map(); // accountId → unblocked_at ms
-const _authFailureStrikes  = new Map(); // accountId → strike count
-const AUTH_FAILURE_MAX_STRIKES = 3;
 
 // ── Rate limit guard ─────────────────────────────────────────────────────────
 
@@ -30,109 +34,46 @@ function isAccountRateLimited(accountId) {
   return true;
 }
 
+/**
+ * Mark an account as rate-limited. Pure mechanical state — no governance.
+ * Governance is informed via EXECUTION_OBSERVATION from execution-bridge.
+ */
 function markAccountRateLimited(accountId, retryAfterSeconds) {
   const cooldown = (retryAfterSeconds || 3600) * 1000;
   _rateLimitedAccounts.set(accountId, Date.now() + cooldown);
-  console.warn(`[retry] Account ${accountId} rate-limited for ${retryAfterSeconds || 3600}s`);
-  logAudit({
-    event_type: 'rate_limit_triggered',
-    action: 'circuit_breaker',
-    resource_type: 'instagram_business_account',
-    resource_id: null,
-    details: { account_id: accountId, retry_after_seconds: retryAfterSeconds || 3600, source: 'acquisition_worker' },
-    success: false,
-  }).catch(() => {});
-}
-
-// ── Auth failure escalation ──────────────────────────────────────────────────
-
-/**
- * Marks an account disconnected after auth failure strikes exceed threshold.
- * Async fire-and-forget — callers should not await.
- */
-async function markAccountDisconnectedOnAuthFailure(accountId, errorMessage) {
-  const supabase = getSupabaseAdmin();
-  if (!supabase) return;
-  try {
-    await supabase
-      .from('instagram_business_accounts')
-      .update({ is_connected: false, connection_status: 'disconnected' })
-      .eq('id', accountId);
-
-    // Dedup: only insert if no unresolved auth_failure alert already exists
-    const { data: existingAlert } = await supabase
-      .from('system_alerts')
-      .select('id')
-      .eq('business_account_id', accountId)
-      .eq('alert_type', 'auth_failure')
-      .eq('resolved', false)
-      .maybeSingle();
-
-    if (!existingAlert) {
-      await supabase
-        .from('system_alerts')
-        .insert({
-          alert_type: 'auth_failure',
-          business_account_id: accountId,
-          message: `Acquisition auth failure: ${errorMessage}`,
-          details: { source: 'acquisition_worker', error: errorMessage, occurred_at: new Date().toISOString() },
-          resolved: false,
-        });
-    }
-
-    clearCredentialCache(accountId);
-  } catch (err) {
-    console.warn(`[retry] Failed to mark account ${accountId} disconnected:`, err.message);
-  }
+  console.warn(`[retry] Account ${accountId} rate-limited for ${retryAfterSeconds || 3600}s (mechanical state only)`);
 }
 
 // ── Fetch error classifier ───────────────────────────────────────────────────
 
 /**
  * Classifies a fetch result and returns flow-control signals for the caller.
+ * Pure mechanical classification — no governance decisions.
+ *
+ * Governance owns auth strike tracking, escalation, and disconnect decisions.
+ * This function only classifies: auth_failure → skip, rate_limit → break,
+ * transient → retryable, permanent → non-retryable.
  *
  * @param {object} result - Fetch result from transport substrate
  * @param {string} accountId
  * @returns {{ skip: boolean, break: boolean, retryable: boolean, retryAfterMs: number|null }}
  *   skip      → caller should skip this account (auth failure)
  *   break     → caller should stop (rate limit — circuit breaker engaged)
- *   retryable → transient error that can be retried once
+ *   retryable → transient error that can be retried
  *   retryAfterMs → server-suggested wait before retry (null = use default)
  */
 function handleFetchError(result, accountId) {
   if (!result || result.success) {
-    _authFailureStrikes.delete(accountId);
     return { skip: false, break: false, retryable: false, retryAfterMs: null };
   }
 
   if (result.error_category === 'auth_failure') {
-    const strikes = (_authFailureStrikes.get(accountId) || 0) + 1;
-    _authFailureStrikes.set(accountId, strikes);
-    console.warn(`[retry] Account ${accountId} auth_failure strike ${strikes}/${AUTH_FAILURE_MAX_STRIKES}`);
-
-    logAudit({
-      event_type: 'auth_failure_strike',
-      action: 'circuit_breaker',
-      resource_type: 'instagram_business_account',
-      resource_id: null,
-      details: { account_id: accountId, strike: strikes, max: AUTH_FAILURE_MAX_STRIKES },
-      success: false,
-    }).catch(() => {});
-
-    if (strikes >= AUTH_FAILURE_MAX_STRIKES) {
-      _authFailureStrikes.delete(accountId);
-      markAccountDisconnectedOnAuthFailure(accountId, result.error || 'auth_failure').catch(() => {});
-      logDataBusEvent('sync', 'token_expired_mid_run', {
-        account_id: accountId,
-        error_code: result.code || null,
-        success: false,
-      }).catch(() => {});
-    }
     return { skip: true, break: false, retryable: false, retryAfterMs: null };
   }
 
   if (result.error_category === 'rate_limit') {
     markAccountRateLimited(accountId, result.retry_after_seconds);
+    clearCredentialCache(accountId);
     return { skip: false, break: true, retryable: false, retryAfterMs: null };
   }
 
@@ -158,11 +99,6 @@ function backoffMs(retryCount) {
 
 // ── Cache invalidation ───────────────────────────────────────────────────────
 
-/**
- * Clears the shared accounts cache (used by persistence substrate).
- * Called when an account is disconnected so it's excluded from the next
- * account refresh immediately.
- */
 let _clearAccountsCacheFn = null;
 function _setClearAccountsCache(fn) { _clearAccountsCacheFn = fn; }
 function clearAccountsCacheAndQuota() {
@@ -171,12 +107,9 @@ function clearAccountsCacheAndQuota() {
 
 module.exports = {
   _rateLimitedAccounts,
-  _authFailureStrikes,
-  AUTH_FAILURE_MAX_STRIKES,
   isAccountRateLimited,
   markAccountRateLimited,
   handleFetchError,
-  markAccountDisconnectedOnAuthFailure,
   backoffMs,
   _setClearAccountsCache,
 };

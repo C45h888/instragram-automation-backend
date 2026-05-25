@@ -14,20 +14,7 @@
 const { getRedisClient } = require('../../config/redis');
 const { getActiveAccounts } = require('../../substrates/persistence');
 const dbWorker = require('../execution/db-worker');
-
-// ── Action → domain mapping ──────────────────────────────────────────────────
-
-function domainForAction(actionType) {
-  if (actionType === 'publish_post') return 'media';
-  if (actionType === 'repost_ugc') return 'ugc';
-  return 'messaging';
-}
-
-function fetchTypeForAction(actionType) {
-  if (actionType === 'publish_post') return 'publish_media';
-  if (actionType === 'repost_ugc') return 'publish_ugc';
-  return 'publish_messaging';
-}
+const { domainForAction, fetchTypeForAction } = require('../execution/domain-registry');
 
 // ── Intent builder ──────────────────────────────────────────────────────────
 
