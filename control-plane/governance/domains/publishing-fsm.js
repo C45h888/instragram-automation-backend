@@ -9,6 +9,15 @@
 //
 // Reports to: constitutional kernel for transition validation + global observability.
 //
+// Architectural invariant:
+//   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
+//   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
+//   Membranes ↓  → actions returned to constitutional for emission to orchestrators
+//   Lineage      → ctx.recordLineage() writes to authoritative ledger (via CK mediation)
+//
+// Domain FSMs CANNOT directly access the lineage ledger.
+// The constitutional kernel mediates all lineage writes.
+//
 // Local states:
 //   IDLE       — no publishing events in flight
 //   BUFFERING  — accumulating signal events in buffer
@@ -72,8 +81,7 @@ const TRANSITION_MAP = {
   // ── Emission result observed ───────────────────────────────────────────
   EMISSION_OBSERVATION: {
     target: (event) => {
-      if (event.status === 'error') return 'IDLE'; // error → idle, degradation reported separately
-      return 'IDLE'; // success or empty → back to idle
+      return 'IDLE'; // always return to IDLE — error state collapses to idle
     },
     guard: (event) => {
       if (!['EVALUATING', 'EMITTING'].includes(_localState)) {
@@ -98,29 +106,15 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
-const _domainLineage = [];
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 4. Domain lineage recorder
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function _recordDomainLineage(from, to, trigger, actions) {
-  const entry = {
-    id: crypto.randomUUID(),
-    ts: Date.now(),
-    authority: 'publishing-fsm',
-    layer: 'domain',
-    intent: trigger,
-    priorState: from,
-    resultantState: to,
-    actions: actions.map(a => ({ type: a.type })),
-  };
-  _domainLineage.push(entry);
-  return entry;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 5. Dispatch
+// 4. Dispatch
+//
+// Write order invariant (Lineage-First):
+//   1. ctx.recordLineage() — write to authoritative ledger via CK mediation
+//   2. _localState mutation — then materialize domain state
+//
+// Domain FSMs CANNOT directly access the lineage ledger.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function dispatch(event, ctx) {
@@ -146,7 +140,17 @@ function dispatch(event, ctx) {
   const target = typeof rawTarget === 'function' ? rawTarget(event) : rawTarget;
 
   if (target === null) {
-    _recordDomainLineage(from, from, event.type, []);
+    // Record lineage first
+    if (ctx && ctx.recordLineage) {
+      ctx.recordLineage({
+        authority: 'publishing-fsm',
+        layer: 'domain',
+        intent: event.type,
+        priorState: from,
+        resultantState: from,
+        meta: { accountId: event.accountId || null, eventCount: event.eventCount || null },
+      });
+    }
     return { allowed: true, from, to: from, actions: [], reason: 'no-transition: event recorded' };
   }
 
@@ -158,30 +162,50 @@ function dispatch(event, ctx) {
     }
   }
 
-  _localState = target;
-  const actions = txn.buildActions ? txn.buildActions(event) : [];
-  const lineageEntry = _recordDomainLineage(from, target, event.type, actions);
-
+  // LINEAGE FIRST — record to authoritative ledger before mutating state
+  let lineageId = null;
   if (ctx && ctx.recordLineage) {
-    ctx.recordLineage({
+    const entry = {
       authority: 'publishing-fsm',
       layer: 'domain',
       intent: event.type,
       priorState: from,
       resultantState: target,
       meta: { accountId: event.accountId || null, eventCount: event.eventCount || null },
-    });
+    };
+    const recorded = ctx.recordLineage(entry);
+    lineageId = recorded.id || recorded.lineageId || null;
   }
 
-  console.log(`[publishing-fsm] ${from} → ${target}  (${event.type})  [${lineageEntry.id.slice(0, 8)}]`);
+  _localState = target;
+  const actions = txn.buildActions ? txn.buildActions(event) : [];
+
+  console.log(`[publishing-fsm] ${from} → ${target}  (${event.type})`);
 
   return {
     allowed: true,
     from,
     to: target,
-    lineageId: lineageEntry.id,
+    lineageId,
     actions,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. Initialization — called by constitutional kernel on boot with rehydrated state
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Initialize the domain FSM with rehydrated state from lineage.
+ * Called by the constitutional kernel after rehydrate() completes on boot.
+ *
+ * @param {string} rehydratedState — the domain state to restore (e.g., 'BUFFERING', 'IDLE')
+ */
+function init(rehydratedState) {
+  if (rehydratedState && typeof rehydratedState === 'string') {
+    _localState = rehydratedState;
+    console.log(`[publishing-fsm] Initialized with rehydrated state: ${rehydratedState}`);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -190,11 +214,6 @@ function dispatch(event, ctx) {
 
 function getState() {
   return _localState;
-}
-
-function getLineage(n) {
-  if (typeof n === 'number' && n > 0) return _domainLineage.slice(-n);
-  return [..._domainLineage];
 }
 
 function exportState() {
@@ -208,8 +227,8 @@ function getHealth() {
 module.exports = {
   name: 'publishing',
   dispatch,
+  init,
   getState,
-  getLineage,
   exportState,
   getHealth,
 };

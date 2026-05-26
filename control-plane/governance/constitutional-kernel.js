@@ -4,27 +4,30 @@
 // Owns: global lifecycle (BOOTING/HEALTHY/DEGRADED/RECOVERY/HALTED),
 //        general guards, domain registration and coordination,
 //        cross-domain transition validation, watchdog staleness detection,
-//        action subscription fabric, unified lineage ledger.
+//        action subscription fabric, unified lineage ledger (canonical truth).
 //
 // Does NOT own: domain lifecycle states, execution intelligence,
 //               retry decisions, buffer mechanics, evaluation policy,
 //               scheduling logic — those belong to domain FSMs.
 //
-// Architecture invariant:
+// Architectural invariant:
 //   Signals UP     → dispatch(event) routes to domain FSMs or handles globals
 //   Authority DOWN → validateDomainTransition() approves/rejects domain transitions
 //                   subscribeAction() emits governance actions to membranes
-//   Lineage        → all events (constitutional + domain) write to lineage ledger
+//   Lineage        → all events (constitutional + domain) write here FIRST
+//                   lineage is canonical truth; runtime state is a projection
 //
 // Domain FSMs are registered at boot. Each FSM conforms to the domain contract:
 //   fsm.name              — unique domain identifier
-//   fsm.dispatch(event, ctx) → { allowed, actions, lineageRef }
+//   fsm.dispatch(event, ctx) → { allowed, actions, lineageId }
 //   fsm.getState()          → domain-local state string
 //   fsm.exportState()       → domain state for observability
 //   fsm.getHealth()         → health signals for degradation detection
+//   fsm.init(state)          → (optional) called by CK on boot with rehydrated state
 //
 // This is the ONLY entry point for governance events. No subsystem may
-// bypass the constitutional kernel.
+// bypass the constitutional kernel. Domain FSMs write lineage via CK mediation
+// (ctx.recordLineage) — they never directly access the lineage ledger.
 
 const lineageLedger = require('./lineage-ledger');
 
@@ -250,6 +253,9 @@ let _accountIds = [];
 // Domain registry
 const _domains = new Map(); // domainName → fsm
 
+// Rehydrated domain states — populated during rehydrate() from lineage
+let _rehydratedDomainStates = null;
+
 // Action subscription
 const _actionSubscribers = new Map(); // actionType → Set<fn>
 let _legacyActionSubscriber = null;
@@ -325,7 +331,7 @@ function validateDomainTransition(domainName, from, to, event) {
 
 /**
  * Register a domain FSM with the constitutional kernel.
- * Each domain FSM must conform to the domain contract.
+ * Initializes the FSM with rehydrated state if lineage was loaded from Redis.
  *
  * @param {object} fsm — domain FSM module
  * @throws {Error} if fsm is invalid
@@ -335,6 +341,16 @@ function registerDomain(fsm) {
     throw new Error('[constitutional-kernel] registerDomain requires a valid domain FSM');
   }
   _domains.set(fsm.name, fsm);
+
+  // Initialize domain FSM with rehydrated state from lineage (if available)
+  if (_rehydratedDomainStates && typeof fsm.init === 'function') {
+    const rehydratedState = _rehydratedDomainStates[fsm.name];
+    if (rehydratedState) {
+      fsm.init(rehydratedState);
+      console.log(`[constitutional-kernel] Domain '${fsm.name}' initialized with rehydrated state: ${rehydratedState}`);
+    }
+  }
+
   console.log(`[constitutional-kernel] Registered domain: ${fsm.name}`);
 }
 
@@ -345,6 +361,10 @@ function registerDomain(fsm) {
 /**
  * Dispatch a runtime event into governance.
  * Routes to the appropriate domain FSM or handles as a global constitutional event.
+ *
+ * Write order invariant (Lineage-First):
+ *   1. Lineage record (commit to canonical ledger)
+ *   2. State materialization (mutate runtime state)
  *
  * @param {{ type: string, [key: string]: any }} event
  * @returns {{ allowed: boolean, from?: string, to?: string, lineageId?: string, actionsEmitted?: number, reason?: string }}
@@ -375,6 +395,8 @@ function dispatch(event) {
       _emitActions(result.actions);
     }
 
+    // Record constitutional lineage entry for domain events
+    // This happens AFTER domain FSM has written its own lineage via ctx.recordLineage()
     if (result.allowed) {
       lineageLedger.record({
         authority: 'constitutional-kernel',
@@ -423,6 +445,16 @@ function dispatch(event) {
   if (txn.guard) {
     const result = txn.guard(event, { state: from });
     if (!result.allowed) {
+      // Record lineage for blocked transition (fixes G1/G4 from audit)
+      lineageLedger.record({
+        authority: 'constitutional-kernel',
+        layer: 'constitutional',
+        intent: event.type,
+        priorState: from,
+        resultantState: from,
+        legitimacy: { blocked: true, reason: result.reason || 'guard blocked' },
+        meta: { accountId: event.accountId || null },
+      });
       return { allowed: false, reason: result.reason || 'guard blocked' };
     }
   }
@@ -431,17 +463,20 @@ function dispatch(event) {
   const generalResults = runGeneralGuards(from, target);
   const failedGeneral = generalResults.find(g => !g.passed);
   if (failedGeneral) {
+    // Record lineage for blocked transition (fixes G1/G4 from audit)
+    lineageLedger.record({
+      authority: 'constitutional-kernel',
+      layer: 'constitutional',
+      intent: event.type,
+      priorState: from,
+      resultantState: from,
+      legitimacy: { blocked: true, reason: failedGeneral.reason },
+      meta: { accountId: event.accountId || null },
+    });
     return { allowed: false, reason: failedGeneral.reason };
   }
 
-  // Execute transition
-  _currentState = target;
-  _stateEnteredAt = Date.now();
-
-  // Build actions
-  const actions = txn.buildActions ? txn.buildActions(event, { state: from }) : [];
-
-  // Record lineage
+  // LINEAGE FIRST — record before mutating state
   const lineageEntry = lineageLedger.record({
     authority: 'constitutional-kernel',
     layer: 'constitutional',
@@ -453,6 +488,13 @@ function dispatch(event) {
     },
     meta: { accountId: event.accountId || null },
   });
+
+  // THEN materialize state
+  _currentState = target;
+  _stateEnteredAt = Date.now();
+
+  // Build actions
+  const actions = txn.buildActions ? txn.buildActions(event, { state: from }) : [];
 
   // Emit actions
   _emitActions(actions);
@@ -539,7 +581,50 @@ function stopLoop() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 11. Observability
+// 11. Rehydration — load lineage from Redis and reconstruct state on boot
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Rehydrate the constitutional kernel from persisted lineage in Redis.
+ * Loads all lineage entries, materializes global and domain states,
+ * and stores rehydrated domain states for FSM initialization.
+ *
+ * Called automatically at module boot time. Safe to call multiple times.
+ *
+ * @returns {Promise<{ loaded: number, globalState: string, domains: object, latestTs: number|null }>}
+ */
+async function rehydrate() {
+  try {
+    const { loaded, latestTs } = await lineageLedger.rehydrate();
+    if (loaded === 0) {
+      console.log('[constitutional-kernel] Rehydration: empty lineage, starting fresh');
+      return { loaded: 0, globalState: 'BOOTING', domains: {}, latestTs: null };
+    }
+
+    const entries = lineageLedger.getLineage();
+    const materialized = lineageLedger.materializeState(entries);
+
+    _currentState = materialized.globalState;
+    _stateEnteredAt = materialized.lastEvent ? materialized.lastEvent.ts : Date.now();
+    _rehydratedDomainStates = materialized.domains;
+
+    console.log(`[constitutional-kernel] Rehydration: ${loaded} entries, globalState='${_currentState}', domains=${JSON.stringify(materialized.domains)}`);
+
+    return {
+      loaded,
+      globalState: _currentState,
+      domains: materialized.domains,
+      latestTs,
+    };
+  } catch (err) {
+    console.error('[constitutional-kernel] Rehydration failed:', err.message);
+    // Fast fail — do not boot with stale/default state if lineage cannot be loaded
+    throw err;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 12. Observability
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function status() {
@@ -572,7 +657,7 @@ function getAccountIds() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 12. Domain FSM state query proxies — delegate to acquisition domain
+// 13. Domain FSM state query proxies — delegate to acquisition domain
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function isCircuitBreakerActive(accountId) {
@@ -600,6 +685,20 @@ function clearCircuitBreaker(accountId) {
   if (fsm && typeof fsm.clearCircuitBreaker === 'function') fsm.clearCircuitBreaker(accountId);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 14. Module initialization — rehydrate from Redis before any dispatch
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Trigger rehydration immediately on module load.
+// This ensures the constitutional kernel boots with state reconstructed
+// from persisted lineage rather than hardcoded defaults.
+// The async nature is safe because no events can be dispatched before
+// the orchestrator's wire() call, which happens after this module loads.
+let _initPromise = rehydrate().catch(err => {
+  console.error('[constitutional-kernel] CRITICAL: Boot rehydration failed:', err.message);
+  throw err; // propagate to crash the process — cannot operate with unknown state
+});
+
 module.exports = {
   dispatch,
   subscribeAction,
@@ -609,6 +708,7 @@ module.exports = {
   tick,
   startLoop,
   stopLoop,
+  rehydrate,
   status,
   getState,
   getLineage,

@@ -9,14 +9,18 @@
 //
 // Reports to: constitutional kernel for transition validation + global observability.
 //
-// Architecture invariant:
+// Architectural invariant:
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Membranes ↓  → actions returned to constitutional for emission to orchestrators
+//   Lineage      → ctx.recordLineage() writes to authoritative ledger (via CK mediation)
+//
+// Domain FSMs CANNOT directly access the lineage ledger.
+// The constitutional kernel mediates all lineage writes.
 //
 // Local states:
 //   IDLE       — no acquisition in progress
-//   ACQUIRING   — acquisition intent received, execution in flight
+//   ACQUIRING  — acquisition intent received, execution in flight
 
 const crypto = require('crypto');
 
@@ -110,10 +114,7 @@ const TRANSITION_MAP = {
 
   EXECUTION_OBSERVATION: {
     target: (event) => {
-      // IDLE if completed or permanent failure, else stay in ACQUIRING
       if (event.status === 'completed') return 'IDLE';
-      if (event.error_category === 'auth_failure') return 'IDLE';
-      if (event.error_category === 'rate_limit') return 'IDLE';
       if (!event.retryable && event.status !== 'completed') return 'IDLE';
       return _localState; // stay in ACQUIRING for retryable
     },
@@ -228,7 +229,7 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Rate limit detected (emitted by retry substrate) ────────────────────
+  // ── Rate limit detected (emitted by retry substrate) ───────────────────
   RATE_LIMIT_DETECTED: {
     target: (event) => _localState,
     guard: () => ({ allowed: true }),
@@ -266,7 +267,6 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
-const _domainLineage = [];
 
 // ── Execution state tracking ─────────────────────────────────────────────────
 const _authFailureStrikes = new Map();  // accountId → strike count
@@ -275,26 +275,13 @@ const _executionRetries = new Map();    // intentId → retry count
 const _executionState = new Map();      // intentId → { accountId, domain, lastError }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 4. Domain lineage recorder
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function _recordDomainLineage(from, to, trigger, actions) {
-  const entry = {
-    id: crypto.randomUUID(),
-    ts: Date.now(),
-    authority: 'acquisition-fsm',
-    layer: 'domain',
-    intent: trigger,
-    priorState: from,
-    resultantState: to,
-    actions: actions.map(a => ({ type: a.type })),
-  };
-  _domainLineage.push(entry);
-  return entry;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 5. Dispatch — process event, ask constitutional for validation, transition
+// 4. Dispatch — process event, ask constitutional for validation, transition
+//
+// Write order invariant (Lineage-First):
+//   1. ctx.recordLineage() — write to authoritative ledger via CK mediation
+//   2. _localState mutation — then materialize domain state
+//
+// Domain FSMs CANNOT directly access the lineage ledger.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -330,7 +317,17 @@ function dispatch(event, ctx) {
 
   // null target = no state change, record lineage only
   if (target === null) {
-    _recordDomainLineage(from, from, event.type, []);
+    // Record lineage first
+    if (ctx && ctx.recordLineage) {
+      ctx.recordLineage({
+        authority: 'acquisition-fsm',
+        layer: 'domain',
+        intent: event.type,
+        priorState: from,
+        resultantState: from,
+        meta: { accountId: event.accountId || null, domain: event.domain || null, intentId: event.intentId || null },
+      });
+    }
     return { allowed: true, from, to: from, actions: [], reason: 'no-transition: event recorded' };
   }
 
@@ -342,36 +339,53 @@ function dispatch(event, ctx) {
     }
   }
 
-  // 4. Execute transition
-  _localState = target;
-
-  // 5. Build actions (domain-internal state mutations happen inside buildActions)
-  const actions = txn.buildActions ? txn.buildActions(event) : [];
-
-  // 6. Record domain lineage
-  const lineageEntry = _recordDomainLineage(from, target, event.type, actions);
-
-  // 7. Record constitutional lineage (if ledger available)
+  // 4. LINEAGE FIRST — record to authoritative ledger before mutating state
+  let lineageId = null;
   if (ctx && ctx.recordLineage) {
-    ctx.recordLineage({
+    const entry = {
       authority: 'acquisition-fsm',
       layer: 'domain',
       intent: event.type,
       priorState: from,
       resultantState: target,
       meta: { accountId: event.accountId || null, domain: event.domain || null, intentId: event.intentId || null },
-    });
+    };
+    const recorded = ctx.recordLineage(entry);
+    lineageId = recorded.id || recorded.lineageId || null;
   }
 
-  console.log(`[acquisition-fsm] ${from} → ${target}  (${event.type})  [${lineageEntry.id.slice(0, 8)}]`);
+  // 5. THEN materialize state
+  _localState = target;
+
+  // 6. Build actions
+  const actions = txn.buildActions ? txn.buildActions(event) : [];
+
+  console.log(`[acquisition-fsm] ${from} → ${target}  (${event.type})`);
 
   return {
     allowed: true,
     from,
     to: target,
-    lineageId: lineageEntry.id,
+    lineageId,
     actions,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. Initialization — called by constitutional kernel on boot with rehydrated state
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Initialize the domain FSM with rehydrated state from lineage.
+ * Called by the constitutional kernel after rehydrate() completes on boot.
+ *
+ * @param {string} rehydratedState — the domain state to restore (e.g., 'ACQUIRING', 'IDLE')
+ */
+function init(rehydratedState) {
+  if (rehydratedState && typeof rehydratedState === 'string') {
+    _localState = rehydratedState;
+    console.log(`[acquisition-fsm] Initialized with rehydrated state: ${rehydratedState}`);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -380,11 +394,6 @@ function dispatch(event, ctx) {
 
 function getState() {
   return _localState;
-}
-
-function getLineage(n) {
-  if (typeof n === 'number' && n > 0) return _domainLineage.slice(-n);
-  return [..._domainLineage];
 }
 
 function exportState() {
@@ -441,8 +450,8 @@ function clearCircuitBreaker(accountId) {
 module.exports = {
   name: 'acquisition',
   dispatch,
+  init,
   getState,
-  getLineage,
   exportState,
   getHealth,
   isCircuitBreakerActive,
