@@ -72,6 +72,8 @@ async function refresh() {
       _activeAccounts.add(accountId);
       added++;
       console.log(`[lifecycle] Account ${accountId} added`);
+      // Observability: account lifecycle transition
+      _emitTransition(accountId, 'UNKNOWN', 'ACTIVE');
     }
   }
 
@@ -80,12 +82,34 @@ async function refresh() {
     if (!currentIds.has(accountId)) {
       _activeAccounts.delete(accountId);
       removed++;
+      // Observability: account lifecycle transition
+      _emitTransition(accountId, 'ACTIVE', 'REMOVED');
       if (_onRemove) _onRemove(accountId);
       console.log(`[lifecycle] Account ${accountId} removed`);
     }
   }
 
   return { ok: true, added, removed };
+}
+
+/**
+ * Emit observability transition for account lifecycle changes.
+ */
+function _emitTransition(accountId, previousState, nextState) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'lifecycle',
+      entity: 'account',
+      entityId: accountId,
+      previousState,
+      nextState,
+      authority: 'lifecycle-runtime',
+      raw: {},
+    });
+  } catch (err) {
+    console.warn('[lifecycle] Observability transition error:', err.message);
+  }
 }
 
 /**

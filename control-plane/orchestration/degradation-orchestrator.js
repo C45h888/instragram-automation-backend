@@ -22,22 +22,30 @@ function wire(governance) {
   // ── LOG_DEGRADED → structured logging ──────────────────────────────────
   governance.subscribeAction('LOG_DEGRADED', (action) => {
     console.warn(`[degradation-orchestrator] Runtime DEGRADED.${action.substate}: ${action.reason}`);
+    // Observability: runtime degradation transition
+    _emitTransition('HEALTHY', 'DEGRADED', { substate: action.substate, reason: action.reason });
   });
 
   // ── LOG_RECOVERY → structured logging ──────────────────────────────────
   governance.subscribeAction('LOG_RECOVERY', (action) => {
     console.warn(`[degradation-orchestrator] Runtime RECOVERY.${action.substate}`);
+    // Observability: runtime recovery transition
+    _emitTransition('DEGRADED', 'RECOVERY', { substate: action.substate });
   });
 
   // ── LOG_HALT → structured logging ──────────────────────────────────────
   governance.subscribeAction('LOG_HALT', (action) => {
     console.error(`[degradation-orchestrator] Runtime HALTED: ${action.reason}`);
+    // Observability: runtime halt transition
+    _emitTransition('ANY', 'HALTED', { reason: action.reason });
   });
 
   // ── CREATE_SYSTEM_ALERT → observability persistence ────────────────────
   governance.subscribeAction('CREATE_SYSTEM_ALERT', (action) => {
     const { alertType, accountId, message, details } = action;
     console.error(`[degradation-orchestrator] System alert [${alertType}]: ${message}`);
+    // Observability: system alert raised transition
+    _emitAlertTransition(alertType, accountId);
     // Persist to Supabase system_alerts (fire-and-forget)
     logAudit({
       event_type: alertType,
@@ -50,6 +58,40 @@ function wire(governance) {
       console.error(`[degradation-orchestrator] Failed to persist system alert:`, err.message);
     });
   });
+}
+
+function _emitTransition(previousState, nextState, extraRaw = {}) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'governance',
+      entity: 'runtime',
+      entityId: 'global',
+      previousState,
+      nextState,
+      authority: 'degradation-orchestrator',
+      raw: extraRaw,
+    });
+  } catch (err) {
+    console.warn('[degradation-orchestrator] Observability transition error:', err.message);
+  }
+}
+
+function _emitAlertTransition(alertType, accountId) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'governance',
+      entity: 'alert',
+      entityId: alertType,
+      previousState: null,
+      nextState: 'RAISED',
+      authority: 'degradation-orchestrator',
+      raw: { accountId },
+    });
+  } catch (err) {
+    console.warn('[degradation-orchestrator] Observability transition error:', err.message);
+  }
 }
 
 module.exports = { wire };

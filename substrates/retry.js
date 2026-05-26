@@ -22,16 +22,62 @@ const { clearCredentialCache } = require('../helpers/agent-helpers');
 
 const _rateLimitedAccounts = new Map(); // accountId → unblocked_at ms
 
+/**
+ * Returns the current circuit breaker state for an account.
+ * Used by observability plane to get previous state before rate limiting.
+ *
+ * @param {string} accountId
+ * @returns {string} 'IDLE' | 'RATE_LIMITED'
+ */
+function getCircuitBreakerState(accountId) {
+  const unblocked = _rateLimitedAccounts.get(accountId);
+  if (!unblocked) return 'IDLE';
+  if (Date.now() >= unblocked) return 'IDLE';
+  return 'RATE_LIMITED';
+}
+
 // ── Rate limit guard ─────────────────────────────────────────────────────────
 
 function isAccountRateLimited(accountId) {
   const unblocked = _rateLimitedAccounts.get(accountId);
   if (!unblocked) return false;
   if (Date.now() >= unblocked) {
-    _rateLimitedAccounts.delete(accountId);
     return false;
   }
   return true;
+}
+
+/**
+ * Check and auto-clear expired circuit breaker. Returns previous state before clear.
+ * Called by observability plane or retry logic when checking if a breaker is active.
+ *
+ * @param {string} accountId
+ * @returns {{ cleared: boolean, previousState: string }}
+ */
+function checkAndClearIfExpired(accountId) {
+  const previousState = getCircuitBreakerState(accountId);
+  const unblocked = _rateLimitedAccounts.get(accountId);
+  if (unblocked && Date.now() >= unblocked) {
+    _rateLimitedAccounts.delete(accountId);
+    if (previousState === 'RATE_LIMITED') {
+      try {
+        const observability = require('../control-plane/observability/emitters/transition-emitter');
+        observability.transition({
+          domain: 'quota',
+          entity: 'circuit_breaker',
+          entityId: accountId,
+          previousState: 'RATE_LIMITED',
+          nextState: 'IDLE',
+          authority: 'retry-substrate',
+          raw: { autoCleared: true },
+        });
+      } catch (err) {
+        console.warn('[retry] Observability transition error:', err.message);
+      }
+    }
+    return { cleared: true, previousState };
+  }
+  return { cleared: false, previousState };
 }
 
 /**
@@ -39,9 +85,27 @@ function isAccountRateLimited(accountId) {
  * Governance is informed via EXECUTION_OBSERVATION from execution-bridge.
  */
 function markAccountRateLimited(accountId, retryAfterSeconds) {
+  const previousState = getCircuitBreakerState(accountId);
   const cooldown = (retryAfterSeconds || 3600) * 1000;
   _rateLimitedAccounts.set(accountId, Date.now() + cooldown);
   console.warn(`[retry] Account ${accountId} rate-limited for ${retryAfterSeconds || 3600}s (mechanical state only)`);
+
+  // Observability transition — circuit breaker state change
+  try {
+    const observability = require('../control-plane/observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'quota',
+      entity: 'circuit_breaker',
+      entityId: accountId,
+      previousState,
+      nextState: 'RATE_LIMITED',
+      authority: 'retry-substrate',
+      raw: { retryAfterSeconds, cooldownMs: cooldown },
+    });
+  } catch (err) {
+    // Never let observability failures affect retry logic
+    console.warn('[retry] Observability transition error:', err.message);
+  }
 }
 
 // ── Fetch error classifier ───────────────────────────────────────────────────
@@ -109,6 +173,8 @@ module.exports = {
   _rateLimitedAccounts,
   isAccountRateLimited,
   markAccountRateLimited,
+  checkAndClearIfExpired,
+  getCircuitBreakerState,
   handleFetchError,
   backoffMs,
   _setClearAccountsCache,

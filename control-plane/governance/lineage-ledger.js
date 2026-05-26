@@ -166,6 +166,71 @@ function materializeState(entries) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Reconciliation Epoch — snapshot marker for reconciliation cycles
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Create a reconciliation epoch marker in the lineage ledger.
+ * Appends an epoch marker entry and persists it to Redis.
+ * Called by the reconciliation engine at the start of each cycle.
+ *
+ * @returns {{ epochId: string, lineagePosition: number }}
+ */
+function createEpoch() {
+  const epochId = crypto.randomUUID();
+  const lineagePosition = _lineage.length;
+
+  const epochEntry = {
+    id: crypto.randomUUID(),
+    ts: Date.now(),
+    authority: 'reconciliation-engine',
+    layer: 'constitutional',
+    intent: 'RECONCILIATION_EPOCH',
+    priorState: 'HEALTHY',
+    resultantState: 'EPOCH_CREATED',
+    legitimacy: null,
+    meta: { epochId, lineagePosition },
+  };
+  _lineage.push(epochEntry);
+  _persist(epochEntry);
+  return { epochId, lineagePosition };
+}
+
+/**
+ * Compute a deterministic SHA-256 constitutional hash from current lineage.
+ * Hash includes: entry count, global state, domain projections, last event timestamp.
+ *
+ * @returns {string} hex-encoded SHA-256 hash
+ */
+function computeHash() {
+  const materialized = materializeState(_lineage);
+  const payload = JSON.stringify({
+    count: _lineage.length,
+    globalState: materialized.globalState,
+    domains: materialized.domains,
+    lastTs: materialized.lastEvent ? materialized.lastEvent.ts : null,
+  });
+  return crypto.createHash('sha256').update(payload).digest('hex');
+}
+
+/**
+ * Returns the last N lineage entries for a specific domain.
+ * Filters by authority matching '{domainName}-fsm'.
+ *
+ * @param {string} domainName — 'acquisition' | 'publishing' | 'scheduling'
+ * @param {number} [n] — number of recent entries to return (default: all)
+ * @returns {Array<object>}
+ */
+function getDomainLineage(domainName, n) {
+  const authority = `${domainName}-fsm`;
+  const filtered = _lineage.filter(e => e.authority === authority);
+  if (typeof n === 'number' && n > 0) {
+    return filtered.slice(-n);
+  }
+  return filtered;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Rehydration — load persisted lineage from Redis on boot
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -215,4 +280,4 @@ async function rehydrate() {
   }
 }
 
-module.exports = { record, getLineage, getSize, materializeState, rehydrate };
+module.exports = { record, getLineage, getSize, materializeState, rehydrate, createEpoch, computeHash, getDomainLineage };

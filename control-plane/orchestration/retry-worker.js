@@ -39,6 +39,8 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
   if (governance && governance.isCircuitBreakerActive && governance.isCircuitBreakerActive(accountId)) {
     console.log(`[retry-worker] ${domain}/${accountId} circuit-breaker active, skipping intent ${intentId}`);
     await _recordFailure(domain, accountId, intentId, 'rate_limited', 0);
+    // Observability: attempt skipped due to circuit breaker
+    _emitTransition(intentId, 'PENDING', 'SKIPPED', { accountId, domain, reason: 'circuit_breaker' });
     _emitObservation(governance, accountId, intentId, domain, 'failed', {
       error_category: 'rate_limit',
       retryable: false,
@@ -48,6 +50,9 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
     });
     return { status: 'failed', count: 0, error: 'circuit_breaker_active', instagram_id: null };
   }
+
+  // Observability: attempt start transition
+  _emitTransition(intentId, 'PENDING', 'ATTEMPTING', { accountId, domain });
 
   // ── Single bounded attempt ───────────────────────────────────────────────
   let result;
@@ -86,6 +91,12 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
     await _recordFailure(domain, accountId, intentId, _errorTag(result, skip, brk, retryable), latencyMs);
   }
 
+  // Observability: attempt result transition (COMPLETED or FAILED)
+  _emitTransition(intentId, 'ATTEMPTING', result.success ? 'COMPLETED' : 'FAILED', {
+    accountId, domain,
+    error_category: result.success ? null : (skip ? 'auth_failure' : brk ? 'rate_limit' : retryable ? 'transient' : 'permanent'),
+  });
+
   // ── Emit observation upward to governance ───────────────────────────────
   _emitObservation(governance, accountId, intentId, domain, result.success ? 'completed' : 'failed', {
     error_category: skip ? 'auth_failure' : brk ? 'rate_limit' : retryable ? 'transient' : (result.success ? null : 'permanent'),
@@ -102,6 +113,26 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
     error: result.success ? null : (result.error || null),
     instagram_id: result.instagram_id || null,
   };
+}
+
+/**
+ * Emit observability transition for attempt state changes.
+ */
+function _emitTransition(intentId, previousState, nextState, extraRaw = {}) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'execution',
+      entity: 'attempt',
+      entityId: intentId,
+      previousState,
+      nextState,
+      authority: 'retry-worker',
+      raw: extraRaw,
+    });
+  } catch (err) {
+    console.warn('[retry-worker] Observability transition error:', err.message);
+  }
 }
 
 /**

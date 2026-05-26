@@ -52,8 +52,13 @@ async function executeSingle(accountId, intentId, domain, executeFn, params = {}
     console.log(`[execution-bridge] ${domain}/${accountId} circuit-breaker active, skipping intent ${intentId}`);
     await _recordFailure(domain, accountId, intentId, 'rate_limited', 0);
     _emitObservation(accountId, intentId, domain, 'failed', { error_category: 'rate_limit', retryable: false, count: 0, latencyMs: 0, error: 'circuit_breaker_active' });
+    // Observability: execution attempt skipped
+    _emitTransition(intentId, 'PENDING', 'SKIPPED', { accountId, domain, reason: 'circuit_breaker' });
     return { status: 'failed', count: 0, error: 'circuit_breaker_active', instagram_id: null };
   }
+
+  // Observability: attempt start
+  _emitTransition(intentId, 'PENDING', 'STARTED', { accountId, domain });
 
   let result;
   try {
@@ -73,9 +78,17 @@ async function executeSingle(accountId, intentId, domain, executeFn, params = {}
   if (result.success) {
     await telemetry.recordAcquisition(domain, accountId, intentId, 'completed', result.count, latencyMs, null);
     metricsSubstrate.record(domain, 'completed', latencyMs, accountId);
+    // Observability: attempt completed
+    _emitTransition(intentId, 'STARTED', 'COMPLETED', { accountId, domain, count: result.count });
     _emitObservation(accountId, intentId, domain, 'completed', { error_category: null, retryable: false, count: result.count, latencyMs });
     return { status: 'completed', count: result.count || 0, error: null, instagram_id: result.instagram_id || null };
   }
+
+  // Observability: attempt failed
+  _emitTransition(intentId, 'STARTED', 'FAILED', {
+    accountId, domain,
+    error_category: skip ? 'auth_failure' : brk ? 'rate_limit' : retryable ? 'transient' : 'permanent',
+  });
 
   await _recordFailure(domain, accountId, intentId, _errorTag(result, skip, brk, retryable), latencyMs);
   _emitObservation(accountId, intentId, domain, 'failed', {
@@ -101,6 +114,23 @@ function _errorTag(result, skip, brk, retryable) {
   if (brk) return 'rate_limited';
   if (retryable) return 'transient';
   return result.error || 'unknown';
+}
+
+function _emitTransition(intentId, previousState, nextState, extraRaw = {}) {
+  try {
+    const observability = require('./observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'execution',
+      entity: 'attempt',
+      entityId: intentId,
+      previousState,
+      nextState,
+      authority: 'execution-bridge',
+      raw: extraRaw,
+    });
+  } catch (err) {
+    console.warn('[execution-bridge] Observability transition error:', err.message);
+  }
 }
 
 function getMetrics() {

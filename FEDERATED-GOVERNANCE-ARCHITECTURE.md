@@ -1,4 +1,4 @@
-# Federated Governance Architecture — Contextual Reference
+ths# Federated Governance Architecture — Contextual Reference
 
 > This document captures the architectural philosophy, phase progression, and audit state of the federated governance runtime. It is **contextual only** — it describes what the system is, what it aims to become, and where the gaps are. It does not prescribe specific file changes or implementation steps, as execution approach may evolve during implementation.
 

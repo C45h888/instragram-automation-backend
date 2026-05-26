@@ -11,6 +11,7 @@
 let _stopping = false;
 let _loopPromise = null;
 let _intervalMs = null;
+let _lastTickAt = null; // timestamp of last tick — for reconciliation engine
 
 function _sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -25,6 +26,15 @@ function status() {
     state: _loopPromise ? 'running' : 'stopped',
     intervalMs: _intervalMs,
   };
+}
+
+/**
+ * Returns the timestamp of the last cadence tick.
+ * Used by the reconciliation engine for cadence gap detection.
+ * @returns {number|null}
+ */
+function lastTick() {
+  return _lastTickAt;
 }
 
 /**
@@ -55,7 +65,12 @@ function every(intervalMs, callback) {
       await _sleep(intervalMs);
       if (_stopping) break;
       try {
+        _lastTickAt = Date.now();
+        // Observability: cadence tick transition
+        _emitTransition('TICKING');
         await callback();
+        // Observability: cadence return to idle after tick complete
+        _emitTransition('IDLE');
       } catch (err) {
         console.error('[cadence] Cycle error:', err.message);
       }
@@ -71,6 +86,8 @@ function every(intervalMs, callback) {
  * Awaitable — resolves when loop has fully exited.
  */
 async function stop() {
+  // Observability: cadence stopped transition
+  _emitTransition('STOPPED');
   _stopping = true;
   if (_loopPromise) {
     await _loopPromise;
@@ -78,4 +95,25 @@ async function stop() {
   _intervalMs = null;
 }
 
-module.exports = { every, stop, status };
+/**
+ * Emit observability transition for cadence state changes.
+ */
+function _emitTransition(nextState) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    const previousState = _loopPromise ? 'TICKING' : 'IDLE';
+    observability.transition({
+      domain: 'cadence',
+      entity: 'cadence',
+      entityId: 'cadence',
+      previousState,
+      nextState,
+      authority: 'cadence-runtime',
+      raw: { intervalMs: _intervalMs },
+    });
+  } catch (err) {
+    console.warn('[cadence] Observability transition error:', err.message);
+  }
+}
+
+module.exports = { every, stop, status, lastTick };

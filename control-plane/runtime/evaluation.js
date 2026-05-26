@@ -14,6 +14,10 @@
 const publishingPolicy = require('../policies/publishing');
 const dedupSubstrate = require('../../substrates/dedup-substrate');
 
+// ── Observability state tracking ────────────────────────────────────────────
+
+let _evalState = 'IDLE';
+
 /**
  * Evaluates a batch of events for one account.
  * Async — dedup checks and marks require Redis-backed idempotency.
@@ -30,6 +34,23 @@ async function evaluate(accountId, events) {
   }
   if (!Array.isArray(events)) {
     throw new Error(`[evaluation] events must be an array, got ${typeof events}`);
+  }
+
+  // Emit EVALUATING transition when evaluation begins
+  if (_evalState === 'IDLE') {
+    _evalState = 'EVALUATING';
+    try {
+      const observability = require('../observability/emitters/transition-emitter');
+      observability.transition({
+        domain: 'evaluation',
+        entity: 'evaluator',
+        entityId: accountId,
+        previousState: 'IDLE',
+        nextState: 'EVALUATING',
+        authority: 'evaluation',
+        raw: { eventCount: events.length },
+      });
+    } catch (_) {}
   }
 
   const intents = [];
@@ -74,6 +95,24 @@ async function evaluate(accountId, events) {
   }
 
   dedupSubstrate.clearTick();
+
+  // Emit IDLE transition when evaluation completes
+  if (_evalState !== 'IDLE') {
+    _evalState = 'IDLE';
+    try {
+      const observability = require('../observability/emitters/transition-emitter');
+      observability.transition({
+        domain: 'evaluation',
+        entity: 'evaluator',
+        entityId: accountId,
+        previousState: 'EVALUATING',
+        nextState: 'IDLE',
+        authority: 'evaluation',
+        raw: { intentsEmitted: intents.length, mutationsApplied: mutations.length },
+      });
+    } catch (_) {}
+  }
+
   return { intents, mutations };
 }
 

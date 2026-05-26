@@ -45,10 +45,24 @@ async function markInFlight(accountId, actionType, resourceId) {
   _inFlight.add(key);
   _evictOldest();
 
+  // Observability: dedup entry state transition
+  try {
+    const observability = require('../control-plane/observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'dedup',
+      entity: 'dedup_entry',
+      entityId: key,
+      previousState: 'PENDING',
+      nextState: 'IN_FLIGHT',
+      authority: 'dedup-substrate',
+      raw: { accountId, actionType, resourceId },
+    });
+  } catch (err) {
+    console.warn('[dedup] Observability transition error:', err.message);
+  }
+
   const redis = getRedisClient();
   if (redis && redis.status === 'ready') {
-    // NX = only set if not exists (atomic dedup — first writer wins)
-    // EX = TTL 120s (crash-safety: Redis auto-expires key if process dies)
     await redis.set(key, '1', 'EX', TTL_SECONDS, 'NX').catch(() => {});
   }
 }
@@ -80,6 +94,23 @@ async function isInFlight(accountId, actionType, resourceId) {
  * Redis keys self-expire via TTL — no manual DEL needed.
  */
 function clearTick() {
+  // Emit observability transition for each cleared dedup entry
+  for (const key of _inFlight) {
+    try {
+      const observability = require('../control-plane/observability/emitters/transition-emitter');
+      observability.transition({
+        domain: 'dedup',
+        entity: 'dedup_entry',
+        entityId: key,
+        previousState: 'IN_FLIGHT',
+        nextState: 'CLEARED',
+        authority: 'dedup-substrate',
+        raw: { clearedAt: Date.now() },
+      });
+    } catch (err) {
+      console.warn('[dedup] Observability transition error:', err.message);
+    }
+  }
   _inFlight.clear();
 }
 

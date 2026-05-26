@@ -16,6 +16,11 @@ const { getActiveAccounts } = require('../../substrates/persistence');
 const dbWorker = require('../execution/db-worker');
 const { domainForAction, fetchTypeForAction } = require('../execution/domain-registry');
 
+// ── Observability state tracking ────────────────────────────────────────────
+
+let _scanState = 'IDLE';
+let _lastScanAt = null;
+
 // ── Intent builder ──────────────────────────────────────────────────────────
 
 function buildIntent(accountId, actionType, payload, queueRowId, scheduledPostId) {
@@ -104,8 +109,26 @@ async function scanPostQueue(redis, accountId) {
 // ── Main scan (called by orchestrator cadence) ──────────────────────────────
 
 async function runScan() {
+  const previousState = _scanState;
+  if (_scanState !== 'SCANNING') {
+    _scanState = 'SCANNING';
+    try {
+      const observability = require('../observability/emitters/transition-emitter');
+      observability.transition({
+        domain: 'db-scanner',
+        entity: 'db_scanner',
+        entityId: 'system',
+        previousState,
+        nextState: 'SCANNING',
+        authority: 'db-scanner',
+        raw: { startedAt: Date.now() },
+      });
+    } catch (_) {}
+  }
+
   const redis = getRedisClient();
   if (!redis || redis.status !== 'ready') {
+    _scanState = 'IDLE';
     return { ok: false, error: 'redis unavailable', totalEmitted: 0 };
   }
 
@@ -125,6 +148,21 @@ async function runScan() {
       console.error(`[db-scanner] Error scanning account ${account.id}:`, err.message);
     }
   }
+
+  _scanState = 'IDLE';
+  _lastScanAt = Date.now();
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'db-scanner',
+      entity: 'db_scanner',
+      entityId: 'system',
+      previousState: 'SCANNING',
+      nextState: 'IDLE',
+      authority: 'db-scanner',
+      raw: { totalEmitted, accountsScanned: accounts.length, completedAt: Date.now() },
+    });
+  } catch (_) {}
 
   return { ok: true, totalEmitted };
 }

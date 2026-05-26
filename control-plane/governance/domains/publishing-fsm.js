@@ -13,6 +13,16 @@
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Membranes ↓  → actions returned to constitutional for emission to orchestrators
+
+// Lazy import to avoid circular dependency
+let _observability = null;
+function _obs() {
+  if (!_observability) {
+    try { _observability = require('../../observability/emitters/transition-emitter'); }
+    catch (_) { _observability = null; }
+  }
+  return _observability;
+}
 //   Lineage      → ctx.recordLineage() writes to authoritative ledger (via CK mediation)
 //
 // Domain FSMs CANNOT directly access the lineage ledger.
@@ -178,6 +188,23 @@ function dispatch(event, ctx) {
   }
 
   _localState = target;
+
+  // Emit observability transition for domain FSM state change
+  try {
+    const obs = _obs();
+    if (obs) {
+      obs.transition({
+        domain: 'publishing',
+        entity: 'fsm',
+        entityId: 'publishing-fsm',
+        previousState: from,
+        nextState: target,
+        authority: 'publishing-fsm',
+        raw: { intent: event.type, accountId: event.accountId || null, eventCount: event.eventCount || null },
+      });
+    }
+  } catch (_) {}
+
   const actions = txn.buildActions ? txn.buildActions(event) : [];
 
   console.log(`[publishing-fsm] ${from} → ${target}  (${event.type})`);

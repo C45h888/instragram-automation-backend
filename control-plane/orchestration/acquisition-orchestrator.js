@@ -88,6 +88,16 @@ async function writeAcquisitionResult(accountId, domain, intentId, result) {
 function wire(gov, acquisitionFsm) {
   // ── EXECUTE_ACQUISITION → retry worker (first attempt) ─────────────────
   gov.subscribeAction('EXECUTE_ACQUISITION', (action) => {
+    // Observability: acquisition intent state transition
+    _emitTransition({
+      domain: 'acquisition',
+      entity: 'acquisition_intent',
+      entityId: action.intentId,
+      previousState: 'RECEIVED',
+      nextState: 'EXECUTING',
+      authority: 'acquisition-orchestrator',
+      raw: { accountId: action.accountId, domain: action.domain },
+    });
     executeAcquisition(gov, action.accountId, action.domain, action.intentId, action.params);
   });
 
@@ -101,6 +111,16 @@ function wire(gov, acquisitionFsm) {
   // evaluates EXECUTION_OBSERVATION and decides whether to retry or fail permanently.
   gov.subscribeAction('RETRY_ACQUISITION', (action) => {
     const { accountId, domain, intentId, params, delayMs } = action;
+    // Observability: acquisition intent retry transition
+    _emitTransition({
+      domain: 'acquisition',
+      entity: 'acquisition_intent',
+      entityId: intentId,
+      previousState: 'EXECUTING',
+      nextState: 'RETRYING',
+      authority: 'acquisition-orchestrator',
+      raw: { accountId, domain, delayMs },
+    });
     setTimeout(() => {
       executeAcquisition(gov, accountId, domain, intentId, params);
     }, delayMs || 30000);
@@ -137,6 +157,18 @@ function wire(gov, acquisitionFsm) {
   gov.subscribeAction('UPDATE_ACCOUNT_LIST', (action) => {
     syncSubstrate.onKernelSignal({ type: 'UPDATE_ACCOUNT_LIST', accountIds: action.accountIds });
   });
+}
+
+/**
+ * Emit observability transition. Wrapped in try/catch — never disrupts routing.
+ */
+function _emitTransition(params) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition(params);
+  } catch (err) {
+    console.warn('[acquisition-orchestrator] Observability transition error:', err.message);
+  }
 }
 
 module.exports = { wire };

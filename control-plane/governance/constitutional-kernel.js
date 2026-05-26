@@ -30,6 +30,20 @@
 // (ctx.recordLineage) — they never directly access the lineage ledger.
 
 const lineageLedger = require('./lineage-ledger');
+const reconciliationEngine = require('./reconciliation-engine');
+
+// Lazy import to avoid circular dependency at module load time
+let _observabilityTransition = null;
+function _getObservabilityTransition() {
+  if (!_observabilityTransition) {
+    try {
+      _observabilityTransition = require('../observability/emitters/transition-emitter');
+    } catch (_) {
+      _observabilityTransition = null;
+    }
+  }
+  return _observabilityTransition;
+}
 
 const STARTED_AT = Date.now();
 
@@ -206,6 +220,33 @@ const GLOBAL_TRANSITION_MAP = {
     },
     buildActions: () => [{ type: 'START_INTENT_DISCOVERY' }],
   },
+
+  // ── Reconciliation drift — constitutional equilibrium compromised ──────
+  RECONCILIATION_DRIFT_DETECTED: {
+    target: 'DEGRADED',
+    guard: (event, ctx) => {
+      if (ctx.state !== 'HEALTHY') {
+        return { allowed: false, reason: `Reconciliation drift escalation only from HEALTHY, got ${ctx.state}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => [{
+      type: 'LOG_DEGRADED',
+      substate: 'RECONCILING',
+      reason: event.reason || 'Reconciliation drift detected — constitutional equilibrium compromised',
+    }],
+  },
+
+  RECONCILIATION_CLEARED: {
+    target: 'HEALTHY',
+    guard: (event, ctx) => {
+      if (ctx.state !== 'DEGRADED') {
+        return { allowed: false, reason: `Reconciliation clear only from DEGRADED, got ${ctx.state}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: () => [],
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -259,6 +300,10 @@ let _rehydratedDomainStates = null;
 // Action subscription
 const _actionSubscribers = new Map(); // actionType → Set<fn>
 let _legacyActionSubscriber = null;
+
+// Reconciliation drift aggregation — counters persist across epochs
+const _driftCounters = { substrate: 0, replay: 0 };
+const DRIFT_ESCALATION_THRESHOLD = 3; // consecutive epochs before escalation
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 5. Action dispatcher
@@ -420,6 +465,12 @@ function dispatch(event) {
 
   // ── Handle as global constitutional event ──────────────────────────────
   const txn = GLOBAL_TRANSITION_MAP[event.type];
+
+  // ── Kernel-internal: RECONCILIATION_TICK triggers the reconciliation cycle ─
+  if (event.type === 'RECONCILIATION_TICK') {
+    return _onReconciliationTick();
+  }
+
   if (!txn) {
     return { allowed: false, reason: `unknown event type: ${event.type}` };
   }
@@ -492,6 +543,23 @@ function dispatch(event) {
   // THEN materialize state
   _currentState = target;
   _stateEnteredAt = Date.now();
+
+  // Emit observability transition for global runtime state change
+  // Fire-and-forget — observability failures never affect governance
+  try {
+    const obs = _getObservabilityTransition();
+    if (obs) {
+      obs.transition({
+        domain: 'governance',
+        entity: 'runtime',
+        entityId: 'global',
+        previousState: from,
+        nextState: target,
+        authority: 'constitutional-kernel',
+        raw: { intent: event.type, substate: event.substate || null, reason: event.reason || null },
+      });
+    }
+  } catch (_) {}
 
   // Build actions
   const actions = txn.buildActions ? txn.buildActions(event, { state: from }) : [];
@@ -581,7 +649,140 @@ function stopLoop() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 11. Rehydration — load lineage from Redis and reconstruct state on boot
+// 11. Reconciliation — constitutional equilibrium verification
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Build the substrate query interface for the reconciliation engine.
+ * Provides bounded access to operational substrates for three-reality comparison.
+ */
+function _buildSubstrateQueries() {
+  const dedupSubstrate = require('../../substrates/dedup-substrate');
+  const retrySubstrate = require('../../substrates/retry');
+  const metricsSubstrate = require('../../substrates/metrics-substrate');
+  const cadence = require('../runtime/cadence');
+
+  return {
+    dedupIsInFlight: async (accountId, actionType, resourceId) => {
+      return dedupSubstrate.isInFlight(accountId, actionType, resourceId);
+    },
+    retryInFlight: (accountId) => {
+      return retrySubstrate.isAccountRateLimited ? retrySubstrate.isAccountRateLimited(accountId) : false;
+    },
+    bufferSnapshot: () => {
+      const buffer = require('../runtime/buffer');
+      try {
+        return buffer.snapshot ? buffer.snapshot() : { size: 0, flushing: false };
+      } catch {
+        return { size: 0, flushing: false };
+      }
+    },
+    metricsSignals: () => {
+      return metricsSubstrate.getHealthSignals ? metricsSubstrate.getHealthSignals() : {};
+    },
+    cadenceLastTick: () => {
+      return cadence.lastTick ? cadence.lastTick() : null;
+    },
+  };
+}
+
+/**
+ * Run a reconciliation cycle by calling the standalone reconciliation engine.
+ * The engine computes drift signals, classifies severity, and returns results.
+ * The CK then verifies the result and decides corrective action.
+ *
+ * @returns {{ allowed: boolean, lineageId?: string, reason?: string }}
+ */
+function _onReconciliationTick() {
+  console.log('[constitutional-kernel] RECONCILIATION_TICK — running reconciliation cycle');
+
+  try {
+    const substrates = _buildSubstrateQueries();
+    const result = reconciliationEngine.runCycle({
+      fsms: _domains,
+      substrates,
+      lineageLedger,
+    });
+
+    const { epochId, hash, observations, worstSeverity } = result;
+
+    // ── Verify constitutional hash ────────────────────────────────────────
+    const currentHash = lineageLedger.computeHash();
+    if (hash !== currentHash) {
+      console.error(`[constitutional-kernel] Constitutional HASH MISMATCH — epoch ${epochId.slice(0, 8)}`);
+      _resetDriftCounters();
+      const entry = lineageLedger.record({
+        authority: 'constitutional-kernel',
+        layer: 'constitutional',
+        intent: 'RECONCILIATION_HASH_MISMATCH',
+        priorState: _currentState,
+        resultantState: _currentState,
+        meta: { epochId, epochHash: hash.slice(0, 16), currentHash: currentHash.slice(0, 16) },
+      });
+      return { allowed: true, lineageId: entry.id, reason: 'hash mismatch detected — constitutional identity divergence' };
+    }
+
+    // ── Update drift counters ─────────────────────────────────────────────
+    if (worstSeverity === reconciliationEngine.DRIFT_SEVERITY.NONE) {
+      _resetDriftCounters();
+      console.log(`[constitutional-kernel] Reconciliation epoch ${epochId.slice(0, 8)}: CONVERGENT — no drift detected`);
+    } else {
+      // Increment relevant counters
+      for (const obs of observations) {
+        if (obs.severity === reconciliationEngine.DRIFT_SEVERITY.SUBSTRATE) {
+          _driftCounters.substrate++;
+        } else if (obs.severity === reconciliationEngine.DRIFT_SEVERITY.REPLAY) {
+          _driftCounters.replay++;
+        }
+      }
+
+      const driftedDomains = observations.filter(o => o.severity > 0).map(o => o.domain).join(', ');
+      console.warn(
+        `[constitutional-kernel] Reconciliation epoch ${epochId.slice(0, 8)}: DRIFTED (severity=${worstSeverity}, domains=[${driftedDomains}], counters={substrate:${_driftCounters.substrate}, replay:${_driftCounters.replay}})`
+      );
+    }
+
+    // ── Escalation: substrate drift persists across threshold ─────────────
+    const multiDomainDrift = observations.filter(o => o.severity >= reconciliationEngine.DRIFT_SEVERITY.SUBSTRATE).length >= 2;
+
+    if (_driftCounters.substrate >= DRIFT_ESCALATION_THRESHOLD || multiDomainDrift) {
+      console.error(`[constitutional-kernel] Reconciliation drift escalated — substrate counter ${_driftCounters.substrate}/${DRIFT_ESCALATION_THRESHOLD}, multiDomain=${multiDomainDrift}`);
+      _resetDriftCounters();
+
+      // Dispatch into global transition map — enters DEGRADED with RECONCILING substate
+      dispatch({
+        type: 'RECONCILIATION_DRIFT_DETECTED',
+        reason: multiDomainDrift
+          ? `Multi-domain substrate drift detected: ${observations.filter(o => o.severity >= 3).map(o => o.domain).join(', ')}`
+          : `Substrate drift persisted across ${DRIFT_ESCALATION_THRESHOLD} consecutive epochs`,
+        details: { epochId, observations: observations.filter(o => o.severity >= 3) },
+      });
+
+      return { allowed: true, reason: 'reconciliation drift escalated to DEGRADED' };
+    }
+
+    return { allowed: true, reason: 'reconciliation cycle complete' };
+  } catch (err) {
+    console.error('[constitutional-kernel] Reconciliation cycle failed:', err.message);
+    return { allowed: false, reason: `reconciliation cycle error: ${err.message}` };
+  }
+}
+
+function _resetDriftCounters() {
+  _driftCounters.substrate = 0;
+  _driftCounters.replay = 0;
+}
+
+/**
+ * Trigger a reconciliation cycle externally.
+ * Called by the orchestrator on a 60s timer, independent of maintenance cadence.
+ */
+function triggerReconciliation() {
+  dispatch({ type: 'RECONCILIATION_TICK' });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 12. Rehydration — load lineage from Redis and reconstruct state on boot
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -624,7 +825,7 @@ async function rehydrate() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 12. Observability
+// 13. Observability
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function status() {
@@ -657,7 +858,7 @@ function getAccountIds() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 13. Domain FSM state query proxies — delegate to acquisition domain
+// 14. Domain FSM state query proxies — delegate to acquisition domain
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function isCircuitBreakerActive(accountId) {
@@ -686,7 +887,7 @@ function clearCircuitBreaker(accountId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 14. Module initialization — rehydrate from Redis before any dispatch
+// 15. Module initialization — rehydrate from Redis before any dispatch
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Trigger rehydration immediately on module load.
@@ -718,4 +919,5 @@ module.exports = {
   getRetryCount,
   resetAuthStrikes,
   clearCircuitBreaker,
+  triggerReconciliation,
 };

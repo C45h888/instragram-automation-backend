@@ -13,6 +13,16 @@
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Membranes ↓  → actions returned to constitutional for emission to orchestrators
+
+// Lazy import to avoid circular dependency
+let _observability = null;
+function _obs() {
+  if (!_observability) {
+    try { _observability = require('../../observability/emitters/transition-emitter'); }
+    catch (_) { _observability = null; }
+  }
+  return _observability;
+}
 //   Lineage      → ctx.recordLineage() writes to authoritative ledger (via CK mediation)
 //
 // Domain FSMs CANNOT directly access the lineage ledger.
@@ -112,6 +122,9 @@ const TRANSITION_MAP = {
 
 let _localState = 'IDLE';
 
+// ── Cadence tracking — updated on every CADENCE_TICK ────────────────────────
+let _lastCadenceTickAt = null;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
 //
@@ -183,7 +196,29 @@ function dispatch(event, ctx) {
   }
 
   _localState = target;
+
+  // Emit observability transition for domain FSM state change
+  try {
+    const obs = _obs();
+    if (obs) {
+      obs.transition({
+        domain: 'scheduling',
+        entity: 'fsm',
+        entityId: 'scheduling-fsm',
+        previousState: from,
+        nextState: target,
+        authority: 'scheduling-fsm',
+        raw: { intent: event.type, accountIds: event.accountIds || null },
+      });
+    }
+  } catch (_) {}
+
   const actions = txn.buildActions ? txn.buildActions(event) : [];
+
+  // ── Track cadence tick timestamp for reconciliation engine ──────────────
+  if (event.type === 'CADENCE_TICK') {
+    _lastCadenceTickAt = Date.now();
+  }
 
   console.log(`[scheduling-fsm] ${from} → ${target}  (${event.type})`);
 
@@ -229,6 +264,15 @@ function getHealth() {
   return { ok: true, signals: {} };
 }
 
+/**
+ * Returns the timestamp of the last CADENCE_TICK processed by this FSM.
+ * Used by the reconciliation engine for cadence gap detection.
+ * @returns {number|null} — Date.now() timestamp or null if never ticked
+ */
+function getLastCadenceTick() {
+  return _lastCadenceTickAt;
+}
+
 module.exports = {
   name: 'scheduling',
   dispatch,
@@ -236,4 +280,5 @@ module.exports = {
   getState,
   exportState,
   getHealth,
+  getLastCadenceTick,
 };

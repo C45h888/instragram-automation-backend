@@ -25,6 +25,10 @@ const emitter = require('../runtime/emission');
  */
 async function executeEvaluationPipeline(governance, accountId, events) {
   const startTime = Date.now();
+
+  // Observability: evaluation pipeline state transition
+  _emitTransition(accountId, 'IDLE', 'RUNNING');
+
   try {
     const result = await evaluator.evaluate(accountId, events);
 
@@ -35,6 +39,8 @@ async function executeEvaluationPipeline(governance, accountId, events) {
     const emitResult = result.intents.length > 0
       ? await emitter.emit(result.intents)
       : { ok: true, error: null };
+
+    const pipelineState = result.intents.length === 0 ? 'EMPTY' : (emitResult.ok ? 'IDLE' : 'ERROR');
 
     governance.dispatch({
       type: 'EMISSION_OBSERVATION',
@@ -47,8 +53,13 @@ async function executeEvaluationPipeline(governance, accountId, events) {
         latencyMs: Date.now() - startTime,
       },
     });
+
+    // Observability: evaluation pipeline complete
+    _emitTransition(accountId, 'RUNNING', pipelineState);
   } catch (err) {
     console.error(`[emission-orchestrator] Evaluation pipeline error for ${accountId}:`, err.message);
+    // Observability: evaluation pipeline error
+    _emitTransition(accountId, 'RUNNING', 'ERROR');
     governance.dispatch({
       type: 'EMISSION_OBSERVATION',
       status: 'error',
@@ -60,6 +71,23 @@ async function executeEvaluationPipeline(governance, accountId, events) {
         latencyMs: Date.now() - startTime,
       },
     });
+  }
+}
+
+function _emitTransition(accountId, previousState, nextState) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'emission',
+      entity: 'pipeline',
+      entityId: accountId,
+      previousState,
+      nextState,
+      authority: 'emission-orchestrator',
+      raw: {},
+    });
+  } catch (err) {
+    console.warn('[emission-orchestrator] Observability transition error:', err.message);
   }
 }
 

@@ -74,6 +74,9 @@ function ingest(event) {
     throw new Error(`[buffer] ingest requires { accountId, table, record }, missing: ${!accountId ? 'accountId' : !table ? 'table' : 'record'}`);
   }
 
+  // Observability: buffer ingest transition
+  _emitBufferTransition(accountId, 'IDLE', 'INGESTING', { table, recordCount: 1 });
+
   if (!_buffer.has(accountId)) {
     _buffer.set(accountId, []);
   }
@@ -87,6 +90,12 @@ function ingest(event) {
     _debounceTimers.delete(accountId);
     const events = _buffer.get(accountId);
     _buffer.delete(accountId);
+
+    // Observability: buffer flush transition
+    if (events && events.length > 0) {
+      _emitBufferTransition(accountId, 'INGESTING', 'FLUSHING', { eventCount: events.length });
+    }
+
     if (events && events.length > 0 && _onFlush) {
       try {
         await _onFlush(accountId, events);
@@ -94,7 +103,33 @@ function ingest(event) {
         console.error(`[buffer] Flush error for account ${accountId}:`, err.message);
       }
     }
+
+    // Observability: buffer return to idle after flush
+    if (events && events.length > 0) {
+      _emitBufferTransition(accountId, 'FLUSHING', 'IDLE', { eventCount: events.length });
+    }
   }, _debounceMs));
+}
+
+/**
+ * Emit observability transition for buffer state changes.
+ * Wrapped in try/catch — observability failures never affect buffer behavior.
+ */
+function _emitBufferTransition(accountId, previousState, nextState, extraRaw = {}) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'buffer',
+      entity: 'buffer',
+      entityId: accountId,
+      previousState,
+      nextState,
+      authority: 'buffer-runtime',
+      raw: extraRaw,
+    });
+  } catch (err) {
+    console.warn('[buffer] Observability transition error:', err.message);
+  }
 }
 
 /**
@@ -103,11 +138,30 @@ function ingest(event) {
  * @param {string} accountId
  */
 function destroy(accountId) {
+  const hadBuffer = _buffer.has(accountId) || _debounceTimers.has(accountId);
   _buffer.delete(accountId);
   const timer = _debounceTimers.get(accountId);
   if (timer) {
     clearTimeout(timer);
     _debounceTimers.delete(accountId);
+  }
+
+  // Observability: buffer destroyed transition
+  if (hadBuffer) {
+    try {
+      const observability = require('../observability/emitters/transition-emitter');
+      observability.transition({
+        domain: 'buffer',
+        entity: 'buffer',
+        entityId: accountId,
+        previousState: 'IDLE',
+        nextState: 'DESTROYED',
+        authority: 'buffer-runtime',
+        raw: { accountId },
+      });
+    } catch (err) {
+      console.warn('[buffer] Observability transition error:', err.message);
+    }
   }
 }
 
@@ -123,4 +177,21 @@ function destroyAll() {
   _buffer.clear();
 }
 
-module.exports = { status, ingest, setDebounceMs, onFlush, destroy, destroyAll };
+/**
+ * Return a snapshot of the current buffer state for reconciliation inspection.
+ * Read-only — no mutation. Used by the reconciliation engine for ghost emission detection.
+ * @returns {{ size: number, flushing: boolean, accountCount: number }}
+ */
+function snapshot() {
+  let totalSize = 0;
+  for (const events of _buffer.values()) {
+    totalSize += events.length;
+  }
+  return {
+    size: totalSize,
+    flushing: _debounceTimers.size > 0,
+    accountCount: _buffer.size,
+  };
+}
+
+module.exports = { status, ingest, setDebounceMs, onFlush, destroy, destroyAll, snapshot };

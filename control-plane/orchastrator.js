@@ -39,6 +39,7 @@ const lifecycleOrchestrator   = require('./orchestration/lifecycle-orchestrator'
 const degradationOrchestrator = require('./orchestration/degradation-orchestrator');
 
 const REFRESH_INTERVAL_MS = 90 * 1000; // 90s cadence
+const RECONCILIATION_INTERVAL_MS = 60 * 1000; // 60s reconciliation cadence — separate from maintenance
 const DEBOUNCE_MS = 500;
 const GOVERNANCE_TICK_MS = 10_000; // 10s watchdog tick
 
@@ -70,6 +71,10 @@ async function startAllWorkers() {
   console.log('[orchestrator] Starting constitutional kernel with 3 domain FSMs...');
   _wire();
 
+  // Initialize the observability plane before any other subsystem starts
+  const observability = require('./observability');
+  await observability.init();
+
   await metricsSubstrate.init();
 
   await signalOrchestrator.start(constitutional);
@@ -93,6 +98,12 @@ async function startAllWorkers() {
     constitutional.dispatch({ type: 'CADENCE_TICK' });
   });
 
+  // ── Reconciliation tick — independent constitutional verification cadence ──
+  cadence.every(RECONCILIATION_INTERVAL_MS, () => {
+    constitutional.triggerReconciliation();
+  });
+  console.log(`[orchestrator] Reconciliation loop started — tick every ${RECONCILIATION_INTERVAL_MS / 1000}s`);
+
   const st = constitutional.status();
   console.log(`[orchestrator] Constitutional kernel running — ${accounts.length} account(s) — global: ${st.state} — domains: ${Object.keys(st.domains).join(', ')}`);
 }
@@ -106,6 +117,10 @@ async function stopAllWorkers() {
   await signalOrchestrator.stop();
   buffer.destroyAll();
   lifecycle.stopAll();
+
+  // Shutdown observability plane — persist final snapshot
+  const observability = require('./observability');
+  await observability.stop();
 
   console.log('[orchestrator] Constitutional kernel stopped');
 }

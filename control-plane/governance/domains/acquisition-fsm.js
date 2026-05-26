@@ -8,6 +8,16 @@
 //               (delegated to membranes and substrates).
 //
 // Reports to: constitutional kernel for transition validation + global observability.
+
+// Lazy import to avoid circular dependency
+let _observability = null;
+function _obs() {
+  if (!_observability) {
+    try { _observability = require('../../observability/emitters/transition-emitter'); }
+    catch (_) { _observability = null; }
+  }
+  return _observability;
+}
 //
 // Architectural invariant:
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
@@ -357,7 +367,24 @@ function dispatch(event, ctx) {
   // 5. THEN materialize state
   _localState = target;
 
-  // 6. Build actions
+  // 6. Emit observability transition for domain FSM state change
+  // Fire-and-forget — observability failures never affect domain FSM behavior
+  try {
+    const obs = _obs();
+    if (obs) {
+      obs.transition({
+        domain: 'acquisition',
+        entity: 'fsm',
+        entityId: 'acquisition-fsm',
+        previousState: from,
+        nextState: target,
+        authority: 'acquisition-fsm',
+        raw: { intent: event.type, intentId: event.intentId || null, accountId: event.accountId || null },
+      });
+    }
+  } catch (_) {}
+
+  // 7. Build actions
   const actions = txn.buildActions ? txn.buildActions(event) : [];
 
   console.log(`[acquisition-fsm] ${from} → ${target}  (${event.type})`);
@@ -447,6 +474,20 @@ function clearCircuitBreaker(accountId) {
   _circuitBreakers.delete(accountId);
 }
 
+// ── Reconciliation engine getters — expose domain state for three-reality comparison ──
+
+function getCircuitBreakers() {
+  return new Map(_circuitBreakers);
+}
+
+function getExecutionRetries() {
+  return new Map(_executionRetries);
+}
+
+function getAuthStrikeMap() {
+  return new Map(_authFailureStrikes);
+}
+
 module.exports = {
   name: 'acquisition',
   dispatch,
@@ -459,4 +500,7 @@ module.exports = {
   getRetryCount,
   resetAuthStrikes,
   clearCircuitBreaker,
+  getCircuitBreakers,
+  getExecutionRetries,
+  getAuthStrikeMap,
 };

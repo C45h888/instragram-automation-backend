@@ -48,6 +48,10 @@ async function start(accounts, onEvent) {
   }
   _accountCount = accounts.length;
   _onEvent = onEvent;
+
+  // Observability: realtime subscription state transition
+  _emitTransition('STOPPED', 'SUBSCRIBED');
+
   signalBus.subscribe(TOPIC, _onEvent);
   await realtime.startRealtime(accounts);
   _started = true;
@@ -65,10 +69,31 @@ async function stop() {
     signalBus.unsubscribe(TOPIC, _onEvent);
     _onEvent = null;
   }
+
+  // Observability: realtime unsubscribed state transition
+  _emitTransition('SUBSCRIBED', 'STOPPED');
+
   await realtime.stopRealtime();
   _started = false;
   _accountCount = 0;
   console.log('[signal-intake] Stopped');
+}
+
+function _emitTransition(previousState, nextState) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition({
+      domain: 'realtime',
+      entity: 'realtime',
+      entityId: 'signal-intake',
+      previousState,
+      nextState,
+      authority: 'signal-intake-runtime',
+      raw: { accountCount: _accountCount },
+    });
+  } catch (err) {
+    console.warn('[signal-intake] Observability transition error:', err.message);
+  }
 }
 
 module.exports = { start, stop, status };

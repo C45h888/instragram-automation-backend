@@ -60,6 +60,17 @@ async function emit(intents) {
     const domain = domainForAction(action_type);
     const fetch_type = fetchTypeForAction(action_type);
 
+    // Observability: queue intent state transition
+    _emitTransition({
+      domain: 'emission',
+      entity: 'queue_intent',
+      entityId: intent_id,
+      previousState: 'PENDING',
+      nextState: 'QUEUED',
+      authority: 'emission-runtime',
+      raw: { account_id, action_type, domain },
+    });
+
     const queueIntent = {
       intent_id,
       account_id,
@@ -108,8 +119,32 @@ async function emitMutation(mut) {
   if (!mut.table || !mut.id || !mut.updates) {
     return { ok: false, error: 'mutation requires { table, id, updates }' };
   }
+
+  // Observability: mutation state transition
+  _emitTransition({
+    domain: 'emission',
+    entity: 'mutation',
+    entityId: mut.id,
+    previousState: 'PENDING',
+    nextState: 'APPLIED',
+    authority: 'emission-runtime',
+    raw: { table: mut.table, reason: mut.reason },
+  });
+
   await mutationSubstrate.applyMutation(mut.table, mut.id, mut.updates, mut.reason);
   return { ok: true };
+}
+
+/**
+ * Emit an observability transition. Wrapped in try/catch — never disrupts emission.
+ */
+function _emitTransition(params) {
+  try {
+    const observability = require('../observability/emitters/transition-emitter');
+    observability.transition(params);
+  } catch (err) {
+    console.warn('[emission] Observability transition error:', err.message);
+  }
 }
 
 module.exports = { status, emit, emitMutation };
