@@ -24,6 +24,7 @@ const cadence = require('./runtime/cadence');
 const lifecycle = require('./runtime/lifecycle');
 const persistence = require('../substrates/persistence');
 const syncSubstrate = require('../substrates/sync-substrate');
+const lineageWorker = require('./governance/lineage-worker');
 
 // ── 3 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -75,6 +76,16 @@ async function startAllWorkers() {
   const observability = require('./observability');
   await observability.init();
 
+  // Start the lineage worker — canonical runtime interpretation substrate.
+  // Consumes from the observability plane and produces immutable lineage
+  // entries + runtime projections for the reconciliation engine and governance.
+  // MUST start before CK rehydrate so the ledger is populated when CK reads it.
+  await lineageWorker.start(5000);
+
+  // Rehydrate CK from the worker-populated ledger.
+  // Prior entries from a previous process lifetime are now available.
+  await constitutional.rehydrate();
+
   await metricsSubstrate.init();
 
   await signalOrchestrator.start(constitutional);
@@ -104,13 +115,14 @@ async function startAllWorkers() {
   });
   console.log(`[orchestrator] Reconciliation loop started — tick every ${RECONCILIATION_INTERVAL_MS / 1000}s`);
 
-  const st = constitutional.status();
+  const st = await constitutional.status();
   console.log(`[orchestrator] Constitutional kernel running — ${accounts.length} account(s) — global: ${st.state} — domains: ${Object.keys(st.domains).join(', ')}`);
 }
 
 async function stopAllWorkers() {
   console.log('[orchestrator] Stopping constitutional kernel...');
 
+  await lineageWorker.stop();
   constitutional.stopLoop();
   syncSubstrate.stop();
   await cadence.stop();

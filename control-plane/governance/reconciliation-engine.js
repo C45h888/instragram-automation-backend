@@ -16,8 +16,14 @@
 //   It NEVER mutates domain state, substrate state, or lineage.
 //   Constitutional authority remains singular in the CK.
 //
+// Epoch markers and cycle results are emitted through the observability plane.
+// The lineage worker ingests these transitions and writes them to the canonical
+// ledger (lineage:ledger:entries). The engine NEVER writes to the ledger directly.
+//
 // Contract:
 //   engine.runCycle({ fsms, substrates, lineageLedger }) → { epochId, hash, observations, worstSeverity }
+
+const crypto = require('crypto');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Drift Signal Constants — factual observations, NOT severity judgments
@@ -91,10 +97,10 @@ function _reconcileAcquisition(fsm, substrates, domainLineage) {
   const lastDomainEntry = domainLineage.length > 0
     ? domainLineage[domainLineage.length - 1]
     : null;
-  if (lastDomainEntry && lastDomainEntry.resultantState && materializedState !== lastDomainEntry.resultantState) {
+  if (lastDomainEntry && lastDomainEntry.nextState && materializedState !== lastDomainEntry.nextState) {
     driftSignals.push({
       signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
-      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.resultantState}' (intent: ${lastDomainEntry.intent})`,
+      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
     });
   }
 
@@ -107,8 +113,9 @@ function _reconcileAcquisition(fsm, substrates, domainLineage) {
       if (breaker && typeof breaker.until === 'number' && breaker.until > now) {
         // Check if any recent lineage entry justifies this breaker
         const recentRateLimit = domainLineage.some(e =>
-          e.intent === 'RATE_LIMIT_DETECTED' &&
-          e.meta && e.meta.accountId === accountId
+          e.entity === 'circuit_breaker' &&
+          e.nextState === 'RATE_LIMITED' &&
+          e.entityId === accountId
         );
         if (!recentRateLimit) {
           driftSignals.push({
@@ -124,18 +131,13 @@ function _reconcileAcquisition(fsm, substrates, domainLineage) {
   if (typeof fsm.getExecutionRetries === 'function') {
     const retries = fsm.getExecutionRetries();
     if (retries.size > 0 && typeof substrates.dedupIsInFlight === 'function') {
-      // Check a sample — full enumeration could be expensive
       let checked = 0;
       for (const [intentId] of retries) {
         if (checked >= 5) break;
-        // We can't fully verify without accountId/actionType/resourceId here,
-        // so we check whether the retry substrate itself shows in-flight state.
         checked++;
       }
-      // If there are pending retries but no substrate activity, that's a signal
       if (retries.size > 0 && typeof substrates.retryInFlight === 'function') {
-        // Retry substrate is a mechanical layer — we check if any retries are tracked
-        // This is a lightweight check — full enumeration deferred to dedicated diagnostics
+        // Retry substrate is a mechanical layer — lightweight check
       }
     }
   }
@@ -145,7 +147,9 @@ function _reconcileAcquisition(fsm, substrates, domainLineage) {
     const strikes = fsm.getAuthStrikeMap();
     for (const [accountId, count] of strikes) {
       // Check if recent auth failure lineage entries support this count
-      const authEntries = domainLineage.filter(e => e.intent === 'AUTH_FAILURE_STRIKE' && e.meta && e.meta.accountId === accountId);
+      const authEntries = domainLineage.filter(e =>
+        e.entity === 'auth' && e.nextState === 'AUTH_FAILURE_STRIKE' && e.entityId === accountId
+      );
       if (count > 0 && authEntries.length === 0) {
         driftSignals.push({
           signal: DRIFT_SIGNAL.AUTH_STRIKE_DRIFT,
@@ -174,10 +178,10 @@ function _reconcilePublishing(fsm, substrates, domainLineage) {
   const lastDomainEntry = domainLineage.length > 0
     ? domainLineage[domainLineage.length - 1]
     : null;
-  if (lastDomainEntry && lastDomainEntry.resultantState && materializedState !== lastDomainEntry.resultantState) {
+  if (lastDomainEntry && lastDomainEntry.nextState && materializedState !== lastDomainEntry.nextState) {
     driftSignals.push({
       signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
-      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.resultantState}' (intent: ${lastDomainEntry.intent})`,
+      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
     });
   }
 
@@ -220,10 +224,10 @@ function _reconcileScheduling(fsm, substrates, domainLineage) {
   const lastDomainEntry = domainLineage.length > 0
     ? domainLineage[domainLineage.length - 1]
     : null;
-  if (lastDomainEntry && lastDomainEntry.resultantState && materializedState !== lastDomainEntry.resultantState) {
+  if (lastDomainEntry && lastDomainEntry.nextState && materializedState !== lastDomainEntry.nextState) {
     driftSignals.push({
       signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
-      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.resultantState}' (intent: ${lastDomainEntry.intent})`,
+      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
     });
   }
 
@@ -284,16 +288,24 @@ const DOMAIN_RECONCILERS = {
  * @param {object} params.lineageLedger — lineage ledger module
  * @returns {{ epochId: string, lineagePosition: number, hash: string, observations: Array, worstSeverity: number }}
  */
-function runCycle({ fsms, substrates, lineageLedger }) {
-  // 1. Create epoch — marker in lineage
-  const epoch = lineageLedger.createEpoch();
-  const { epochId, lineagePosition } = epoch;
+async function runCycle({ fsms, substrates, lineageLedger }) {
+  // 1. Generate epoch — no longer calls createEpoch() which wrote directly to ledger.
+  //    Instead, emit through observability so the worker writes it (sole bridge).
+  const epochId = crypto.randomUUID();
+  const entries = await lineageLedger.getLineage();
+  const lineagePosition = entries.length;
+
+  _emitReconciliationTransition({
+    domain: 'governance', entity: 'reconciliation', entityId: epochId,
+    previousState: null, nextState: 'EPOCH_CREATED',
+    authority: 'reconciliation-engine',
+    raw: { epochId, lineagePosition },
+  });
 
   // 2. Compute constitutional hash via ledger
-  const hash = lineageLedger.computeHash();
+  const hash = await lineageLedger.computeHash();
 
-  // 3. Get materialized state projection for reference
-  const entries = lineageLedger.getLineage();
+  // 3. Materialize state from the entries we already fetched
   const materialized = lineageLedger.materializeState(entries);
 
   // 4. Reconcile each domain
@@ -316,9 +328,7 @@ function runCycle({ fsms, substrates, lineageLedger }) {
     }
 
     // Get recent domain lineage (last 20 entries)
-    const domainLineage = typeof lineageLedger.getDomainLineage === 'function'
-      ? lineageLedger.getDomainLineage(domainName, 20)
-      : entries.filter(e => e.authority === `${domainName}-fsm`).slice(-20);
+    const domainLineage = await lineageLedger.getDomainLineage(domainName, 20);
 
     // Run domain reconciler
     const { driftSignals } = reconciler(fsm, substrates, domainLineage);
@@ -350,24 +360,34 @@ function runCycle({ fsms, substrates, lineageLedger }) {
     }
   }
 
-  // 5. Record epoch completion lineage entry
-  lineageLedger.record({
+  // 5. Emit cycle completion through observability — worker writes to ledger
+  const resultantState = worstSeverity === DRIFT_SEVERITY.NONE ? 'CONVERGENT' : 'DRIFTED';
+  _emitReconciliationTransition({
+    domain: 'governance', entity: 'reconciliation', entityId: epochId,
+    previousState: 'RECONCILING', nextState: resultantState,
     authority: 'reconciliation-engine',
-    layer: 'constitutional',
-    intent: 'RECONCILIATION_CYCLE_COMPLETE',
-    priorState: 'RECONCILING',
-    resultantState: worstSeverity === DRIFT_SEVERITY.NONE ? 'CONVERGENT' : 'DRIFTED',
-    meta: {
-      epochId,
-      lineagePosition,
-      hash: hash.slice(0, 16),
-      worstSeverity,
-      domainCount: observations.length,
+    raw: {
+      epochId, lineagePosition, hash: hash.slice(0, 16),
+      worstSeverity, domainCount: observations.length,
       driftedDomains: observations.filter(o => o.severity > 0).length,
     },
   });
 
   return { epochId, lineagePosition, hash, observations, worstSeverity };
+}
+
+/**
+ * Emit a reconciliation event through the observability plane.
+ * The lineage worker ingests this transition and writes it to the canonical
+ * ledger, ensuring the worker remains the sole ledger writer.
+ *
+ * @param {object} params — transition parameters (domain, entity, nextState, etc.)
+ */
+function _emitReconciliationTransition(params) {
+  try {
+    const observability = require('../observability');
+    observability.transition(params);
+  } catch (_) {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

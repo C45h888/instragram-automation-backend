@@ -23,10 +23,10 @@ function _obs() {
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Membranes ↓  → actions returned to constitutional for emission to orchestrators
-//   Lineage      → ctx.recordLineage() writes to authoritative ledger (via CK mediation)
 //
-// Domain FSMs CANNOT directly access the lineage ledger.
-// The constitutional kernel mediates all lineage writes.
+// Domain FSMs emit state transitions through the observability plane.
+// The lineage worker consumes from the observability plane and writes to the
+// canonical lineage ledger. FSMs do NOT write to the lineage ledger directly.
 //
 // Local states:
 //   IDLE       — no acquisition in progress
@@ -287,18 +287,14 @@ const _executionState = new Map();      // intentId → { accountId, domain, las
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch — process event, ask constitutional for validation, transition
 //
-// Write order invariant (Lineage-First):
-//   1. ctx.recordLineage() — write to authoritative ledger via CK mediation
-//   2. _localState mutation — then materialize domain state
-//
-// Domain FSMs CANNOT directly access the lineage ledger.
+// Domain FSMs emit through observability plane (not lineage ledger).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * Process a domain event within the acquisition FSM.
  *
  * @param {{ type: string, [key: string]: any }} event — domain event
- * @param {{ validate: Function, recordLineage: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
+ * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
  * @returns {{ allowed: boolean, from?: string, to?: string, lineageId?: string, actions?: Array, reason?: string }}
  */
 function dispatch(event, ctx) {
@@ -325,20 +321,9 @@ function dispatch(event, ctx) {
   const rawTarget = txn.target;
   const target = typeof rawTarget === 'function' ? rawTarget(event) : rawTarget;
 
-  // null target = no state change, record lineage only
+  // null target = no state change
   if (target === null) {
-    // Record lineage first
-    if (ctx && ctx.recordLineage) {
-      ctx.recordLineage({
-        authority: 'acquisition-fsm',
-        layer: 'domain',
-        intent: event.type,
-        priorState: from,
-        resultantState: from,
-        meta: { accountId: event.accountId || null, domain: event.domain || null, intentId: event.intentId || null },
-      });
-    }
-    return { allowed: true, from, to: from, actions: [], reason: 'no-transition: event recorded' };
+    return { allowed: true, from, to: from, actions: [], reason: 'no-transition' };
   }
 
   // 3. Ask constitutional kernel for transition approval
@@ -349,22 +334,7 @@ function dispatch(event, ctx) {
     }
   }
 
-  // 4. LINEAGE FIRST — record to authoritative ledger before mutating state
-  let lineageId = null;
-  if (ctx && ctx.recordLineage) {
-    const entry = {
-      authority: 'acquisition-fsm',
-      layer: 'domain',
-      intent: event.type,
-      priorState: from,
-      resultantState: target,
-      meta: { accountId: event.accountId || null, domain: event.domain || null, intentId: event.intentId || null },
-    };
-    const recorded = ctx.recordLineage(entry);
-    lineageId = recorded.id || recorded.lineageId || null;
-  }
-
-  // 5. THEN materialize state
+  // 4. THEN materialize state
   _localState = target;
 
   // 6. Emit observability transition for domain FSM state change
@@ -393,7 +363,6 @@ function dispatch(event, ctx) {
     allowed: true,
     from,
     to: target,
-    lineageId,
     actions,
   };
 }

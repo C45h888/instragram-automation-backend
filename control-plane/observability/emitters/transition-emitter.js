@@ -84,6 +84,22 @@ function transition(params) {
     // Normalize to canonical schema
     const normalized = normalizer.normalize(rawTransition, ctx);
 
+    // Derive parentTransitionId from the correlation chain (Gap 5 fix).
+    // If a previous transition with the same correlationId exists in the log,
+    // its traceId becomes this transition's parentTransitionId.
+    // This reconstructs the causal chain: correlationId groups related transitions,
+    // and parentTransitionId links them in order.
+    if (normalized.correlationId) {
+      const parent = projection.findLastEntry(
+        (entry) =>
+          entry.traceId !== normalized.traceId &&
+          entry.correlationId === normalized.correlationId
+      );
+      if (parent) {
+        normalized.parentTransitionId = parent.traceId;
+      }
+    }
+
     // Project into the in-memory state store
     projection.project(normalized);
   } catch (err) {

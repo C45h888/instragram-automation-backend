@@ -9,21 +9,22 @@
 //               and domain FSMs respectively.
 //
 // Architectural invariant:
-//   - ONLY constitutional-kernel.js reads and writes this ledger directly
-//   - Domain FSMs write via ctx.recordLineage() passed from CK (mediated)
-//   - Domain FSMs CANNOT read from this ledger — state is inferred via CK
+//   - Lineage worker is the sole writer via recordWorkerEntry()
+//   - All consumers (CK, reconciliation engine, FSMs) read via getLineage()
 //   - Lineage is the canonical source of truth; runtime state is a projection
+//   - Single Redis key: lineage:ledger:entries (worker-produced canonical ledger)
+//   - record() and createEpoch() are deprecated no-op stubs — all writes route via worker
 //
 // Contract:
-//   ledger.record(entry)          → lineageId
-//   ledger.getLineage([n])         → Array<GovernanceEvent>
-//   ledger.getSize()              → number
-//   ledger.materializeState(enries)→ { globalState, domains, lastEvent, entryCount }
-//   ledger.rehydrate()            → { loaded, latestTs } (async, Redis-backed)
+//   ledger.getLineage([n])           → Array<ledgerEntry>    (async, from Redis worker key)
+//   ledger.getSize()                  → number                 (async, from Redis worker key)
+//   ledger.materializeState(entries)  → { globalState, domains, lastEvent, entryCount } (worker format)
+//   ledger.getDomainLineage(n)        → Array<ledgerEntry>     (filtered by domain field)
+//   ledger.computeHash()              → string                  (SHA-256)
+//   ledger.rehydrate()                → { loaded, latestTs }    (async)
+//   ledger.recordWorkerEntry(entry)   → { id, ts }              (worker-only, sole write path)
 
 const crypto = require('crypto');
-
-const _lineage = []; // append-only, never mutated or deleted
 
 // Redis client — lazy initialization
 let _redis = null;
@@ -38,82 +39,78 @@ function _getRedis() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Persistence — write-through to Redis
+// Redis key for worker-produced canonical ledger
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const REDIS_KEY = 'governance:lineage';
+// Single canonical ledger — all entries written by lineage worker via recordWorkerEntry()
+const REDIS_KEY_WORKER = 'lineage:ledger:entries';
+
+// Worker operational keys
+const WORKER_KEYS = {
+  cursor: 'lineage:worker:cursor',
+  health: 'lineage:worker:health',
+  divergences: 'lineage:worker:divergences',
+  projectionSnapshot: 'lineage:projection:snapshot',
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Core API — read path
+// All reads from the worker-backed canonical ledger (Redis)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Persist a single entry to Redis as a JSON string.
- * Called immediately after appending to _lineage[] on every record().
- *
- * @param {object} entry — the lineage entry to persist
+ * Parse a JSON string or object from Redis.
+ * @param {string|object} item
+ * @returns {object|null}
  */
-function _persist(entry) {
+function _parseEntry(item) {
   try {
-    const redis = _getRedis();
-    if (redis && typeof redis.rpush === 'function') {
-      redis.rpush(REDIS_KEY, JSON.stringify(entry));
+    return typeof item === 'string' ? JSON.parse(item) : item;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns lineage entries from the worker-produced canonical ledger.
+ * Reads from lineage:ledger:entries (Redis).
+ *
+ * @param {number} [n] — number of recent entries to return (default: all)
+ * @returns {Promise<Array<object>>}
+ */
+async function getLineage(n) {
+  const redis = _getRedis();
+  if (!redis || typeof redis.lrange !== 'function') return [];
+  try {
+    let raw;
+    if (typeof n === 'number' && n > 0) {
+      raw = await redis.lrange(REDIS_KEY_WORKER, -n, -1);
+      if (!Array.isArray(raw)) return [];
+      // lrange -n,-1 returns entries newest-first; reverse to chronological
+      return raw.map(item => _parseEntry(item)).filter(Boolean).reverse();
     }
+    raw = await redis.lrange(REDIS_KEY_WORKER, 0, -1);
+    if (!raw || !Array.isArray(raw)) return [];
+    return raw.map(item => _parseEntry(item)).filter(Boolean);
   } catch (err) {
-    // If Redis write fails, we still have in-memory record.
-    // Governance does not proceed if record() throws — fail-safe.
-    console.error('[lineage-ledger] Redis persist error:', err.message);
-    throw err;
+    console.error('[lineage-ledger] getLineage error:', err.message);
+    return [];
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Core API
-// ═══════════════════════════════════════════════════════════════════════════════
-
 /**
- * Record a governance event in the append-only lineage log.
- * Write-through to Redis ensures durability.
+ * Returns total number of recorded lineage events in the worker ledger.
  *
- * @param {{ authority: string, layer: 'constitutional'|'domain',
- *           intent: string, priorState: string, resultantState: string,
- *           legitimacy?: object, meta?: object }} entry
- * @returns {{ id: string, ts: number }} the recorded entry identifiers
- * @throws if Redis persist fails (governance should not proceed)
+ * @returns {Promise<number>}
  */
-function record(entry) {
-  const event = {
-    id: crypto.randomUUID(),
-    ts: Date.now(),
-    authority: entry.authority || 'unknown',
-    layer: entry.layer || 'domain',
-    intent: entry.intent,
-    priorState: entry.priorState,
-    resultantState: entry.resultantState,
-    legitimacy: entry.legitimacy || null,
-    meta: entry.meta || {},
-  };
-  _lineage.push(event);
-  _persist(event); // write-through — throws if Redis fails
-  return { id: event.id, ts: event.ts };
-}
-
-/**
- * Returns the last N lineage records (or all if n is omitted).
- * Records are append-only and never mutated.
- *
- * @param {number} [n] — number of recent records to return
- * @returns {Array<object>}
- */
-function getLineage(n) {
-  if (typeof n === 'number' && n > 0) {
-    return _lineage.slice(-n);
+async function getSize() {
+  const redis = _getRedis();
+  if (!redis || typeof redis.llen !== 'function') return 0;
+  try {
+    return await redis.llen(REDIS_KEY_WORKER);
+  } catch {
+    return 0;
   }
-  return [..._lineage];
-}
-
-/**
- * Returns total number of recorded lineage events.
- * @returns {number}
- */
-function getSize() {
-  return _lineage.length;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -121,15 +118,14 @@ function getSize() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Materialize the current global and domain states from a list of lineage entries.
- * This is a PURE function — it does not mutate _lineage.
+ * Materialize the current global and domain states from worker-format lineage entries.
+ * This is a PURE function — it does not mutate any state.
  *
- * Logic:
- *   globalState  ← last entry where layer === 'constitutional', use its resultantState
- *   domains.{name} ← last entry where authority === '{name}-fsm' and layer === 'domain',
- *                    use its resultantState
+ * Worker format:
+ *   globalState     ← last entry where domain='governance' AND entity='runtime' → nextState
+ *   domains.{name}  ← last entry where domain='{name}' → nextState
  *
- * @param {Array<object>} entries — lineage entries to analyze
+ * @param {Array<object>} entries — worker-format lineage entries
  * @returns {{ globalState: string, domains: { acquisition: string, publishing: string, scheduling: string }, lastEvent: object|null, entryCount: number }}
  */
 function materializeState(entries) {
@@ -147,18 +143,18 @@ function materializeState(entries) {
   let lastEvent = null;
 
   for (const entry of entries) {
-    if (!entry || typeof entry.resultantState !== 'string') continue;
+    if (!entry || typeof entry.nextState !== 'string') continue;
 
-    if (entry.layer === 'constitutional') {
-      globalState = entry.resultantState;
+    // Governance runtime: domain='governance', entity='runtime'
+    if (entry.domain === 'governance' && entry.entity === 'runtime') {
+      globalState = entry.nextState;
       lastEvent = entry;
-    } else if (entry.layer === 'domain' && entry.authority) {
-      // authority format: '{name}-fsm' e.g. 'acquisition-fsm'
-      const domainName = entry.authority.replace('-fsm', '');
-      if (domains.hasOwnProperty(domainName)) {
-        domains[domainName] = entry.resultantState;
-        lastEvent = entry;
-      }
+    }
+
+    // Domain FSM: domain matches a known constitutional domain
+    if (entry.domain && domains.hasOwnProperty(entry.domain)) {
+      domains[entry.domain] = entry.nextState;
+      lastEvent = entry;
     }
   }
 
@@ -169,43 +165,33 @@ function materializeState(entries) {
 // Reconciliation Epoch — snapshot marker for reconciliation cycles
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Create a reconciliation epoch marker in the lineage ledger.
- * Appends an epoch marker entry and persists it to Redis.
- * Called by the reconciliation engine at the start of each cycle.
- *
- * @returns {{ epochId: string, lineagePosition: number }}
- */
-function createEpoch() {
-  const epochId = crypto.randomUUID();
-  const lineagePosition = _lineage.length;
+// ═══════════════════════════════════════════════════════════════════════════════
+// Deprecated — reconciliation emits through observability → worker → ledger
+// ═══════════════════════════════════════════════════════════════════════════════
 
-  const epochEntry = {
-    id: crypto.randomUUID(),
-    ts: Date.now(),
-    authority: 'reconciliation-engine',
-    layer: 'constitutional',
-    intent: 'RECONCILIATION_EPOCH',
-    priorState: 'HEALTHY',
-    resultantState: 'EPOCH_CREATED',
-    legitimacy: null,
-    meta: { epochId, lineagePosition },
-  };
-  _lineage.push(epochEntry);
-  _persist(epochEntry);
-  return { epochId, lineagePosition };
+/**
+ * @deprecated Reconciliation now generates epoch IDs locally and emits
+ *             EPOCH_CREATED through the observability plane. The lineage
+ *             worker ingests this and writes to the ledger. This function
+ *             is kept as a compatibility stub.
+ *
+ * @returns {Promise<{ epochId: string, lineagePosition: number }>}
+ */
+async function createEpoch() {
+  return { epochId: crypto.randomUUID(), lineagePosition: -1 };
 }
 
 /**
  * Compute a deterministic SHA-256 constitutional hash from current lineage.
  * Hash includes: entry count, global state, domain projections, last event timestamp.
  *
- * @returns {string} hex-encoded SHA-256 hash
+ * @returns {Promise<string>} hex-encoded SHA-256 hash
  */
-function computeHash() {
-  const materialized = materializeState(_lineage);
+async function computeHash() {
+  const entries = await getLineage();
+  const materialized = materializeState(entries);
   const payload = JSON.stringify({
-    count: _lineage.length,
+    count: entries.length,
     globalState: materialized.globalState,
     domains: materialized.domains,
     lastTs: materialized.lastEvent ? materialized.lastEvent.ts : null,
@@ -215,19 +201,15 @@ function computeHash() {
 
 /**
  * Returns the last N lineage entries for a specific domain.
- * Filters by authority matching '{domainName}-fsm'.
+ * Filters by domain field (worker format), not authority pattern.
  *
  * @param {string} domainName — 'acquisition' | 'publishing' | 'scheduling'
  * @param {number} [n] — number of recent entries to return (default: all)
- * @returns {Array<object>}
+ * @returns {Promise<Array<object>>}
  */
-function getDomainLineage(domainName, n) {
-  const authority = `${domainName}-fsm`;
-  const filtered = _lineage.filter(e => e.authority === authority);
-  if (typeof n === 'number' && n > 0) {
-    return filtered.slice(-n);
-  }
-  return filtered;
+async function getDomainLineage(domainName, n) {
+  const all = await getLineage(n);
+  return all.filter(e => e.domain === domainName);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -235,49 +217,163 @@ function getDomainLineage(domainName, n) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Load all persisted lineage entries from Redis into the module-level _lineage[].
- * Called by constitutional-kernel on boot to reconstruct state from persistent memory.
+ * Load all persisted lineage entries from Redis into memory for boot rehydration.
+ * Called by constitutional-kernel on boot to reconstruct state.
  *
  * @returns {Promise<{ loaded: number, latestTs: number | null }>}
- * @throws if Redis is unavailable — fast fail ensures CK does not boot with stale state
  */
 async function rehydrate() {
-  const redis = _getRedis();
-  if (!redis || typeof redis.lrange !== 'function') {
-    // Redis not available — proceed with empty lineage (graceful fallback)
-    console.warn('[lineage-ledger] Redis not available — starting with empty lineage');
+  const entries = await getLineage();
+  if (!entries || entries.length === 0) {
     return { loaded: 0, latestTs: null };
   }
-
-  try {
-    const raw = await redis.lrange(REDIS_KEY, 0, -1);
-    if (!raw || raw.length === 0) {
-      return { loaded: 0, latestTs: null };
-    }
-
-    let loaded = 0;
-    let latestTs = null;
-
-    for (const item of raw) {
-      try {
-        const entry = typeof item === 'string' ? JSON.parse(item) : item;
-        if (entry && entry.id && entry.ts) {
-          _lineage.push(entry);
-          loaded++;
-          if (latestTs === null || entry.ts > latestTs) latestTs = entry.ts;
-        }
-      } catch (parseErr) {
-        // Skip corrupt entries — log warning but continue
-        console.warn('[lineage-ledger] Skipping corrupt lineage entry:', parseErr.message);
-      }
-    }
-
-    console.log(`[lineage-ledger] Rehydrated ${loaded} entries from Redis`);
-    return { loaded, latestTs };
-  } catch (err) {
-    console.error('[lineage-ledger] Rehydrate failed:', err.message);
-    throw err; // fast fail — CK should not boot if lineage cannot be loaded
+  const loaded = entries.length;
+  let latestTs = null;
+  for (const entry of entries) {
+    if (latestTs === null || entry.ts > latestTs) latestTs = entry.ts;
   }
+  console.log(`[lineage-ledger] Rehydrated ${loaded} entries from Redis`);
+  return { loaded, latestTs };
 }
 
-module.exports = { record, getLineage, getSize, materializeState, rehydrate, createEpoch, computeHash, getDomainLineage };
+// ═══════════════════════════════════════════════════════════════════════════════
+// Worker-produced canonical ledger
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Record a lineage entry produced by the lineage worker.
+ * Writes to the worker's dedicated Redis key: lineage:ledger:entries.
+ *
+ * @param {object} entry — canonical ledger entry from the lineage worker
+ * @returns {{ id: string, ts: number }}
+ */
+function recordWorkerEntry(entry) {
+  const redis = _getRedis();
+  if (redis && typeof redis.rpush === 'function') {
+    try {
+      redis.rpush(REDIS_KEY_WORKER, JSON.stringify(entry));
+    } catch (err) {
+      console.error('[lineage-ledger] Worker entry persist error:', err.message);
+      throw err;
+    }
+  }
+  return { id: entry.id, ts: entry.ts };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Worker delegation — ledger-owned persistence for lineage worker state
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Persist the worker's consumption cursor.
+ *
+ * @param {number} cursor — the worker's current read position
+ * @param {number} [ttlSeconds=60] — Redis key TTL
+ */
+function persistWorkerCursor(cursor, ttlSeconds = 60) {
+  try {
+    const redis = _getRedis();
+    if (redis && redis.status === 'ready') {
+      redis.set(WORKER_KEYS.cursor, String(cursor), 'EX', ttlSeconds);
+    }
+  } catch (_) {}
+}
+
+/**
+ * Retrieve the worker's persisted cursor from Redis.
+ *
+ * @returns {Promise<number>} the cursor value, or 0 if unavailable
+ */
+async function getWorkerCursor() {
+  try {
+    const redis = _getRedis();
+    if (redis && redis.status === 'ready') {
+      const raw = await redis.get(WORKER_KEYS.cursor);
+      if (raw != null) {
+        const parsed = parseInt(raw, 10);
+        if (!isNaN(parsed) && parsed >= 0) return parsed;
+      }
+    }
+  } catch (_) {}
+  return 0;
+}
+
+/**
+ * Persist the worker's health signals.
+ *
+ * @param {object} health — health snapshot from the worker
+ * @param {number} [ttlSeconds=30] — Redis key TTL
+ */
+function persistWorkerHealth(health, ttlSeconds = 30) {
+  try {
+    const redis = _getRedis();
+    if (redis && redis.status === 'ready') {
+      redis.set(WORKER_KEYS.health, JSON.stringify(health), 'EX', ttlSeconds);
+    }
+  } catch (_) {}
+}
+
+/**
+ * Persist the worker's projection snapshot.
+ *
+ * @param {object} projections — full projection snapshot from the worker
+ * @param {number} [ttlSeconds=60] — Redis key TTL
+ */
+function persistWorkerProjection(projections, ttlSeconds = 60) {
+  try {
+    const redis = _getRedis();
+    if (redis && redis.status === 'ready') {
+      redis.set(WORKER_KEYS.projectionSnapshot, JSON.stringify(projections), 'EX', ttlSeconds);
+    }
+  } catch (_) {}
+}
+
+/**
+ * Persist the worker's divergence log.
+ *
+ * @param {Array<object>} divergences — recent divergence entries
+ * @param {number} [ttlSeconds=90] — Redis key TTL
+ */
+function persistWorkerDivergences(divergences, ttlSeconds = 90) {
+  try {
+    const redis = _getRedis();
+    if (redis && redis.status === 'ready') {
+      redis.set(WORKER_KEYS.divergences, JSON.stringify(divergences), 'EX', ttlSeconds);
+    }
+  } catch (_) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Deprecated stubs — all write authority now routes via lineage worker
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @deprecated All writes route via lineage worker. Callers emit through
+ *             observability.transition() which the worker consumes and
+ *             persists to lineage:ledger:entries. Kept as no-op stub.
+ *
+ * @param {object} entry — unused
+ * @returns {Promise<{ id: string, ts: number }>}
+ */
+async function record(entry) {
+  return { id: 'deprecated-stub', ts: Date.now() };
+}
+
+module.exports = {
+  record,
+  getLineage,
+  getSize,
+  materializeState,
+  rehydrate,
+  createEpoch,
+  computeHash,
+  getDomainLineage,
+  REDIS_KEY_WORKER,
+  WORKER_KEYS,
+  recordWorkerEntry,
+  persistWorkerCursor,
+  getWorkerCursor,
+  persistWorkerHealth,
+  persistWorkerProjection,
+  persistWorkerDivergences,
+};

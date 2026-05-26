@@ -309,6 +309,39 @@ const DRIFT_ESCALATION_THRESHOLD = 3; // consecutive epochs before escalation
 // 5. Action dispatcher
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Emit an observability transition for constitutional-layer events.
+ * Centralizes the fire-and-forget observability call used across dispatch paths.
+ * Gap 4 fix: All dispatch outcomes (including blocked/null-target) now emit
+ * observability transitions so the lineage worker has a complete consumption feed.
+ *
+ * @param {string} from — prior global state
+ * @param {string} to — resultant (or same if blocked/no-change)
+ * @param {object} details — intent, reason, legitimacy context
+ */
+function _emitGovernanceTransition(from, to, details = {}) {
+  try {
+    const obs = _getObservabilityTransition();
+    if (obs) {
+      obs.transition({
+        domain: 'governance',
+        entity: 'runtime',
+        entityId: 'global',
+        previousState: from,
+        nextState: to,
+        authority: 'constitutional-kernel',
+        raw: {
+          intent: details.intent || null,
+          substate: details.substate || null,
+          reason: details.reason || null,
+          blocked: details.blocked || false,
+          epochId: details.epochId || null,
+        },
+      });
+    }
+  } catch (_) {}
+}
+
 function _emitActions(actions) {
   if (!actions || actions.length === 0) return;
   for (const action of actions) {
@@ -429,7 +462,6 @@ function dispatch(event) {
 
     const ctx = {
       validate: (from, to, evt) => validateDomainTransition(domainName, from, to, evt),
-      recordLineage: (entry) => lineageLedger.record(entry),
       dispatchGlobal: (globalEvent) => dispatch(globalEvent),
       getGlobalState: () => _currentState,
     };
@@ -440,18 +472,9 @@ function dispatch(event) {
       _emitActions(result.actions);
     }
 
-    // Record constitutional lineage entry for domain events
-    // This happens AFTER domain FSM has written its own lineage via ctx.recordLineage()
-    if (result.allowed) {
-      lineageLedger.record({
-        authority: 'constitutional-kernel',
-        layer: 'constitutional',
-        intent: event.type,
-        priorState: _currentState,
-        resultantState: _currentState,
-        meta: { domain: domainName, domainFrom: result.from, domainTo: result.to, domainLineageId: result.lineageId },
-      });
-    }
+    // Domain event lineage is written by the lineage worker (consuming from observability plane).
+    // CK no longer appends domain events directly to the lineage ledger.
+    // Constitutional layer events (global state transitions) are still written by CK.
 
     return {
       allowed: result.allowed,
@@ -479,16 +502,9 @@ function dispatch(event) {
   const rawTarget = txn.target;
   const target = typeof rawTarget === 'function' ? rawTarget(event, { state: from }) : rawTarget;
 
-  // null target = no state change, record lineage only
+  // null target = no state change
   if (target === null) {
-    lineageLedger.record({
-      authority: 'constitutional-kernel',
-      layer: 'constitutional',
-      intent: event.type,
-      priorState: from,
-      resultantState: from,
-      meta: { accountId: event.accountId || null },
-    });
+    _emitGovernanceTransition(from, from, { intent: event.type, reason: 'no-transition: event recorded' });
     return { allowed: true, from, to: from, actionsEmitted: 0, reason: 'no-transition: event recorded' };
   }
 
@@ -496,15 +512,10 @@ function dispatch(event) {
   if (txn.guard) {
     const result = txn.guard(event, { state: from });
     if (!result.allowed) {
-      // Record lineage for blocked transition (fixes G1/G4 from audit)
-      lineageLedger.record({
-        authority: 'constitutional-kernel',
-        layer: 'constitutional',
+      _emitGovernanceTransition(from, from, {
         intent: event.type,
-        priorState: from,
-        resultantState: from,
-        legitimacy: { blocked: true, reason: result.reason || 'guard blocked' },
-        meta: { accountId: event.accountId || null },
+        reason: result.reason || 'guard blocked',
+        blocked: true,
       });
       return { allowed: false, reason: result.reason || 'guard blocked' };
     }
@@ -514,52 +525,24 @@ function dispatch(event) {
   const generalResults = runGeneralGuards(from, target);
   const failedGeneral = generalResults.find(g => !g.passed);
   if (failedGeneral) {
-    // Record lineage for blocked transition (fixes G1/G4 from audit)
-    lineageLedger.record({
-      authority: 'constitutional-kernel',
-      layer: 'constitutional',
+    _emitGovernanceTransition(from, from, {
       intent: event.type,
-      priorState: from,
-      resultantState: from,
-      legitimacy: { blocked: true, reason: failedGeneral.reason },
-      meta: { accountId: event.accountId || null },
+      reason: failedGeneral.reason,
+      blocked: true,
     });
     return { allowed: false, reason: failedGeneral.reason };
   }
 
-  // LINEAGE FIRST — record before mutating state
-  const lineageEntry = lineageLedger.record({
-    authority: 'constitutional-kernel',
-    layer: 'constitutional',
-    intent: event.type,
-    priorState: from,
-    resultantState: target,
-    legitimacy: {
-      guardResults: generalResults.map(g => ({ name: g.name, passed: g.passed, reason: g.reason || null })),
-    },
-    meta: { accountId: event.accountId || null },
-  });
-
-  // THEN materialize state
+  // Materialize state
   _currentState = target;
   _stateEnteredAt = Date.now();
 
   // Emit observability transition for global runtime state change
-  // Fire-and-forget — observability failures never affect governance
-  try {
-    const obs = _getObservabilityTransition();
-    if (obs) {
-      obs.transition({
-        domain: 'governance',
-        entity: 'runtime',
-        entityId: 'global',
-        previousState: from,
-        nextState: target,
-        authority: 'constitutional-kernel',
-        raw: { intent: event.type, substate: event.substate || null, reason: event.reason || null },
-      });
-    }
-  } catch (_) {}
+  _emitGovernanceTransition(from, target, {
+    intent: event.type,
+    substate: event.substate || null,
+    reason: event.reason || null,
+  });
 
   // Build actions
   const actions = txn.buildActions ? txn.buildActions(event, { state: from }) : [];
@@ -567,13 +550,12 @@ function dispatch(event) {
   // Emit actions
   _emitActions(actions);
 
-  console.log(`[constitutional-kernel] ${from} → ${target}  (${event.type})  [${lineageEntry.id.slice(0, 8)}]`);
+  console.log(`[constitutional-kernel] ${from} → ${target}  (${event.type})`);
 
   return {
     allowed: true,
     from,
     to: target,
-    lineageId: lineageEntry.id,
     actionsEmitted: actions.length,
   };
 }
@@ -693,12 +675,12 @@ function _buildSubstrateQueries() {
  *
  * @returns {{ allowed: boolean, lineageId?: string, reason?: string }}
  */
-function _onReconciliationTick() {
+async function _onReconciliationTick() {
   console.log('[constitutional-kernel] RECONCILIATION_TICK — running reconciliation cycle');
 
   try {
     const substrates = _buildSubstrateQueries();
-    const result = reconciliationEngine.runCycle({
+    const result = await reconciliationEngine.runCycle({
       fsms: _domains,
       substrates,
       lineageLedger,
@@ -707,19 +689,16 @@ function _onReconciliationTick() {
     const { epochId, hash, observations, worstSeverity } = result;
 
     // ── Verify constitutional hash ────────────────────────────────────────
-    const currentHash = lineageLedger.computeHash();
+    const currentHash = await lineageLedger.computeHash();
     if (hash !== currentHash) {
       console.error(`[constitutional-kernel] Constitutional HASH MISMATCH — epoch ${epochId.slice(0, 8)}`);
       _resetDriftCounters();
-      const entry = lineageLedger.record({
-        authority: 'constitutional-kernel',
-        layer: 'constitutional',
+      _emitGovernanceTransition(_currentState, _currentState, {
         intent: 'RECONCILIATION_HASH_MISMATCH',
-        priorState: _currentState,
-        resultantState: _currentState,
-        meta: { epochId, epochHash: hash.slice(0, 16), currentHash: currentHash.slice(0, 16) },
+        reason: `Constitutional identity divergence — epoch ${epochId.slice(0, 8)}`,
+        epochId,
       });
-      return { allowed: true, lineageId: entry.id, reason: 'hash mismatch detected — constitutional identity divergence' };
+      return { allowed: true, reason: 'hash mismatch detected — constitutional identity divergence' };
     }
 
     // ── Update drift counters ─────────────────────────────────────────────
@@ -802,7 +781,7 @@ async function rehydrate() {
       return { loaded: 0, globalState: 'BOOTING', domains: {}, latestTs: null };
     }
 
-    const entries = lineageLedger.getLineage();
+    const entries = await lineageLedger.getLineage();
     const materialized = lineageLedger.materializeState(entries);
 
     _currentState = materialized.globalState;
@@ -828,7 +807,7 @@ async function rehydrate() {
 // 13. Observability
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function status() {
+async function status() {
   const now = Date.now();
   const domainStates = {};
   for (const [name, fsm] of _domains) {
@@ -837,7 +816,7 @@ function status() {
 
   return {
     state: _currentState,
-    lineageSize: lineageLedger.getSize(),
+    lineageSize: await lineageLedger.getSize(),
     uptimeMs: now - STARTED_AT,
     stateDurationMs: now - _stateEnteredAt,
     domains: domainStates,
@@ -849,7 +828,7 @@ function getState() {
   return _currentState;
 }
 
-function getLineage(n) {
+async function getLineage(n) {
   return lineageLedger.getLineage(n);
 }
 
@@ -887,18 +866,13 @@ function clearCircuitBreaker(accountId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 15. Module initialization — rehydrate from Redis before any dispatch
+// 15. Module initialization
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Trigger rehydration immediately on module load.
-// This ensures the constitutional kernel boots with state reconstructed
-// from persisted lineage rather than hardcoded defaults.
-// The async nature is safe because no events can be dispatched before
-// the orchestrator's wire() call, which happens after this module loads.
-let _initPromise = rehydrate().catch(err => {
-  console.error('[constitutional-kernel] CRITICAL: Boot rehydration failed:', err.message);
-  throw err; // propagate to crash the process — cannot operate with unknown state
-});
+// Rehydration is called explicitly by the orchestrator AFTER the lineage worker
+// has started. This ensures CK reads from a ledger populated by the worker
+// rather than rehydrating from an empty/potentially-stale Redis key.
+// Boot order: orchestrator → observability.init() → worker.start() → CK.rehydrate()
 
 module.exports = {
   dispatch,

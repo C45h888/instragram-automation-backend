@@ -39,6 +39,14 @@ const _transitionLog = []; // Array<normalized transition>
 // Domain → entity → entityId → last N transitions (sliding window per entity)
 const _entityLog = new Map(); // "domain:entity:entityId" → Array<transition>
 
+// ── Consumer cursor registry (Gap 3: truncation protection) ───────────────────
+// Registered consumers (e.g., lineage worker) track their read position.
+// Before truncating old log entries, the projection checks that no consumer's
+// cursor lags behind the truncation point. If a consumer is behind, truncation
+// is skipped and a stall warning is emitted.
+const _consumerCursors = new Map(); // consumerName → cursor index (0-based)
+const STALL_WARNING_THRESHOLD = MAX_LOG_ENTRIES * 0.8; // warn at 80% cap
+
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 let _snapshotTimer = null;
@@ -151,8 +159,27 @@ function project(transition) {
 
   // Append to global transition log
   _transitionLog.push(transition);
+
+  // Consumer-aware truncation (Gap 3 fix)
+  // Before truncating old entries, check that no registered consumer
+  // would lose unconsumed data.
   if (_transitionLog.length > MAX_LOG_ENTRIES) {
-    _transitionLog.splice(0, _transitionLog.length - MAX_LOG_ENTRIES);
+    const excess = _transitionLog.length - MAX_LOG_ENTRIES;
+    const minConsumerCursor = _getMinConsumerCursor();
+
+    if (minConsumerCursor >= 0 && minConsumerCursor < excess) {
+      // At least one consumer is behind the truncation point.
+      // Skip truncation to avoid data loss and emit a stall warning.
+      if (_transitionLog.length % 100 === 0) {
+        console.warn(
+          `[projection] Truncation blocked — consumer(s) stalled at cursor ${minConsumerCursor}, ` +
+          `log head at ${_transitionLog.length - 1}, would truncate ${excess} entries. ` +
+          `Consumer names: ${[..._consumerCursors.entries()].filter(([, c]) => c < excess).map(([n]) => n).join(', ')}`
+        );
+      }
+    } else {
+      _transitionLog.splice(0, excess);
+    }
   }
 
   // Update entity-scoped sliding log
@@ -257,6 +284,132 @@ async function snapshot() {
   await _persistSnapshot();
 }
 
+// ── Cursor-based sequential consumption (Gap 1 fix) ───────────────────────────
+
+/**
+ * Return transition log entries from a given index onward.
+ * The caller maintains a cursor (0-based index into _transitionLog).
+ * Returns the matching entries and the next cursor position.
+ *
+ * @param {number} includeIndex — 0-based index to start reading from (inclusive)
+ * @returns {{ entries: Array<object>, nextCursor: number, totalSize: number }}
+ */
+function getEntriesSince(includeIndex) {
+  const totalSize = _transitionLog.length;
+  const start = Math.max(0, Math.min(includeIndex, totalSize));
+  const entries = _transitionLog.slice(start);
+  return { entries, nextCursor: totalSize, totalSize };
+}
+
+/**
+ * Return the current total size of the transition log.
+ * Callers use this to bootstrap their initial cursor.
+ *
+ * @returns {number}
+ */
+function getLogSize() {
+  return _transitionLog.length;
+}
+
+/**
+ * Return a single transition entry by its index in the global log.
+ * Used for parentTransitionId derivation (Gap 5).
+ *
+ * @param {number} index — 0-based index
+ * @returns {object|null}
+ */
+function getEntryByIndex(index) {
+  if (index < 0 || index >= _transitionLog.length) return null;
+  return _transitionLog[index];
+}
+
+/**
+ * Find the most recent transition entry matching a predicate, searching
+ * backward from the end of the log. Used for parentTransitionId derivation.
+ *
+ * @param {Function} predicate — (entry) => boolean
+ * @returns {object|null} the matching entry or null
+ */
+function findLastEntry(predicate) {
+  for (let i = _transitionLog.length - 1; i >= 0; i--) {
+    if (predicate(_transitionLog[i])) return _transitionLog[i];
+  }
+  return null;
+}
+
+// ── Consumer cursor registry (Gap 3 fix) ──────────────────────────────────────
+
+function _getMinConsumerCursor() {
+  if (_consumerCursors.size === 0) return -1;
+  let min = Infinity;
+  for (const cursor of _consumerCursors.values()) {
+    if (cursor < min) min = cursor;
+  }
+  return min === Infinity ? -1 : min;
+}
+
+/**
+ * Register a named consumer for truncation protection.
+ * The consumer's initial cursor is set to the current log tail.
+ *
+ * @param {string} name — unique consumer name, e.g. 'lineage-worker'
+ */
+function registerConsumer(name) {
+  if (!name || typeof name !== 'string') {
+    throw new Error('[projection] registerConsumer requires a non-empty name string');
+  }
+  if (_consumerCursors.has(name)) {
+    console.warn(`[projection] Consumer '${name}' already registered — overwriting cursor`);
+  }
+  _consumerCursors.set(name, 0);
+  console.log(`[projection] Consumer '${name}' registered — initial cursor 0, log size ${_transitionLog.length}`);
+}
+
+/**
+ * Unregister a named consumer. Its cursor is removed and no longer
+ * protected from truncation.
+ *
+ * @param {string} name
+ */
+function unregisterConsumer(name) {
+  _consumerCursors.delete(name);
+}
+
+/**
+ * Update a consumer's cursor position to indicate entries up to this
+ * index have been successfully consumed.
+ *
+ * @param {string} name — consumer name
+ * @param {number} cursor — new cursor position (0-based index of last consumed entry + 1)
+ */
+function updateConsumerCursor(name, cursor) {
+  if (!_consumerCursors.has(name)) {
+    console.warn(`[projection] updateConsumerCursor: consumer '${name}' not registered`);
+    return;
+  }
+  const prev = _consumerCursors.get(name);
+  _consumerCursors.set(name, Math.max(prev, cursor));
+}
+
+/**
+ * Get the lag for a registered consumer: how many entries behind the log
+ * head the consumer is. Returns -1 if consumer not found.
+ *
+ * @param {string} name
+ * @returns {{ cursor: number, head: number, lag: number, atRisk: boolean }}
+ */
+function getConsumerLag(name) {
+  const cursor = _consumerCursors.get(name);
+  if (cursor === undefined) return { cursor: -1, head: _transitionLog.length, lag: -1, atRisk: false };
+  const lag = _transitionLog.length - cursor;
+  return {
+    cursor,
+    head: _transitionLog.length,
+    lag,
+    atRisk: lag > STALL_WARNING_THRESHOLD,
+  };
+}
+
 /**
  * Start the periodic snapshot timer.
  * Call once at boot after rehydration.
@@ -301,4 +454,12 @@ module.exports = {
   init,
   startSnapshotTimer,
   stopSnapshotTimer,
+  getEntriesSince,
+  getLogSize,
+  getEntryByIndex,
+  findLastEntry,
+  registerConsumer,
+  unregisterConsumer,
+  updateConsumerCursor,
+  getConsumerLag,
 };

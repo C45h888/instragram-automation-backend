@@ -13,6 +13,11 @@
 //   query.getCrossDomain(domains)              — states across multiple domains
 //   query.getFullSnapshot()                    — entire projection (CK, lineage writer)
 //   getSnapshot()                              — alias for getFullSnapshot()
+//   query.getEntriesSince(index)               — cursor-based sequential consumption
+//   query.getLogSize()                         — total entries in transition log
+//   query.registerConsumer(name)               — register for truncation protection
+//   query.updateConsumerCursor(name, cursor)    — update consumer read position
+//   query.getConsumerLag(name)                 — check consumer stall risk
 //
 // Subsystems call:
 //   transition({ domain, entity, entityId, previousState, nextState, authority, raw })
@@ -117,6 +122,47 @@ function getSnapshot() {
   return projection.getFullSnapshot();
 }
 
+// ── Cursor-based sequential consumption (Gap 1) ───────────────────────────────
+
+/**
+ * Return transition log entries from a given index onward.
+ * Enables the lineage worker to consume entries sequentially from a cursor.
+ *
+ * @param {number} includeIndex — 0-based index to start reading from
+ * @returns {{ entries: Array<object>, nextCursor: number, totalSize: number }}
+ */
+function getEntriesSince(includeIndex) {
+  return projection.getEntriesSince(includeIndex);
+}
+
+/**
+ * Return the total number of entries in the transition log.
+ * Used to bootstrap consumer cursors.
+ *
+ * @returns {number}
+ */
+function getLogSize() {
+  return projection.getLogSize();
+}
+
+// ── Consumer cursor registry (Gap 3) ─────────────────────────────────────────
+
+function registerConsumer(name) {
+  projection.registerConsumer(name);
+}
+
+function unregisterConsumer(name) {
+  projection.unregisterConsumer(name);
+}
+
+function updateConsumerCursor(name, cursor) {
+  projection.updateConsumerCursor(name, cursor);
+}
+
+function getConsumerLag(name) {
+  return projection.getConsumerLag(name);
+}
+
 // ── Module lifecycle ──────────────────────────────────────────────────────────
 
 /**
@@ -156,6 +202,12 @@ module.exports = {
     getTransitionLog,
     getCrossDomain,
     getFullSnapshot,
+    getEntriesSince,
+    getLogSize,
+    registerConsumer,
+    unregisterConsumer,
+    updateConsumerCursor,
+    getConsumerLag,
   },
   getSnapshot,
   init,
