@@ -21,14 +21,14 @@
 //   RuntimeProjectionWorker       — runtimeState, executionPressure, retryPressure
 //   IntegrityProjectionWorker      — replayContinuity, causationIntegrity
 //   AuthorityProjectionWorker      — authorityContinuity, authorityOscillation
-//   HealthProjectionWorker         — failureRate, runtimeEntropy, degradationSignals
-//   GovernanceRuntimeProjectionWorker — governancePressure, convergenceConfidence
+//   HealthProjectionWorker         — failureRate, runtimeEntropy, degradationSignals, RETRY_PRESSURE
+//   SystemicPressureProjectionWorker — governancePressure, convergenceConfidence, systemicStress
 
 const RuntimeProjectionWorker = require('./runtime-projection-worker');
 const IntegrityProjectionWorker = require('./integrity-projection-worker');
 const AuthorityProjectionWorker = require('./authority-projection-worker');
 const HealthProjectionWorker = require('./health-projection-worker');
-const GovernanceRuntimeProjectionWorker = require('./governance-runtime-projection-worker');
+const SystemicPressureProjectionWorker = require('./systemic-pressure-projection-worker');
 
 // ── Worker instances ───────────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ const workers = {
   integrity: new IntegrityProjectionWorker(),
   authority: new AuthorityProjectionWorker(),
   health: new HealthProjectionWorker(),
-  governanceRuntime: new GovernanceRuntimeProjectionWorker(),
+  systemic: new SystemicPressureProjectionWorker(),
 };
 
 // ── Group lifecycle ─────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ const workers = {
  * @param {number} [pollIntervalMs] — override poll interval for all workers
  */
 async function startAll(pollIntervalMs) {
-  const order = ['governanceRuntime', 'health', 'integrity', 'authority', 'runtime'];
+  const order = ['systemic', 'health', 'integrity', 'authority', 'runtime'];
   for (const key of order) {
     await workers[key].start(pollIntervalMs);
   }
@@ -61,7 +61,7 @@ async function startAll(pollIntervalMs) {
  * Stop all 5 projection workers gracefully.
  */
 async function stopAll() {
-  const order = ['runtime', 'authority', 'integrity', 'health', 'governanceRuntime'];
+  const order = ['runtime', 'authority', 'integrity', 'health', 'systemic'];
   for (const key of order) {
     await workers[key].stop();
   }

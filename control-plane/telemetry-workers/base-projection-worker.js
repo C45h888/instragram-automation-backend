@@ -24,6 +24,11 @@
 //   projection synthesis NEVER depends on: runtime timing, worker execution order,
 //   transient memory, async race conditions
 
+// TODO(architecture): Replace setInterval polling with observability stream consumer.
+// Polling introduces temporal aliasing and missed state edges. Long-term direction:
+// observability stream → projection stream processor (event-driven, not periodic sampling).
+// Do NOT harden polling as permanent architecture.
+
 const crypto = require('crypto');
 
 // ── Versioning ───────────────────────────────────────────────────────────────────
@@ -127,19 +132,46 @@ class BaseProjectionWorker {
 
   // ── Core tick ────────────────────────────────────────────────────────────────
 
+  // ── Core tick ────────────────────────────────────────────────────────────────
+
+  /**
+   * Get the current lineage cursor (ledger sequence id) for replay watermarking.
+   * Subclasses may override to provide their specific cursor source.
+   * The default returns the current transition log size as a proxy cursor.
+   *
+   * @returns {number} current lineage cursor
+   */
+  _getLineageCursor() {
+    try {
+      // eslint-disable-next-line global-require
+      const { getLogSize } = require('../observability');
+      return getLogSize();
+    } catch {
+      return 0;
+    }
+  }
+
   async _tick() {
     this._lastTick = Date.now();
     this._tickCount++;
 
     try {
-      // Fetch raw telemetry signals
+      // Capture lineage cursor range for replay determinism watermarking.
+      // These cursors allow forensic reconstruction and reconciliation
+      // verification of which telemetry window was consumed.
+      const lineageStartCursor = this._getLineageCursor();
       const signals = await this._getSnapshotSource();
+      const lineageEndCursor = this._getLineageCursor();
 
-      // Build source telemetry window metadata
+      // Build source telemetry window metadata with replay cursors
       const windowMeta = {
-        openedAt: signals.windowOpenedAt || this._lastTick,
+        openedAt: signals.windowOpenedAt || this._lastTick - this.pollIntervalMs,
         closedAt: this._lastTick,
         entryCount: signals.entryCount || 0,
+        lineageStartCursor,
+        lineageEndCursor,
+        telemetryWindowStart: signals.windowOpenedAt || this._lastTick - this.pollIntervalMs,
+        telemetryWindowEnd: this._lastTick,
       };
 
       // Synthesize semantic projection (deterministic)

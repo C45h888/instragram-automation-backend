@@ -1,12 +1,17 @@
 // control-plane/telemetry-workers/health-projection-worker.js
 // Health Projection Worker: synthesizes degradationSignals, failureRate,
-// runtimeEntropy, operationalStress.
+// runtimeEntropy, operationalStress, RETRY_PRESSURE.
 //
 // Owns: semantic synthesis of health signals from raw metrics + observability.
 // Does NOT own: governance decisions, lineage, FSM semantics.
 //
 // Projection Type: HEALTH_PROJECTION
-// Source: metricsSubstrate + observability.getFullSnapshot()
+// Source: observability snapshot + metricsSubstrate (fallback only)
+//
+// Semantic synthesis ownership:
+//   RETRY_PRESSURE      — inferred from failureRate >= 0.5 threshold
+//   degradationSignals  — derived from failure rate severity tiers
+//   runtimeEntropy      — derived from failure rate volatility over time
 //
 // Determinism contract:
 //   same healthSignals + same observabilitySnapshot + same version
@@ -60,7 +65,11 @@ class HealthProjectionWorker extends BaseProjectionWorker {
   }
 
   /**
-   * Synthesize degradationSignals, failureRate, runtimeEntropy, operationalStress.
+   * Synthesize degradationSignals, failureRate, runtimeEntropy, operationalStress, RETRY_PRESSURE.
+   *
+   * RETRY_PRESSURE is inferred here (not in the adapter) because it is semantic synthesis,
+   * not raw telemetry normalization. The adapter emits RAW_METRICS_WINDOW; this worker
+   * synthesizes RETRY_PRESSURE from the raw failure rate signal.
    *
    * @param {object} projectionState
    * @param {object} signals
@@ -69,13 +78,17 @@ class HealthProjectionWorker extends BaseProjectionWorker {
   _synthesize(projectionState, signals) {
     const { healthSignals } = signals;
     if (!healthSignals) {
-      return { degradationSignals: {}, failureRate: 0, runtimeEntropy: 0, operationalStress: 0 };
+      return { degradationSignals: {}, failureRate: 0, runtimeEntropy: 0, operationalStress: 0, retryPressure: 0 };
     }
 
     const { total, failed, failureRate } = healthSignals;
 
     // Failure rate
     const failureRateOut = failureRate;
+
+    // RETRY_PRESSURE: semantic synthesis from raw failure rate signal.
+    // Threshold policy is owned here, not in the adapter.
+    const RETRY_PRESSURE = this._deriveRetryPressure(failureRate, total);
 
     // Runtime entropy: measured volatility in failure rate over time
     const runtimeEntropy = this._deriveRuntimeEntropy(failureRate);
@@ -91,9 +104,18 @@ class HealthProjectionWorker extends BaseProjectionWorker {
       failureRate: failureRateOut,
       runtimeEntropy,
       operationalStress,
+      retryPressure: RETRY_PRESSURE,
       totalSamples: total,
       failedSamples: failed,
     };
+  }
+
+  _deriveRetryPressure(failureRate, total) {
+    if (total === 0) return 0;
+    if (failureRate >= 0.5) return 0.8;
+    if (failureRate >= 0.3) return 0.5;
+    if (failureRate >= 0.15) return 0.2;
+    return 0;
   }
 
   _deriveRuntimeEntropy(currentFailureRate) {

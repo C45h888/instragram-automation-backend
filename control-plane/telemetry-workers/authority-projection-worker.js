@@ -1,20 +1,23 @@
 // control-plane/telemetry-workers/authority-projection-worker.js
 // Authority Projection Worker: synthesizes authorityContinuity, escalationPressure,
-// authorityOscillation, sovereigntyStress.
+// authorityOscillation, sovereigntyStress, RATE_LIMIT_PRESSURE.
 //
 // Owns: semantic synthesis of authority continuity signals from domain metrics.
 // Does NOT own: governance decisions, lineage, FSM semantics.
 //
 // Projection Type: AUTHORITY_PROJECTION
-// Source: metricsSubstrate domain breakdown + lineage ledger domain state
+// Source: observability snapshots + lineage ledger
+//
+// Semantic synthesis ownership:
+//   RATE_LIMIT_PRESSURE  — inferred from cooldownMs > 0 on active circuit breakers
+//   authorityOscillation — derived from failure rate toggling across domains
+//   sovereigntyStress    — composite of authority oscillation magnitude
 //
 // Determinism contract:
 //   same domainBreakdown + same domainLineage + same version
 //   = ALWAYS same authorityContinuity, escalationPressure, authorityOscillation
 
 const { BaseProjectionWorker } = require('./base-projection-worker');
-const metricsSubstrate = require('../../substrates/metrics-substrate');
-const lineageLedger = require('../governance/lineage-ledger');
 
 const PROJECTION_TYPE = 'AUTHORITY_PROJECTION';
 const POLL_INTERVAL_MS = 30_000;
@@ -34,14 +37,55 @@ class AuthorityProjectionWorker extends BaseProjectionWorker {
   }
 
   /**
+   * Fetch authority synthesis sources from the observability plane.
+   * The worker reads from immutable observability snapshots, NOT live substrate memory.
+   * This preserves replay determinism — same snapshot + same version = same output.
+   *
    * @returns {Promise<object>}
    */
   async _getSnapshotSource() {
-    const domainBreakdown = metricsSubstrate.getDomainBreakdown();
-    const lineageEntries = await lineageLedger.getLineage(100);
+    let crossDomain = {};
+    let domainBreakdown = {};
+    let rateLimitWindows = [];
+
+    try {
+      // eslint-disable-next-line global-require
+      const observability = require('../observability');
+
+      // Cross-domain state from observability plane (immutable snapshot)
+      crossDomain = observability.getCrossDomain(['acquisition', 'publishing', 'scheduling', 'dedup']) || {};
+
+      // Derive domain breakdown from cross-domain snapshot
+      for (const [domain, state] of Object.entries(crossDomain)) {
+        if (typeof state === 'object' && state !== null) {
+          domainBreakdown[domain] = state;
+        } else {
+          domainBreakdown[domain] = { total: 0, failed: 0, failureRate: 0, state };
+        }
+      }
+
+      // Read RAW_RATE_LIMIT_WINDOW entries from the transition log.
+      // This reads from the observability plane, NOT direct retry._rateLimitedAccounts.
+      const logSize = observability.query.getLogSize();
+      const allEntries = [];
+      for (let i = Math.max(0, logSize - 500); i < logSize; i++) {
+        const result = observability.query.getEntriesSince(i);
+        if (result && result.entries) {
+          for (const entry of result.entries) {
+            if (entry.raw && entry.raw.entryType === 'RAW_RATE_LIMIT_WINDOW') {
+              rateLimitWindows.push(entry.raw);
+            }
+          }
+        }
+      }
+    } catch {
+      // observability may not be initialized yet — degraded but not broken
+    }
+
     return {
+      crossDomain,
       domainBreakdown,
-      lineageEntries,
+      rateLimitWindows,
       tickCount: this._tickCount,
       windowOpenedAt: Date.now() - POLL_INTERVAL_MS,
       entryCount: domainBreakdown ? Object.keys(domainBreakdown).length : 0,
@@ -51,14 +95,18 @@ class AuthorityProjectionWorker extends BaseProjectionWorker {
 
   /**
    * Synthesize authorityContinuity, escalationPressure, authorityOscillation,
-   * sovereigntyStress.
+   * sovereigntyStress, RATE_LIMIT_PRESSURE.
+   *
+   * RATE_LIMIT_PRESSURE is inferred here from RAW_RATE_LIMIT_WINDOW entries
+   * in the observability plane. The adapter emits raw circuit breaker windows;
+   * this worker synthesizes semantic pressure from them.
    *
    * @param {object} projectionState
-   * @param {object} signals
+   * @param {object} signals — { crossDomain, domainBreakdown, rateLimitWindows, ... }
    * @returns {object}
    */
   _synthesize(projectionState, signals) {
-    const { domainBreakdown, lineageEntries } = signals;
+    const { crossDomain, domainBreakdown, rateLimitWindows } = signals;
 
     const domains = ['acquisition', 'publishing', 'scheduling', 'dedup'];
     const authorityMap = {};
@@ -67,7 +115,7 @@ class AuthorityProjectionWorker extends BaseProjectionWorker {
 
     for (const domain of domains) {
       const breakdown = domainBreakdown[domain] || { total: 0, failed: 0, failureRate: 0 };
-      const lineageDomain = this._getLastDomainState(lineageEntries, domain);
+      const crossDomainState = crossDomain[domain] || null;
 
       // Authority stability: failureRate inverse
       const authorityStability = breakdown.total > 0
@@ -75,10 +123,10 @@ class AuthorityProjectionWorker extends BaseProjectionWorker {
         : 1.0;
 
       // Authority oscillation detection
-      const oscillation = this._detectOscillation(domain, breakdown, lineageDomain);
+      const oscillation = this._detectOscillation(domain, breakdown);
 
       authorityMap[domain] = {
-        state: lineageDomain || 'IDLE',
+        state: crossDomainState || 'IDLE',
         authorityStability,
         failureRate: breakdown.failureRate,
         oscillationDetected: oscillation > 0.5,
@@ -87,6 +135,10 @@ class AuthorityProjectionWorker extends BaseProjectionWorker {
       maxAuthorityOscillation = Math.max(maxAuthorityOscillation, oscillation);
       maxEscalationPressure = Math.max(maxEscalationPressure, breakdown.failureRate);
     }
+
+    // RATE_LIMIT_PRESSURE: semantic synthesis from RAW_RATE_LIMIT_WINDOW entries.
+    // The adapter emits raw circuit breaker windows; this worker infers pressure.
+    const rateLimitPressure = this._deriveRateLimitPressure(rateLimitWindows);
 
     const authorityContinuity = this._deriveAuthorityContinuity(authorityMap);
     const escalationPressure = maxEscalationPressure;
@@ -97,22 +149,35 @@ class AuthorityProjectionWorker extends BaseProjectionWorker {
       escalationPressure,
       authorityOscillation: maxAuthorityOscillation,
       sovereigntyStress,
+      rateLimitPressure,
       domains: authorityMap,
     };
   }
 
-  _getLastDomainState(lineageEntries, domain) {
-    if (!lineageEntries || lineageEntries.length === 0) return null;
-    for (let i = lineageEntries.length - 1; i >= 0; i--) {
-      const entry = lineageEntries[i];
-      if (entry.domain === domain && entry.nextState) {
-        return entry.nextState;
+  /**
+   * Derive RATE_LIMIT_PRESSURE from RAW_RATE_LIMIT_WINDOW entries.
+   * Semantic synthesis owned by this worker — not the adapter.
+   *
+   * @param {Array} rateLimitWindows — RAW_RATE_LIMIT_WINDOW entries from observability
+   * @returns {number} 0.0 – 1.0
+   */
+  _deriveRateLimitPressure(rateLimitWindows) {
+    if (!rateLimitWindows || rateLimitWindows.length === 0) return 0;
+    // Pressure based on number of accounts under active circuit breaker
+    // and their remaining cooldown duration
+    let totalCooldown = 0;
+    for (const win of rateLimitWindows) {
+      if (win.cooldownMs > 0) {
+        totalCooldown += win.cooldownMs;
       }
     }
-    return null;
+    const avgCooldown = totalCooldown / rateLimitWindows.length;
+    const accountPressure = Math.min(1.0, rateLimitWindows.length / 10);
+    const timePressure = Math.min(1.0, avgCooldown / 60_000);
+    return Math.min(1.0, accountPressure * 0.6 + timePressure * 0.4);
   }
 
-  _detectOscillation(domain, breakdown, lastDomainState) {
+  _detectOscillation(domain, breakdown) {
     if (breakdown.total < 5) return 0;
     if (!this._oscillationHistory.has(domain)) {
       this._oscillationHistory.set(domain, []);
@@ -120,10 +185,8 @@ class AuthorityProjectionWorker extends BaseProjectionWorker {
     const history = this._oscillationHistory.get(domain);
 
     // Track failure rate transitions
-    if (lastDomainState) {
-      history.push({ failureRate: breakdown.failureRate, ts: Date.now() });
-      if (history.length > 10) history.splice(0, history.length - 10);
-    }
+    history.push({ failureRate: breakdown.failureRate, ts: Date.now() });
+    if (history.length > 10) history.splice(0, history.length - 10);
 
     // Oscillation: failure rate toggling between high and low
     if (history.length >= 4) {
@@ -153,10 +216,10 @@ class AuthorityProjectionWorker extends BaseProjectionWorker {
   }
 
   _computeIntegrityScore(signals) {
-    const { lineageEntries } = signals;
-    if (!lineageEntries || lineageEntries.length === 0) return 0.5;
-    const recentCount = lineageEntries.filter(e => e.domain === 'authority').length;
-    return recentCount > 0 ? 1.0 : 0.5;
+    const { crossDomain } = signals;
+    const domainCount = crossDomain ? Object.keys(crossDomain).length : 0;
+    if (domainCount === 0) return 0.5;
+    return Math.min(1.0, domainCount / 5);
   }
 }
 

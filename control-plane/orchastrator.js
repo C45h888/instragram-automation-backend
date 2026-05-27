@@ -25,8 +25,7 @@ const lifecycle = require('./runtime/lifecycle');
 const persistence = require('../substrates/persistence');
 const syncSubstrate = require('../substrates/sync-substrate');
 const lineageWorker = require('./governance/lineage-worker');
-const engagementTelemetryInterpreter = require('./governance/interpreters/engagement-telemetry-interpreter');
-const telemetryWorkers = require('./telemetry-workers');
+const engagementTelemetryAdapter = require('./governance/interpreters/engagement-telemetry-adapter');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -95,12 +94,10 @@ async function startAllWorkers() {
   // MUST start after telemetry workers so projections are available.
   await lineageWorker.start(5000);
 
-  // Start the engagement telemetry interpreter — pre-processes raw substrate
-  // signals into domain-scoped engagement signals before they reach domain FSMs.
-  // The interpreter writes to the observability plane; lineage worker consumes from there.
-  // NOTE: telemetry projection workers are now the bounded semantic layer.
-  engagementTelemetryInterpreter.setGovernance(constitutional);
-  await engagementTelemetryInterpreter.start();
+  // Start the engagement telemetry adapter — bounded raw telemetry normalizer.
+  // Emits RAW_METRICS_WINDOW, RAW_QUOTA_WINDOW, RAW_RATE_LIMIT_WINDOW to observability.
+  // All semantic synthesis (RETRY_PRESSURE, QUOTA_PRESSURE, etc.) is done by projection workers.
+  await engagementTelemetryAdapter.start();
 
   // Rehydrate CK from the worker-populated ledger.
   // Prior entries from a previous process lifetime are now available.

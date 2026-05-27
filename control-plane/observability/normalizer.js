@@ -354,4 +354,21 @@ addRule('projection', 'semantic_projection', null, null, (raw) => ({
   raw: { ...raw, entryType: 'SEMANTIC_PROJECTION_TRANSITION' },
 }));
 
+// Engagement Telemetry Adapter — raw bounded telemetry windows
+// The adapter emits RAW_METRICS_WINDOW, RAW_QUOTA_WINDOW, RAW_RATE_LIMIT_WINDOW
+// as bounded telemetry signals. No semantic synthesis here — that belongs to
+// projection workers which consume these windows from the observability plane.
+addRule('engagement', 'telemetry_window', null, 'RAW_METRICS_WINDOW', (raw) => ({
+  entityId: raw.entityId || 'engagement-adapter',
+  raw: { ...raw, entryType: 'RAW_METRICS_WINDOW' },
+}));
+addRule('engagement', 'telemetry_window', null, 'RAW_QUOTA_WINDOW', (raw) => ({
+  entityId: raw.entityId || null,
+  raw: { ...raw, entryType: 'RAW_QUOTA_WINDOW' },
+}));
+addRule('engagement', 'telemetry_window', null, 'RAW_RATE_LIMIT_WINDOW', (raw) => ({
+  entityId: raw.entityId || null,
+  raw: { ...raw, entryType: 'RAW_RATE_LIMIT_WINDOW' },
+}));
+
 module.exports = { normalize, normalizeSignal, addRule };

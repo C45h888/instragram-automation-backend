@@ -1,11 +1,17 @@
-// control-plane/telemetry-workers/governance-runtime-projection-worker.js
-// Governance Runtime Projection Worker: synthesizes governancePressure, systemicStress,
+// Systemic Pressure Projection Worker: synthesizes governancePressure, systemicStress,
 // convergenceConfidence, domainInstability.
 //
-// Owns: semantic synthesis of governance runtime pressure signals.
-// Does NOT own: constitutional legitimacy determination, governance enforcement.
+// OWNED BY: semantic synthesis layer (NOT governance cognition layer)
 //
-// Projection Type: GOVERNANCE_RUNTIME_PROJECTION
+// This worker synthesizes RUNTIME GOVERNANCE PRESSURE signals only.
+// It does NOT determine constitutional legitimacy — only the reconciliation
+// engine and constitutional kernel make those judgments.
+//
+// Renamed from 'governance-runtime-projection-worker' to eliminate dangerous
+// semantic implication that this worker performs governance authority synthesis.
+// It synthesizes systemic pressure, NOT governance authority.
+//
+// Projection Type: SYSTEMIC_PRESSURE_PROJECTION
 // Source: observability.getCrossDomain() + lineageLedger.materializeState()
 //
 // Determinism contract:
@@ -15,12 +21,12 @@
 const { BaseProjectionWorker } = require('./base-projection-worker');
 const lineageLedger = require('../governance/lineage-ledger');
 
-const PROJECTION_TYPE = 'GOVERNANCE_RUNTIME_PROJECTION';
+const PROJECTION_TYPE = 'SYSTEMIC_PRESSURE_PROJECTION';
 const POLL_INTERVAL_MS = 30_000;
 
-class GovernanceRuntimeProjectionWorker extends BaseProjectionWorker {
+class SystemicPressureProjectionWorker extends BaseProjectionWorker {
   constructor() {
-    super({ pollIntervalMs: POLL_INTERVAL_MS, workerName: 'governance-runtime-projection-worker' });
+    super({ pollIntervalMs: POLL_INTERVAL_MS, workerName: 'systemic-pressure-projection-worker' });
     this._previousConvergenceConfidence = 1.0;
   }
 
@@ -29,7 +35,7 @@ class GovernanceRuntimeProjectionWorker extends BaseProjectionWorker {
   }
 
   get _domain() {
-    return 'governance';
+    return 'systemic';
   }
 
   /**
@@ -163,4 +169,4 @@ class GovernanceRuntimeProjectionWorker extends BaseProjectionWorker {
   }
 }
 
-module.exports = GovernanceRuntimeProjectionWorker;
+module.exports = SystemicPressureProjectionWorker;
