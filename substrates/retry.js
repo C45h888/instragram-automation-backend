@@ -135,11 +135,9 @@ function handleFetchError(result, accountId) {
   }
 
   if (result.error_category === 'rate_limit') {
-    markAccountRateLimited(accountId, result.retry_after_seconds);
-    // clearCredentialCache is no longer called here — the engagement-telemetry-interpreter
-    // detects rate limit pressure via retry._rateLimitedAccounts polling and dispatches
-    // CLEAR_CREDENTIAL_CACHE upward through governance. This ensures credential cache
-    // invalidation is a governance decision, not a direct substrate mutation.
+    // Classification only — no substrate state mutations.
+    // Circuit breaker flows through governance: engagement-fsm → ENGAGE_CIRCUIT_BREAKER
+    // → acquisition-orchestrator → retrySubstrate.markAccountRateLimited()
     return { skip: false, break: true, retryable: false, retryAfterMs: null };
   }
 

@@ -100,6 +100,11 @@ const TRANSITION_MAP = {
           authority: 'engagement-fsm',
         },
         {
+          type: 'CLEAR_CREDENTIAL_CACHE',
+          accountId,
+          reason: 'rate_limit_detected',
+        },
+        {
           type: 'LOG_DEGRADED',
           substate: 'PARTIAL_FAILURE',
           reason: `Circuit breaker OPEN for ${accountId}, cooldown ${cooldownMs / 1000}s`,
