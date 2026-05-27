@@ -10,6 +10,11 @@
 // It receives normalized STATE_TRANSITION entries from the normalizer
 // and updates its in-memory indexes accordingly.
 //
+// Interpreter integration for bounded consumer access:
+//   getFSMEntriesSince(domain, cursor)  — FSM-bounded filtered entries
+//   getHSMEntriesSince(cursor)          — HSM full observability
+//   getReconEntriesSince(cursor)        — Recon full observability
+//
 // Query interface:
 //   getState(domain, entity, entityId)      → current state string
 //   getDomainState(domain)                  → Map<entity, Map<entityId, state>>
@@ -337,6 +342,44 @@ function findLastEntry(predicate) {
   return null;
 }
 
+// Bounded consumer query methods — namespace-filtered views
+
+/**
+ * Get FSM-bounded entries from a given cursor position.
+ * Filters entries to only those within FSM's domain jurisdiction.
+ *
+ * @param {string} domain — FSM domain ('acquisition' | 'publishing' | 'scheduling')
+ * @param {number} includeIndex — 0-based index to start reading from
+ * @returns {{ entries: Array<object>, nextCursor: number, totalSize: number }}
+ */
+function getFSMEntriesSince(domain, includeIndex) {
+  const result = getEntriesSince(includeIndex);
+  const filtered = result.entries.filter(entry => entry.domain === domain);
+  return { entries: filtered, nextCursor: result.nextCursor, totalSize: result.totalSize };
+}
+
+/**
+ * Get HSM-bounded entries from a given cursor position.
+ * HSM has full observability — no filtering applied.
+ *
+ * @param {number} includeIndex — 0-based index to start reading from
+ * @returns {{ entries: Array<object>, nextCursor: number, totalSize: number }}
+ */
+function getHSMEntriesSince(includeIndex) {
+  return getEntriesSince(includeIndex);
+}
+
+/**
+ * Get Recon-bounded entries from a given cursor position.
+ * Recon has full observability — no filtering applied.
+ *
+ * @param {number} includeIndex — 0-based index to start reading from
+ * @returns {{ entries: Array<object>, nextCursor: number, totalSize: number }}
+ */
+function getReconEntriesSince(includeIndex) {
+  return getEntriesSince(includeIndex);
+}
+
 // ── Consumer cursor registry (Gap 3 fix) ──────────────────────────────────────
 
 function _getMinConsumerCursor() {
@@ -462,4 +505,8 @@ module.exports = {
   unregisterConsumer,
   updateConsumerCursor,
   getConsumerLag,
+  // Bounded consumer query methods
+  getFSMEntriesSince,
+  getHSMEntriesSince,
+  getReconEntriesSince,
 };

@@ -20,10 +20,14 @@
 // The lineage worker ingests these transitions and writes them to the canonical
 // ledger (lineage:ledger:entries). The engine NEVER writes to the ledger directly.
 //
+// Uses recon-lineage-interpreter for bounded full observability access.
+// Interpreter ensures namespace filtering at read time (Recon has full view).
+//
 // Contract:
 //   engine.runCycle({ fsms, substrates, lineageLedger }) → { epochId, hash, observations, worstSeverity }
 
 const crypto = require('crypto');
+const reconInterpreter = require('./interpreters/recon-lineage-interpreter');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Drift Signal Constants — factual observations, NOT severity judgments
