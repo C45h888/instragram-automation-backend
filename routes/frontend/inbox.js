@@ -13,6 +13,7 @@
 const express = require('express');
 const router = express.Router();
 const { getSupabaseAdmin } = require('../../config/supabase');
+const publishingFsm = require('../../control-plane/governance/domains/publishing-fsm');
 
 // ============================================
 // GET /dm-conversations
@@ -51,22 +52,16 @@ router.get('/dm-conversations', async (req, res) => {
       return res.status(500).json({ success: false, error: error.message });
     }
 
-    const nowMs = Date.now();
     const data = (rows || []).map(row => {
-      const expiresMs = row.window_expires_at
-        ? new Date(row.window_expires_at).getTime()
-        : null;
-      const hoursRemaining = expiresMs && expiresMs > nowMs
-        ? (expiresMs - nowMs) / (1000 * 60 * 60)
-        : 0;
+      const window = publishingFsm.computeMessagingWindow(row.last_customer_message_at);
 
       return {
         ...row,
         // Override UUID with thread ID — hook passes this as conversation_id to /reply-dm
         id: row.instagram_thread_id,
-        window_remaining_hours: parseFloat(hoursRemaining.toFixed(1)),
-        can_send_messages: row.within_window || false,
-        requires_template: !(row.within_window || false),
+        window_remaining_hours: window.hours_remaining,
+        can_send_messages: window.can_send_messages,
+        requires_template: window.requires_template,
         priority: 'normal',
       };
     });

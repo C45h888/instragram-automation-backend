@@ -458,10 +458,6 @@ async function ensureConversationRows(supabase, businessAccountId, missingThread
           customer_instagram_id: customerParticipant?.id || null,
           customer_username: customerParticipant?.username || null,
           business_account_id: businessAccountId,
-          within_window: isOpen,
-          window_expires_at: isOpen && hoursRemaining != null
-            ? new Date(Date.now() + hoursRemaining * 3_600_000).toISOString()
-            : null,
           last_message_at: conv.updated_time || null,
           last_user_message_at: lastCustomerTime ? lastCustomerTime.toISOString() : null,
           message_count: conv.message_count || 0,
@@ -501,7 +497,6 @@ async function ensureConversationRows(supabase, businessAccountId, missingThread
     const stubs = [...remaining].map(threadId => ({
       instagram_thread_id: threadId,
       business_account_id: businessAccountId,
-      within_window: false,
       conversation_status: 'active',
     }));
     const { error: stubErr } = await supabase
