@@ -11,7 +11,7 @@
 
 const { getRedisClient } = require('../../config/redis');
 const mutationSubstrate = require('../mutation-substrate');
-const { domainForAction, fetchTypeForAction } = require('../execution/domain-registry');
+const { domainForAction } = require('../execution/domain-registry');
 
 const RESULT_TTL_SEC = 3600;
 
@@ -57,8 +57,8 @@ async function emit(intents) {
     const { account_id, action_type, resource_id, payload, queue_row_id, scheduled_post_id, intent_type } = intent;
 
     const intent_id = require('crypto').randomUUID();
-    const domain = domainForAction(action_type);
-    const fetch_type = fetchTypeForAction(action_type);
+    const routingKey = domainForAction(action_type);  // e.g., 'publish:media'
+    const fetch_type = routingKey;  // routingKey IS the fetch type for publish actions
 
     // Observability: queue intent state transition
     _emitTransition({
@@ -68,7 +68,7 @@ async function emit(intents) {
       previousState: 'PENDING',
       nextState: 'QUEUED',
       authority: 'emission-runtime',
-      raw: { account_id, action_type, domain },
+      raw: { account_id, action_type, routingKey },
     });
 
     const queueIntent = {
@@ -84,21 +84,21 @@ async function emit(intents) {
       intent_type,
     };
 
-    const queueKey = `supervisor:acquisitions:publish:${domain}:${account_id}`;
+    const queueKey = `supervisor:acquisitions:${routingKey}:${account_id}`;
     await redis.lpush(queueKey, JSON.stringify(queueIntent));
 
-    const resultKey = `supervisor:acquisition_results:publish:${domain}:${account_id}:${intent_id}`;
+    const resultKey = `supervisor:acquisition_results:${routingKey}:${account_id}:${intent_id}`;
     await redis.set(resultKey, JSON.stringify({
       intent_id,
       account_id,
       action_type,
-      domain,
+      routingKey,
       status: 'queued',
       resource_id,
       queued_at: new Date().toISOString(),
     }), 'EX', RESULT_TTL_SEC);
 
-    console.log(`[emission] Emitted publish:${domain} intent ${intent_id} for ${intent_type} ${resource_id}`);
+    console.log(`[emission] Emitted ${routingKey} intent ${intent_id} for ${intent_type} ${resource_id}`);
     emitted++;
   }
 

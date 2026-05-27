@@ -162,6 +162,11 @@ function wire(gov, acquisitionFsm) {
   gov.subscribeAction('UPDATE_ACCOUNT_LIST', (action) => {
     syncSubstrate.onKernelSignal({ type: 'UPDATE_ACCOUNT_LIST', accountIds: action.accountIds });
   });
+
+  // ── UPDATE_DOMAIN_LIST → sync substrate (authority flows DOWN) ─────────
+  gov.subscribeAction('UPDATE_DOMAIN_LIST', (action) => {
+    syncSubstrate.onKernelSignal({ type: 'UPDATE_DOMAIN_LIST', domains: action.domains });
+  });
 }
 
 /**

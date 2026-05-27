@@ -41,37 +41,12 @@ function parseUsageHeader(headerValue) {
 /**
  * Stores latest quota reading for an account.
  * Called by domain workers after collecting transport results.
+ * Raw data only — no governance semantic emission. Tier evaluation
+ * and QUOTA_PRESSURE signal emission is performed by
+ * the engagement-telemetry-interpreter.
  */
 function updateQuotaUsage(accountId, usagePct) {
-  const previousPct = _quotaUsage.get(accountId);
-  const previousState = _getQuotaState(previousPct);
   _quotaUsage.set(accountId, { pct: usagePct, recordedAt: Date.now() });
-  const nextState = _getQuotaState(usagePct);
-
-  // Emit observability transition if state changed
-  if (previousState !== nextState) {
-    try {
-      const observability = require('../control-plane/observability/emitters/transition-emitter');
-      observability.transition({
-        domain: 'quota',
-        entity: 'quota',
-        entityId: accountId,
-        previousState,
-        nextState,
-        authority: 'quota-substrate',
-        raw: { usagePct, threshold: nextState === 'CRITICAL' ? 80 : nextState === 'ELEVATED' ? 50 : 0 },
-      });
-    } catch (err) {
-      console.warn('[quota] Observability transition error:', err.message);
-    }
-  }
-}
-
-function _getQuotaState(pct) {
-  if (pct === undefined || pct === null) return 'NORMAL';
-  if (pct >= 80) return 'CRITICAL';
-  if (pct >= 50) return 'ELEVATED';
-  return 'NORMAL';
 }
 
 /**

@@ -4,18 +4,18 @@
 // Owns: Redis queue polling for acquisition intents, round-robin domain/account
 //        rotation. Polls at 10s interval when kernel signals HEALTHY.IDLE
 //        (controlled via START/STOP actions from governance).
-// Does NOT own: state transitions, governance decisions, account discovery.
+// Does NOT own: state transitions, governance decisions, account discovery,
+//               domain list (received from governance via UPDATE_DOMAIN_LIST).
 //
 // Architecture invariant:
 //   Signals UP   → emit via onIntent callback (no governance reference)
 //   Authority DOWN → kernel controls polling via START/STOP actions
+//   Domain list  DOWN → kernel sends UPDATE_DOMAIN_LIST for polling targets
 //   Account list DOWN → kernel sends UPDATE_ACCOUNT_LIST for polling targets
 //
 // Polling interval is 10s — driven internally by this substrate.
 // Kernel sends START/STOP to control polling state.
 
-const ACQUISITION_DOMAINS = ['comments', 'messages', 'ugc', 'insights', 'media'];
-const ACQUISITION_PUBLISH_DOMAINS = ['publish:media', 'publish:ugc', 'publish:messaging'];
 const POLL_INTERVAL_MS = 10_000;
 
 let _redis = null;
@@ -24,14 +24,16 @@ let _running = false;
 let _pollInterval = null;
 let _lastPolledDomainIdx = 0;
 let _accountIds = []; // received via UPDATE_ACCOUNT_LIST action from governance
+let _domains = [];    // received via UPDATE_DOMAIN_LIST action from governance
 
 function _allDomains() {
-  return [...ACQUISITION_DOMAINS, ...ACQUISITION_PUBLISH_DOMAINS];
+  return [..._domains];
 }
 
 function _poll() {
   if (!_running || !_redis || !_onIntent) return;
   if (!_accountIds || _accountIds.length === 0) return;
+  if (!_domains || _domains.length === 0) return;  // wait for governance to provide domain list
 
   const allDomains = _allDomains();
   const domain = allDomains[_lastPolledDomainIdx % allDomains.length];
@@ -83,6 +85,8 @@ function onKernelSignal(action) {
     }
   } else if (action.type === 'UPDATE_ACCOUNT_LIST') {
     _accountIds = Array.isArray(action.accountIds) ? action.accountIds : [];
+  } else if (action.type === 'UPDATE_DOMAIN_LIST') {
+    _domains = Array.isArray(action.domains) ? action.domains : [];
   }
 }
 

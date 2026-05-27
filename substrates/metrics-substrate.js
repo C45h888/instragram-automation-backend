@@ -1,8 +1,9 @@
 // substrates/metrics-substrate.js
-// Governance substrate: raw telemetry aggregation and health signal computation.
+// Governance substrate: raw telemetry aggregation.
 //
-// Owns: rolling window of execution outcomes, health signal computation.
-// Does NOT own: governance classification, orchestration, retry logic.
+// Owns: rolling window of execution outcomes, raw counts only.
+// Does NOT own: governance classification, health state derivation,
+//               threshold evaluation, orchestration, retry logic.
 //
 // Raw telemetry flows:
 //   executionBridge.executeWithRetry()
@@ -12,12 +13,13 @@
 //   cadence.every(90s)
 //     → metricsSubstrate.getHealthSignals()
 //         → governance.dispatch(WORKER_METRICS_REPORTED, { raw counts })
-//             → HSM evaluates threshold deterministically
+//             → engagement-telemetry-interpreter evaluates threshold
+//                 → emits interpreted signals to observability plane
 //
 // Architecture invariant:
 //   This substrate exposes RAW signals only. Policy classification
-//   (what failure rate constitutes degraded) belongs to the governance kernel.
-//   No governance semantics live here.
+//   (what failure rate constitutes degraded, what state to emit) belongs
+//   to the engagement-telemetry-interpreter. No governance semantics live here.
 
 const { getRedisClient } = require('../config/redis');
 
@@ -27,12 +29,10 @@ const METRICS_WINDOW_MS = 60_000;  // 60-second rolling window
 const MAX_ENTRIES = 1000;          // memory cap
 const REDIS_KEY_PREFIX = 'governance:metrics:';
 const REDIS_TTL_S = 300;           // 5min TTL — survive process restarts
-const DEGRADED_THRESHOLD = 0.5;    // failure rate at or above this → DEGRADED
 
 // ── In-memory state ─────────────────────────────────────────────────────────
 
 const _entries = []; // [{ ts, domain, accountId, status, latencyMs }]
-let _lastHealthState = 'HEALTHY'; // tracks the last emitted health state for transition detection
 
 // ── Redis-backed crash-survival ──────────────────────────────────────────────
 
@@ -127,6 +127,8 @@ function record(domain, status, latencyMs, accountId) {
 /**
  * Returns raw aggregate health signals for the rolling window.
  * No policy classification — raw counts only.
+ * Threshold evaluation and health state derivation is performed by
+ * the engagement-telemetry-interpreter.
  *
  * @returns {{ windowMs: number, total: number, completed: number, failed: number, failureRate: number }}
  */
@@ -136,26 +138,6 @@ function getHealthSignals() {
   const completed = recent.filter(e => e.status === 'completed').length;
   const failed = recent.filter(e => e.status === 'failed').length;
   const total = recent.length;
-
-  const computedHealth = total > 0 && failed / total >= DEGRADED_THRESHOLD ? 'DEGRADED' : 'HEALTHY';
-
-  // Emit observability transition if health state changed
-  if (computedHealth !== _lastHealthState) {
-    const previousState = _lastHealthState;
-    _lastHealthState = computedHealth;
-    try {
-      const observability = require('../control-plane/observability/emitters/transition-emitter');
-      observability.transition({
-        domain: 'metrics',
-        entity: 'health_signal',
-        entityId: 'system',
-        previousState,
-        nextState: computedHealth,
-        authority: 'metrics-substrate',
-        raw: { failureRate: total > 0 ? failed / total : 0, total, failed, completed },
-      });
-    } catch (_) {}
-  }
 
   return {
     windowMs: METRICS_WINDOW_MS,

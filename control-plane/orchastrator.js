@@ -25,6 +25,8 @@ const lifecycle = require('./runtime/lifecycle');
 const persistence = require('../substrates/persistence');
 const syncSubstrate = require('../substrates/sync-substrate');
 const lineageWorker = require('./governance/lineage-worker');
+const engagementTelemetryInterpreter = require('./governance/interpreters/engagement-telemetry-interpreter');
+const telemetryWorkers = require('./telemetry-workers');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -82,11 +84,23 @@ async function startAllWorkers() {
   const observability = require('./observability');
   await observability.init();
 
+  // Start the bounded telemetry projection workers FIRST.
+  // These produce SEMANTIC_PROJECTION_TRANSITION entries that the lineage
+  // worker consumes. Workers must be running before lineage-worker starts.
+  await telemetryWorkers.startAll();
+
   // Start the lineage worker — canonical runtime interpretation substrate.
   // Consumes from the observability plane and produces immutable lineage
-  // entries + runtime projections for the reconciliation engine and governance.
-  // MUST start before CK rehydrate so the ledger is populated when CK reads it.
+  // entries for the reconciliation engine and governance.
+  // MUST start after telemetry workers so projections are available.
   await lineageWorker.start(5000);
+
+  // Start the engagement telemetry interpreter — pre-processes raw substrate
+  // signals into domain-scoped engagement signals before they reach domain FSMs.
+  // The interpreter writes to the observability plane; lineage worker consumes from there.
+  // NOTE: telemetry projection workers are now the bounded semantic layer.
+  engagementTelemetryInterpreter.setGovernance(constitutional);
+  await engagementTelemetryInterpreter.start();
 
   // Rehydrate CK from the worker-populated ledger.
   // Prior entries from a previous process lifetime are now available.
@@ -128,6 +142,7 @@ async function startAllWorkers() {
 async function stopAllWorkers() {
   console.log('[orchestrator] Stopping constitutional kernel...');
 
+  await telemetryWorkers.stopAll();
   await lineageWorker.stop();
   constitutional.stopLoop();
   syncSubstrate.stop();

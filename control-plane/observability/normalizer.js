@@ -347,4 +347,11 @@ addRule('scheduling', 'fsm', null, null, (raw) => ({
   raw,
 }));
 
+// Bounded Telemetry Projection Layer — SEMANTIC_PROJECTION_TRANSITION entries
+// emitted by projection workers in telemetry-workers/ (per Development Contract)
+addRule('projection', 'semantic_projection', null, null, (raw) => ({
+  entityId: raw.projectionType || null,
+  raw: { ...raw, entryType: 'SEMANTIC_PROJECTION_TRANSITION' },
+}));
+
 module.exports = { normalize, normalizeSignal, addRule };

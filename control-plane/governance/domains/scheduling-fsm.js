@@ -69,6 +69,7 @@ const TRANSITION_MAP = {
       { type: 'REFRESH_LIFECYCLE' },
       { type: 'CHECK_SAFETY' },
       { type: 'REPORT_METRICS' },
+      { type: 'UPDATE_DOMAIN_LIST', domains: DOMAIN_LIST },
     ],
   },
 
@@ -97,20 +98,17 @@ const TRANSITION_MAP = {
   },
 
   // ── Worker metrics — domain evaluates health, reports to constitutional ─
-  // Policy: unhealthy when total >= 5 samples AND failureRate >= 50%
+  // Policy threshold evaluation has been moved to engagement-telemetry-interpreter.
+  // The interpreter applies failureRate >= 0.5 and emits RETRY_PRESSURE to the
+  // observability plane. This handler acknowledges the raw metrics report only.
   WORKER_METRICS_REPORTED: {
     target: () => {
       return _localState; // no state change
     },
     guard: () => ({ allowed: true }),
     buildActions: (event) => {
-      if (event.total >= 5 && event.failureRate >= 0.5) {
-        return [{
-          type: 'LOG_DEGRADED',
-          substate: 'RETRY_PRESSURE',
-          reason: `Worker failure rate ${Math.round(event.failureRate * 100)}% (${event.failed}/${event.total} in ${((event.windowMs || 60000) / 1000).toFixed(0)}s)`,
-        }];
-      }
+      // No threshold evaluation here — interpreter handles policy.
+      // Just acknowledge the raw metrics for observability.
       return [];
     },
   },
@@ -124,6 +122,20 @@ let _localState = 'IDLE';
 
 // ── Cadence tracking — updated on every CADENCE_TICK ────────────────────────
 let _lastCadenceTickAt = null;
+
+// ── Canonical domain list — governance-controlled polling targets ─────────────
+// All domains the sync substrate is permitted to poll. This list is the
+// single source of truth — sync-substrate must NOT maintain its own hardcoded list.
+const DOMAIN_LIST = [
+  'comments',
+  'messages',
+  'ugc',
+  'insights',
+  'media',
+  'publish:media',
+  'publish:ugc',
+  'publish:messaging',
+];
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
@@ -243,6 +255,15 @@ function getLastCadenceTick() {
   return _lastCadenceTickAt;
 }
 
+/**
+ * Returns the canonical domain list. Used by the sync substrate
+ * to receive domain configuration via UPDATE_DOMAIN_LIST action.
+ * @returns {string[]}
+ */
+function getDomainList() {
+  return [...DOMAIN_LIST];
+}
+
 module.exports = {
   name: 'scheduling',
   dispatch,
@@ -251,4 +272,5 @@ module.exports = {
   exportState,
   getHealth,
   getLastCadenceTick,
+  getDomainList,
 };

@@ -14,7 +14,7 @@
 const { getRedisClient } = require('../../config/redis');
 const { getActiveAccounts } = require('../../substrates/persistence');
 const dbWorker = require('../execution/db-worker');
-const { domainForAction, fetchTypeForAction } = require('../execution/domain-registry');
+const { domainForAction } = require('../execution/domain-registry');
 
 // ── Observability state tracking ────────────────────────────────────────────
 
@@ -24,10 +24,11 @@ let _lastScanAt = null;
 // ── Intent builder ──────────────────────────────────────────────────────────
 
 function buildIntent(accountId, actionType, payload, queueRowId, scheduledPostId) {
+  const routingKey = domainForAction(actionType);  // e.g., 'publish:media'
   return {
     intent_id: require('crypto').randomUUID(),
     account_id: accountId,
-    fetch_type: fetchTypeForAction(actionType),
+    fetch_type: routingKey,
     action_type: actionType,
     payload,
     priority: 'normal',
@@ -55,6 +56,7 @@ async function scanScheduledPosts(redis, accountId) {
       continue;
     }
 
+    const routingKey = 'publish:media';
     const intent = buildIntent(
       accountId, 'publish_post',
       {
@@ -66,12 +68,12 @@ async function scanScheduledPosts(redis, accountId) {
       null, post.id
     );
 
-    const queueKey = `supervisor:acquisitions:publish:media:${accountId}`;
+    const queueKey = `supervisor:acquisitions:${routingKey}:${accountId}`;
     await redis.lpush(queueKey, JSON.stringify(intent));
 
     await dbWorker.markScheduledPostPublishing(post.id);
 
-    console.log(`[db-scanner] Emitted publish:media intent for scheduled_post ${post.id}`);
+    console.log(`[db-scanner] Emitted ${routingKey} intent for scheduled_post ${post.id}`);
     emitted++;
   }
 
@@ -87,8 +89,8 @@ async function scanPostQueue(redis, accountId) {
   let emitted = 0;
 
   for (const row of rows) {
-    const domain = domainForAction(row.action_type);
-    const queueKey = `supervisor:acquisitions:publish:${domain}:${accountId}`;
+    const routingKey = domainForAction(row.action_type);  // e.g., 'publish:media'
+    const queueKey = `supervisor:acquisitions:${routingKey}:${accountId}`;
 
     const intent = buildIntent(
       accountId, row.action_type, row.payload,
@@ -99,7 +101,7 @@ async function scanPostQueue(redis, accountId) {
 
     await dbWorker.markPostQueueProcessing(row.id, row.status);
 
-    console.log(`[db-scanner] Emitted publish:${domain} intent for post_queue row ${row.id} (action: ${row.action_type})`);
+    console.log(`[db-scanner] Emitted ${routingKey} intent for post_queue row ${row.id} (action: ${row.action_type})`);
     emitted++;
   }
 

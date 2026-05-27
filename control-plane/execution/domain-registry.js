@@ -112,20 +112,13 @@ const DOMAIN_REGISTRY = {
   },
   'publish:media': {
     fetch: async (accountId, params, creds) => {
-      const { action_type, payload, queue_row_id, scheduled_post_id, intent_type } = params;
+      const { action_type, payload, scheduled_post_id, intent_type } = params;
       const actionType = action_type || 'publish_post';
-
-      if (queue_row_id) {
-        await dbWorker.markPostQueueProcessing(queue_row_id, 'pending');
-      }
 
       let resolvedPayload = payload || params;
       if (intent_type === 'scheduled_post' && resolvedPayload?.asset_id) {
         const asset = await dbWorker.resolveAsset(resolvedPayload.asset_id);
         if (!asset?.storage_path) {
-          if (scheduled_post_id) {
-            await dbWorker.markScheduledPostFailed(scheduled_post_id);
-          }
           return { success: false, count: 0, error: 'Asset not found', retryable: false, error_category: 'permanent' };
         }
         resolvedPayload = { image_url: asset.storage_path, caption: asset.caption || '', media_type: asset.media_type || 'IMAGE', scheduled_post_id };
@@ -146,10 +139,6 @@ const DOMAIN_REGISTRY = {
   },
   'publish:ugc': {
     fetch: async (accountId, params, creds) => {
-      const { queue_row_id } = params;
-      if (queue_row_id) {
-        await dbWorker.markPostQueueProcessing(queue_row_id, 'pending');
-      }
       return igFetcherPublish.executePublishAction('repost_ugc', accountId, creds, params.payload || params);
     },
     persist: async (accountId, rawData, execParams) => {
@@ -165,11 +154,7 @@ const DOMAIN_REGISTRY = {
   },
   'publish:messaging': {
     fetch: async (accountId, params, creds) => {
-      const { queue_row_id, action_type } = params;
-      if (queue_row_id) {
-        await dbWorker.markPostQueueProcessing(queue_row_id, 'pending');
-      }
-      return igFetcherPublish.executePublishAction(action_type, accountId, creds, params.payload || params);
+      return igFetcherPublish.executePublishAction(params.action_type, accountId, creds, params.payload || params);
     },
     persist: async (accountId, rawData, execParams) => {
       const { queue_row_id } = execParams || {};
@@ -186,16 +171,16 @@ const DOMAIN_REGISTRY = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Maps a publish action_type to its execution domain.
+ * Maps a publish action_type to its full routing key (including namespace).
  * Singleton source of truth — no duplication across modules.
  *
  * @param {string} actionType - 'publish_post' | 'repost_ugc' | 'publish_media' | 'publish_ugc' | 'publish_messaging' | etc.
- * @returns {string} domain - 'media' | 'ugc' | 'messaging'
+ * @returns {string} routingKey - 'publish:media' | 'publish:ugc' | 'publish:messaging'
  */
 function domainForAction(actionType) {
-  if (actionType === 'publish_post') return 'media';
-  if (actionType === 'repost_ugc') return 'ugc';
-  return 'messaging';
+  if (actionType === 'publish_post' || actionType === 'publish_media') return 'publish:media';
+  if (actionType === 'repost_ugc' || actionType === 'publish_ugc') return 'publish:ugc';
+  return 'publish:messaging';
 }
 
 /**

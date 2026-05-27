@@ -208,7 +208,10 @@ async function storeCommentBatches(businessAccountId, batches) {
 
 /**
  * Batch-writes conversation records in a single DB round-trip.
- * Calculates 24h messaging window from the CUSTOMER's last message only.
+ * Raw timestamps only — no derived messaging window policy.
+ * The 24h messaging window (is_open, hours_remaining, requires_template,
+ * can_send_messages) is computed by the engagement-fsm from raw timestamps
+ * using governance policy constants.
  *
  * @param {string} businessAccountId
  * @param {Array} rawConversations - Raw API conversations array
@@ -220,7 +223,6 @@ async function storeConversationBatches(businessAccountId, rawConversations, igU
   const supabase = getSupabaseAdmin();
   if (!supabase || !rawConversations.length) return { count: 0, conversations: [] };
 
-  const now = new Date();
   const convRecords = [];
   const shapedConversations = [];
 
@@ -229,12 +231,6 @@ async function storeConversationBatches(businessAccountId, rawConversations, igU
       m => m.from?.id !== igUserId && m.from?.id !== pageId
     );
     const lastCustomerTime = customerMsg ? new Date(customerMsg.created_time) : null;
-    const hoursSince = lastCustomerTime ? (now - lastCustomerTime) / 3_600_000 : null;
-    const isOpen = hoursSince !== null && hoursSince < 24;
-    const hoursRemaining = hoursSince !== null ? Math.max(0, 24 - hoursSince) : null;
-    const windowExpiresAt = isOpen && hoursRemaining != null
-      ? new Date(Date.now() + hoursRemaining * 3_600_000).toISOString()
-      : null;
 
     const participants = conv.participants?.data || [];
     const customerParticipant = participants.find(
@@ -243,32 +239,26 @@ async function storeConversationBatches(businessAccountId, rawConversations, igU
 
     if (!customerParticipant?.id) continue;
 
+    // Store raw timestamps only — window policy is derived by engagement-fsm
     convRecords.push({
       instagram_thread_id: conv.id,
       customer_instagram_id: customerParticipant.id,
       customer_username: customerParticipant.username || null,
       business_account_id: businessAccountId,
-      within_window: isOpen,
-      window_expires_at: windowExpiresAt,
       last_message_at: conv.updated_time || null,
       last_user_message_at: lastCustomerTime ? lastCustomerTime.toISOString() : null,
       message_count: conv.message_count || 0,
       conversation_status: 'active',
     });
 
+    // Return raw conversation data — derived window fields stripped
     shapedConversations.push({
-      id: conv.id, participants,
+      id: conv.id,
+      participants,
       last_message_at: conv.updated_time,
       message_count: conv.message_count || 0,
       last_message: conv.messages?.data?.[0] || null,
-      messaging_window: {
-        is_open: isOpen,
-        hours_remaining: hoursRemaining !== null ? parseFloat(hoursRemaining.toFixed(1)) : null,
-        requires_template: hoursSince !== null && hoursSince >= 24,
-        last_customer_message_at: lastCustomerTime ? lastCustomerTime.toISOString() : null,
-      },
-      within_window: isOpen,
-      can_send_messages: isOpen,
+      last_customer_message_at: lastCustomerTime ? lastCustomerTime.toISOString() : null,
     });
   }
 

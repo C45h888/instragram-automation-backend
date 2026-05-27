@@ -309,7 +309,12 @@ function _emitBackpressure() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Layer B — Projection Interpretation Engine
+// Layer B REMOVED — projection synthesis now owned by telemetry-workers.
+// The lineage worker Layer A now consumes SEMANTIC_PROJECTION_TRANSITION entries
+// from the observability plane and persists them to the ledger unchanged.
+// Shared projection workers (5 workers in telemetry-workers/) now synthesize
+// runtime projections and emit them as SEMANTIC_PROJECTION_TRANSITION.
+// The lineage worker DOES NOT reinterpret these — it only validates and persists.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -684,14 +689,9 @@ async function _tick() {
   _lastTick = Date.now();
   _tickCount++;
 
-  // Layer A: ingest raw transitions into immutable lineage
+  // Layer A: ingest transitions into immutable lineage
+  // Layer B removed — projection synthesis now in telemetry-workers/
   const { consumed, rejected } = _ingestTick();
-
-  // Layer B: project interpretation from newly ingested entries
-  if (consumed > 0) {
-    const newEntries = _lineageBuffer.slice(-consumed);
-    _projectTick(newEntries);
-  }
 
   // Persist health on every tick
   _persistHealth();

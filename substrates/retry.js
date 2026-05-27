@@ -15,8 +15,7 @@
 //   Mechanical classification only → execution bridge consumes classification
 //   Execution bridge emits EXECUTION_OBSERVATION upward → governance decides
 //   Governance emits DISCONNECT_ACCOUNT, ENGAGE_CIRCUIT_BREAKER downward
-
-const { clearCredentialCache } = require('../helpers/agent-helpers');
+//   Credential cache clearing flows through engagement-telemetry-interpreter → governance
 
 // ── In-memory circuit breaker state (mechanical only) ───────────────────────
 
@@ -137,7 +136,10 @@ function handleFetchError(result, accountId) {
 
   if (result.error_category === 'rate_limit') {
     markAccountRateLimited(accountId, result.retry_after_seconds);
-    clearCredentialCache(accountId);
+    // clearCredentialCache is no longer called here — the engagement-telemetry-interpreter
+    // detects rate limit pressure via retry._rateLimitedAccounts polling and dispatches
+    // CLEAR_CREDENTIAL_CACHE upward through governance. This ensures credential cache
+    // invalidation is a governance decision, not a direct substrate mutation.
     return { skip: false, break: true, retryable: false, retryAfterMs: null };
   }
 

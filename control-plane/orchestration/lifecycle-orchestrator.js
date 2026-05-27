@@ -12,6 +12,7 @@
 
 const lifecycle = require('../runtime/lifecycle');
 const buffer = require('../runtime/buffer');
+const { clearCredentialCache } = require('../../helpers/agent-helpers');
 
 /**
  * Wire this orchestrator to the governance kernel.
@@ -30,6 +31,18 @@ function wire(governance) {
     console.warn(`[lifecycle-orchestrator] Governance ordered disconnect for ${action.accountId}: ${action.reason}`);
     // Lifecycle module handles the actual disconnect mechanics
     // The governance kernel already updated its internal state
+  });
+
+  // ── CLEAR_CREDENTIAL_CACHE → credential cache (governance-ordered) ─────
+  // The engagement-telemetry-interpreter detects rate limit pressure via
+  // retry substrate polling and dispatches CLEAR_CREDENTIAL_CACHE upward
+  // through governance. This ensures credential cache invalidation is a
+  // governance decision, not a direct substrate mutation.
+  governance.subscribeAction('CLEAR_CREDENTIAL_CACHE', (action) => {
+    if (action.accountId) {
+      clearCredentialCache(action.accountId, action.reason || 'governance_dispatch');
+      console.warn(`[lifecycle-orchestrator] CLEAR_CREDENTIAL_CACHE for ${action.accountId} (${action.reason})`);
+    }
   });
 }
 
