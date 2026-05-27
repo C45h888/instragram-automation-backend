@@ -53,6 +53,9 @@ const STATE_REGISTRY = {
   EMITTING: {
     description: 'Emitting publishing intents to Redis queues',
   },
+  PUBLISHING: {
+    description: 'DB scan emitted intents — mutation substrate applying APPROVED→PUBLISHING transition',
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,6 +110,51 @@ const TRANSITION_MAP = {
         ];
       }
       return [{ type: 'START_INTENT_DISCOVERY' }];
+    },
+  },
+
+  // ── DB scan emitted intent → apply APPROVED→PUBLISHING mutation ─────────
+  // Scanner emits DB_SCAN_EMITTED after LPUSHing intent to Redis.
+  // This transition authorizes the DB status update via mutation-substrate.
+  DB_SCAN_EMITTED: {
+    target: 'PUBLISHING',
+    guard: (event) => {
+      // Guard: event must have required fields for mutation
+      if (!event?.target || !event?.recordId) {
+        return { allowed: false, reason: 'DB_SCAN_EMITTED requires target and recordId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { target, recordId, accountId, actionType, currentStatus } = event;
+
+      if (target === 'scheduled_post') {
+        // scheduled_posts: APPROVED → PUBLISHING
+        return [{
+          type: 'APPLY_MUTATION',
+          table: 'scheduled_posts',
+          recordId,
+          accountId,
+          updates: { status: 'publishing' },
+          expectedPriorStatus: 'approved',
+          reason: `Scanner emitted intent for scheduled_post ${recordId}`,
+        }];
+      }
+
+      if (target === 'post_queue') {
+        // post_queue: (pending|failed) → processing
+        return [{
+          type: 'APPLY_MUTATION',
+          table: 'post_queue',
+          recordId,
+          accountId,
+          updates: { status: 'processing' },
+          expectedPriorStatus: currentStatus || 'pending',
+          reason: `Scanner emitted intent for post_queue row ${recordId}`,
+        }];
+      }
+
+      return [];
     },
   },
 };

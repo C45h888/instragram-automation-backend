@@ -43,9 +43,9 @@ function buildIntent(accountId, actionType, payload, queueRowId, scheduledPostId
 
 async function scanScheduledPosts(redis, accountId) {
   const posts = await dbWorker.getApprovedScheduledPosts(accountId);
-  if (!posts.length) return 0;
+  if (!posts.length) return [];
 
-  let emitted = 0;
+  const emitted = [];
 
   for (const post of posts) {
     const asset = await dbWorker.resolveAsset(post.asset_id);
@@ -71,10 +71,9 @@ async function scanScheduledPosts(redis, accountId) {
     const queueKey = `supervisor:acquisitions:${routingKey}:${accountId}`;
     await redis.lpush(queueKey, JSON.stringify(intent));
 
-    await dbWorker.markScheduledPostPublishing(post.id);
+    emitted.push({ postId: post.id, accountId, routingKey, actionType: 'publish_post' });
 
     console.log(`[db-scanner] Emitted ${routingKey} intent for scheduled_post ${post.id}`);
-    emitted++;
   }
 
   return emitted;
@@ -84,9 +83,9 @@ async function scanScheduledPosts(redis, accountId) {
 
 async function scanPostQueue(redis, accountId) {
   const rows = await dbWorker.getRetryablePostQueue(accountId);
-  if (!rows.length) return 0;
+  if (!rows.length) return [];
 
-  let emitted = 0;
+  const emitted = [];
 
   for (const row of rows) {
     const routingKey = domainForAction(row.action_type);  // e.g., 'publish:media'
@@ -99,10 +98,9 @@ async function scanPostQueue(redis, accountId) {
 
     await redis.lpush(queueKey, JSON.stringify(intent));
 
-    await dbWorker.markPostQueueProcessing(row.id, row.status);
+    emitted.push({ rowId: row.id, accountId, routingKey, actionType: row.action_type, currentStatus: row.status });
 
     console.log(`[db-scanner] Emitted ${routingKey} intent for post_queue row ${row.id} (action: ${row.action_type})`);
-    emitted++;
   }
 
   return emitted;
@@ -110,7 +108,7 @@ async function scanPostQueue(redis, accountId) {
 
 // ── Main scan (called by orchestrator cadence) ──────────────────────────────
 
-async function runScan() {
+async function runScan(governance) {
   const previousState = _scanState;
   if (_scanState !== 'SCANNING') {
     _scanState = 'SCANNING';
@@ -139,12 +137,36 @@ async function runScan() {
 
   for (const account of accounts) {
     try {
-      const mediaCount = await scanScheduledPosts(redis, account.id);
-      const queueCount = await scanPostQueue(redis, account.id);
-      totalEmitted += mediaCount + queueCount;
+      const scheduledEmitted = await scanScheduledPosts(redis, account.id);
+      const queueEmitted = await scanPostQueue(redis, account.id);
 
-      if (mediaCount > 0 || queueCount > 0) {
-        console.log(`[db-scanner] Account ${account.id}: ${mediaCount} scheduled + ${queueCount} queue intents`);
+      // Emit DB_SCAN_EMITTED events for each emitted intent (governance pathway)
+      if (governance) {
+        for (const item of scheduledEmitted) {
+          governance.dispatch({
+            type: 'DB_SCAN_EMITTED',
+            target: 'scheduled_post',
+            recordId: item.postId,
+            accountId: item.accountId,
+            actionType: item.actionType,
+          });
+        }
+        for (const item of queueEmitted) {
+          governance.dispatch({
+            type: 'DB_SCAN_EMITTED',
+            target: 'post_queue',
+            recordId: item.rowId,
+            accountId: item.accountId,
+            actionType: item.actionType,
+            currentStatus: item.currentStatus,
+          });
+        }
+      }
+
+      totalEmitted += scheduledEmitted.length + queueEmitted.length;
+
+      if (scheduledEmitted.length > 0 || queueEmitted.length > 0) {
+        console.log(`[db-scanner] Account ${account.id}: ${scheduledEmitted.length} scheduled + ${queueEmitted.length} queue intents`);
       }
     } catch (err) {
       console.error(`[db-scanner] Error scanning account ${account.id}:`, err.message);

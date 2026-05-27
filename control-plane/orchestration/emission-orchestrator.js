@@ -20,6 +20,7 @@
 const evaluator = require('../runtime/evaluation');
 const emitter = require('../runtime/emission');
 const dedupSubstrate = require('../../substrates/dedup-substrate');
+const mutationSubstrate = require('../mutation-substrate');
 
 /**
  * Execute the evaluation → mutation → emission pipeline for a single account.
@@ -152,6 +153,22 @@ function _emitTransition(accountId, previousState, nextState) {
 function wire(governance) {
   governance.subscribeAction('EVALUATE', (action) => {
     executeEvaluationPipeline(governance, action.accountId, action.events);
+  });
+
+  // ── APPLY_MUTATION: DB scan emitted → mutation substrate ──────────────────
+  // Handles DB_SCAN_EMITTED transition's buildActions output.
+  // Calls mutation-substrate with idempotent .eq() guards.
+  governance.subscribeAction('APPLY_MUTATION', async (action) => {
+    const { table, recordId, updates, expectedPriorStatus, reason } = action;
+    if (!table || !recordId || !updates) {
+      console.warn('[emission-orchestrator] APPLY_MUTATION missing required fields:', action);
+      return;
+    }
+    try {
+      await mutationSubstrate.applyMutation(table, recordId, updates, expectedPriorStatus, reason);
+    } catch (err) {
+      console.error('[emission-orchestrator] APPLY_MUTATION error:', err.message);
+    }
   });
 }
 

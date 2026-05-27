@@ -25,7 +25,7 @@ const persistence = require('../../substrates/persistence');
 function wire(governance) {
   // ── SCAN_DATABASE → dbScanner ──────────────────────────────────────────
   governance.subscribeAction('SCAN_DATABASE', (action) => {
-    dbScanner.runScan().then(r => {
+    dbScanner.runScan(governance).then(r => {
       if (r.totalEmitted > 0) {
         console.log(`[cadence-orchestrator] DB scanner emitted ${r.totalEmitted} intents`);
       }

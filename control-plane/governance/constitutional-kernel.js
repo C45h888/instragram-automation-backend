@@ -75,6 +75,7 @@ const DOMAIN_EVENT_MAP = {
   BUFFER_EVENT_INGESTED: 'publishing',
   BUFFER_FLUSH_READY: 'publishing',
   EMISSION_OBSERVATION: 'publishing',
+  DB_SCAN_EMITTED: 'publishing',
 
   // Scheduling domain
   CADENCE_TICK: 'scheduling',
