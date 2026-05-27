@@ -173,6 +173,45 @@ async function markUgcPermissionReposted(permissionId, instagramId) {
     .eq('id', permissionId);
 }
 
+// ── UGC content resolution ──────────────────────────────────────────────────
+
+/**
+ * Resolves UGC content by permission_id, joining ugc_permissions → ugc_content.
+ * Returns { media_url, caption, media_type } for transport pre-resolution.
+ * @param {string} permissionId
+ * @returns {Promise<{media_url: string, caption: string, media_type: string}|null>}
+ */
+async function resolveUgcContent(permissionId) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+
+  const { data: perm } = await supabase
+    .from('ugc_permissions')
+    .select('ugc_content_id')
+    .eq('id', permissionId)
+    .single();
+
+  if (!perm) return null;
+
+  const { data: ugc } = await supabase
+    .from('ugc_content')
+    .select('media_url, message, author_username, media_type')
+    .eq('id', perm.ugc_content_id)
+    .single();
+
+  if (!ugc || !ugc.media_url) return null;
+
+  const caption = ugc.message
+    ? `📸 @${ugc.author_username}: ${ugc.message}\n\n#repost`
+    : `📸 @${ugc.author_username}\n\n#repost`;
+
+  return {
+    media_url: ugc.media_url,
+    caption,
+    media_type: ugc.media_type || 'IMAGE',
+  };
+}
+
 module.exports = {
   resolveAsset,
   getApprovedScheduledPosts,
@@ -183,4 +222,5 @@ module.exports = {
   markPostQueueProcessing,
   markPostQueueSent,
   markUgcPermissionReposted,
+  resolveUgcContent,
 };

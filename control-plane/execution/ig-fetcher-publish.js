@@ -12,16 +12,16 @@ const publishTransport = require('../../substrates/transport/publishing');
 /**
  * Executes a publishing action against the Instagram Graph API.
  * Routes to the correct handler based on actionType.
+ * UGC content is pre-resolved by the control plane before this call.
  *
  * @param {string} actionType - 'publish_post'|'repost_ugc'|'reply_comment'|'reply_dm'|'send_dm'
  * @param {string} accountId
  * @param {{ igUserId: string, pageToken: string, pageId?: string }} credentials
- * @param {object} payload - action-specific payload
- * @param {object} [supabase] - only needed for repost_ugc
+ * @param {object} payload - action-specific payload (pre-resolved for repost_ugc)
  * @returns {Promise<{success: boolean, instagram_id?: string, error?: string, retryable?: boolean, error_category?: string}>}
  */
-async function executePublishAction(actionType, accountId, credentials, payload, supabase) {
-  return publishTransport.executeAction(actionType, accountId, credentials, payload, supabase);
+async function executePublishAction(actionType, accountId, credentials, payload) {
+  return publishTransport.executeAction(actionType, accountId, credentials, payload);
 }
 
 module.exports = { executePublishAction };

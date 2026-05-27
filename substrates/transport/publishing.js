@@ -149,45 +149,29 @@ async function publishPost(igUserId, pageToken, payload) {
 
 /**
  * Reposts a piece of UGC content after permission is granted.
- * Fetches media from ugc_content table before creating container.
+ * Receives pre-resolved media_url, caption, and media_type from control plane.
+ * No database access — transport is a pure Instagram API write substrate.
  *
  * @param {string} igUserId
  * @param {string} pageToken
- * @param {object} payload — { permission_id, creation_id?, ugc_media_type? }
- * @param {object} supabase — for fetching UGC content
+ * @param {object} payload — { permission_id, creation_id?, media_url, caption, media_type }
  * @returns {Promise<{mediaId: string, creationId?: string, success: true}>}
  */
-async function repostUgc(igUserId, pageToken, payload, supabase) {
+async function repostUgc(igUserId, pageToken, payload) {
   let creationId = payload.creation_id;
 
   if (!creationId) {
-    // Fetch UGC content to get media_url + metadata
-    const { data: perm, error: permErr } = await supabase
-      .from('ugc_permissions')
-      .select('ugc_content_id')
-      .eq('id', payload.permission_id)
-      .single();
+    // Payload already contains pre-resolved media_url, caption, media_type
+    // resolved by control-plane via dbWorker.resolveUgcContent()
+    const { media_url, caption, media_type } = payload;
+    if (!media_url) throw new Error('UGC media URL not found');
 
-    if (permErr || !perm) throw new Error('Permission record not found');
-
-    const { data: ugc, error: ugcErr } = await supabase
-      .from('ugc_content')
-      .select('media_url, message, author_username, media_type')
-      .eq('id', perm.ugc_content_id)
-      .single();
-
-    if (ugcErr || !ugc || !ugc.media_url) throw new Error('UGC media not found');
-
-    const caption = ugc.message
-      ? `📸 @${ugc.author_username}: ${ugc.message}\n\n#repost`
-      : `📸 @${ugc.author_username}\n\n#repost`;
-
-    const ugcMediaType = payload.ugc_media_type || ugc.media_type || 'IMAGE';
+    const ugcMediaType = media_type || 'IMAGE';
 
     const container = await createMediaContainer(igUserId, pageToken, {
-      caption,
-      image_url: ugcMediaType === 'IMAGE' || ugcMediaType === 'CAROUSEL' ? ugc.media_url : undefined,
-      video_url: ugcMediaType === 'VIDEO' || ugcMediaType === 'REELS' ? ugc.media_url : undefined,
+      caption: caption || '',
+      image_url: ugcMediaType === 'IMAGE' || ugcMediaType === 'CAROUSEL' ? media_url : undefined,
+      video_url: ugcMediaType === 'VIDEO' || ugcMediaType === 'REELS' ? media_url : undefined,
       media_type: ugcMediaType,
     });
     creationId = container.creationId;
@@ -195,7 +179,7 @@ async function repostUgc(igUserId, pageToken, payload, supabase) {
 
   const mediaId = await pollAndPublish(
     igUserId, pageToken, creationId,
-    payload.ugc_media_type || 'IMAGE'
+    payload.media_type || 'IMAGE'
   );
 
   return { success: true, mediaId, creationId };
@@ -282,10 +266,9 @@ async function sendDm(pageId, igUserId, pageToken, recipientId, messageText) {
  * @param {string} accountId
  * @param {object} credentials — { igUserId, pageToken, pageId }
  * @param {object} payload — action-specific payload
- * @param {object} [supabase] — only needed for repost_ugc
  * @returns {Promise<object>} — { success, instagram_id?, error?, retryable?, error_category? }
  */
-async function executeAction(actionType, accountId, credentials, payload, supabase = null) {
+async function executeAction(actionType, accountId, credentials, payload) {
   try {
     const { igUserId, pageToken, pageId } = credentials;
 
@@ -304,8 +287,7 @@ async function executeAction(actionType, accountId, credentials, payload, supaba
       }
 
       case 'repost_ugc': {
-        if (!supabase) throw new Error('supabase required for repost_ugc');
-        const result = await repostUgc(igUserId, pageToken, payload, supabase);
+        const result = await repostUgc(igUserId, pageToken, payload);
         await logWithDomain('publish', {
           endpoint: '/repost-ugc', method: 'POST',
           business_account_id: accountId,

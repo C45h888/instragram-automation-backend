@@ -139,7 +139,25 @@ const DOMAIN_REGISTRY = {
   },
   'publish:ugc': {
     fetch: async (accountId, params, creds) => {
-      return igFetcherPublish.executePublishAction('repost_ugc', accountId, creds, params.payload || params);
+      const { payload } = params;
+      const permissionId = payload?.permission_id;
+
+      // Pre-resolve UGC content via db-worker (DB hit in control plane, not transport)
+      let resolvedPayload = payload;
+      if (permissionId) {
+        const ugc = await dbWorker.resolveUgcContent(permissionId);
+        if (!ugc) {
+          return { success: false, count: 0, error: 'UGC media not found', retryable: false, error_category: 'permanent' };
+        }
+        resolvedPayload = {
+          ...payload,
+          media_url: ugc.media_url,
+          caption: ugc.caption,
+          media_type: ugc.media_type,
+        };
+      }
+
+      return igFetcherPublish.executePublishAction('repost_ugc', accountId, creds, resolvedPayload);
     },
     persist: async (accountId, rawData, execParams) => {
       const { queue_row_id, payload } = execParams || {};
