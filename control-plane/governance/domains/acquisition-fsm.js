@@ -1,11 +1,15 @@
 // control-plane/governance/domains/acquisition-fsm.js
 // Acquisition Domain FSM: federated state machine governing acquisition lifecycle.
 //
-// Owns: intent discovery → execution → completion lifecycle,
-//        retry decisions, auth strike tracking, circuit breaker engagement,
-//        execution state tracking.
-// Does NOT own: global lifecycle, cross-domain invariants, execution mechanics
-//               (delegated to membranes and substrates).
+// Owns: intent discovery → execution → completion lifecycle ONLY.
+// Does NOT own: engagement signals (auth strikes, circuit breakers, retry counting),
+//               cross-domain event emission, execution mechanics.
+//
+// Constitutional purity: acquisition-fsm is a PURE intent lifecycle domain.
+// Engagement signals (AUTH_FAILURE_STRIKE, RATE_LIMIT_DETECTED, RETRY_EXHAUSTED,
+// AUTH_SUCCESS, RETRY_COUNT_INCREMENTED) are emitted by retry-worker/execution-bridge
+// directly to CK. DOMAIN_EVENT_MAP routes them to engagement-fsm independently.
+// Acquisition-fsm never emits engagement-domain events.
 //
 // Reports to: constitutional kernel for transition validation + global observability.
 
@@ -19,13 +23,14 @@ function _obs() {
   return _observability;
 }
 
-// Captured ctx for buildActions closures that need to dispatch to engagement domain
-let _dispatchCtx = null;
 //
 // Architectural invariant:
-//   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Membranes ↓  → actions returned to constitutional for emission to orchestrators
+//
+// Acquisition-fsm is a PURE intent lifecycle domain. It does NOT emit cross-domain
+// events. Engagement signals are emitted by retry-worker/execution-bridge directly
+// to CK and routed via DOMAIN_EVENT_MAP to engagement-fsm.
 //
 // Domain FSMs emit state transitions through the observability plane.
 // The lineage worker consumes from the observability plane and writes to the
@@ -34,8 +39,6 @@ let _dispatchCtx = null;
 // Local states:
 //   IDLE       — no acquisition in progress
 //   ACQUIRING  — acquisition intent received, execution in flight
-
-const crypto = require('crypto');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 0. Execution Policy Constants — domain-owned thresholds
@@ -118,10 +121,11 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Execution observations — domain-owned execution intelligence ─────────
-  // Substrates emit raw observations upward. The domain FSM alone decides
-  // retry, auth escalation, circuit breaker engagement, and permanent failure.
-  // This is the constitutional boundary: substrates observe, FSM decides.
+  // ── Execution observations — intent lifecycle only ──────────────────────────
+// Constitutional purity: acquisition-fsm owns ONLY intent lifecycle (IDLE ↔ ACQUIRING).
+// Engagement signals (auth_failure, rate_limit, retry_exhausted) are emitted by
+// retry-worker/execution-bridge directly to CK. DOMAIN_EVENT_MAP routes them to
+// engagement-fsm independently. Acquisition-fsm never emits engagement-domain events.
 
   EXECUTION_OBSERVATION: {
     target: (event) => {
@@ -136,17 +140,17 @@ const TRANSITION_MAP = {
       return { allowed: true };
     },
     buildActions: (event) => {
-      const { accountId, domain, intentId, status, error_category, retryable, count, latencyMs } = event;
+      const { accountId, domain, intentId, status, error_category, retryable, count } = event;
 
       // Track execution state for retry decisions
       _executionState.set(intentId, { accountId, domain, lastError: event.error || null });
 
-      // ── Success → clear engagement state via engagement FSM ───────────
+      // ── Success → acquisition lifecycle complete ───────────────────────
       if (status === 'completed') {
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-        // Dispatch success to engagement FSM to clear strikes/breakers
-        _dispatchCtx.dispatchGlobal({ type: 'AUTH_SUCCESS', accountId, intentId });
+        // AUTH_SUCCESS is emitted by retry-worker/execution-bridge directly to CK
+        // DOMAIN_EVENT_MAP routes it to engagement-fsm independently
         return [{
           type: 'WRITE_ACQUISITION_RESULT',
           accountId, domain, intentId,
@@ -154,33 +158,30 @@ const TRANSITION_MAP = {
         }];
       }
 
-      // ── Auth failure → route to engagement domain for strike tracking ──
+      // ── Auth failure → engagement-fsm handles via CK routing ────────────
       if (error_category === 'auth_failure') {
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-        // Dispatch to engagement FSM (which handles strike accumulation and disconnect)
-        _dispatchCtx.dispatchGlobal({ type: 'AUTH_FAILURE_STRIKE', accountId, error: event.error });
+        // AUTH_FAILURE_STRIKE is emitted by retry-worker/execution-bridge directly to CK
         return [];
       }
 
-      // ── Rate limit → route to engagement domain for circuit breaker ───
+      // ── Rate limit → engagement-fsm handles via CK routing ──────────────
       if (error_category === 'rate_limit') {
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-        const cooldownMs = (event.retryAfterSeconds || 3600) * 1000;
-        _dispatchCtx.dispatchGlobal({ type: 'RATE_LIMIT_DETECTED', accountId, cooldownMs });
-        return [{ type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: `Rate limit for ${accountId}/${domain} — circuit breaker engaged` }];
+        // RATE_LIMIT_DETECTED is emitted by retry-worker/execution-bridge directly to CK
+        return [{ type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE',
+                  reason: `Rate limit for ${accountId}/${domain} — engagement-fsm manages via CK routing` }];
       }
 
-      // ── Transient/retryable → increment retry count ────────────────────
+      // ── Transient/retryable → acquisition decides retry ─────────────────
       if (retryable) {
         const retryCount = (_executionRetries.get(intentId) || 0) + 1;
         _executionRetries.set(intentId, retryCount);
 
         if (retryCount <= MAX_ACQUISITION_RETRIES) {
           const delayMs = event.retryAfterMs || 30000;
-          // Forward retry count to engagement FSM for tracking
-          _dispatchCtx.dispatchGlobal({ type: 'RETRY_COUNT_INCREMENTED', intentId, retryCount });
           return [{
             type: 'RETRY_ACQUISITION',
             accountId, domain, intentId,
@@ -190,19 +191,17 @@ const TRANSITION_MAP = {
           }];
         }
 
-        // Retries exhausted → route to engagement FSM
+        // Retries exhausted → engagement-fsm receives RETRY_EXHAUSTED via CK routing
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-        _dispatchCtx.dispatchGlobal({ type: 'RETRY_EXHAUSTED', accountId, domain, intentId, error: 'max_retries_exceeded' });
         return [];
       }
 
       // ── Permanent failure (non-retryable, non-auth, non-rate) ───────────
       _executionRetries.delete(intentId);
       _executionState.delete(intentId);
-      return [{
-        type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId, error: event.error || 'unknown',
-      }];
+      return [{ type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId,
+                error: event.error || 'unknown' }];
     },
   },
 };
@@ -269,9 +268,6 @@ function dispatch(event, ctx) {
 
   // 4. THEN materialize state
   _localState = target;
-
-  // 5. Capture ctx for buildActions closures (engagement domain dispatch)
-  _dispatchCtx = ctx;
 
   // 6. Emit observability transition for domain FSM state change
   // Fire-and-forget — observability failures never affect domain FSM behavior

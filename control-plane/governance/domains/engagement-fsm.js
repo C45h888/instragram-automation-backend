@@ -306,9 +306,27 @@ const TRANSITION_MAP = {
       allowed: ['RETRY_EXHAUST', 'AUTH_EXHAUSTED', 'CIRCUIT_OPEN', 'CIRCUIT_COOLING', 'AUTH_STRIKING', 'IDLE'].includes(_localState),
     }),
     buildActions: (event) => {
-      // Clear retry exhaustion state when a new intent arrives
       const { intentId } = event;
       _executionRetries.delete(intentId);
+      return [];
+    },
+  },
+
+  // ── Circuit breaker query — pre-flight check routed through FSM via CK ─
+  // This replaces the direct isCircuitBreakerActive() call in execution-bridge
+  // and retry-worker. The FSM is the authority; execution layers must dispatch
+  // through CK to get the answer rather than querying state directly.
+  // Returns { circuitBreakerActive: boolean } in the dispatch result.
+  CIRCUIT_BREAKER_CHECK: {
+    target: () => _localState,  // No state change — this is a query event
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      // Attach circuit breaker state to the return via actions — caller checks actions
+      const active = _circuitBreakers.has(event.accountId) &&
+        _circuitBreakers.get(event.accountId).until > Date.now();
+      if (active) {
+        return [{ type: 'CIRCUIT_BREAKER_ACTIVE', accountId: event.accountId }];
+      }
       return [];
     },
   },

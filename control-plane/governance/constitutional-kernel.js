@@ -62,8 +62,7 @@ const DOMAIN_EVENT_MAP = {
   AUTH_FAILURE_STRIKE: 'engagement',
   RATE_LIMIT_DETECTED: 'engagement',
   RETRY_EXHAUSTED: 'engagement',
-  CIRCUIT_BREAKER_OPEN: 'engagement',
-  CIRCUIT_BREAKER_CLOSED: 'engagement',
+  CIRCUIT_BREAKER_CHECK: 'engagement',
   CIRCUIT_COOLDOWN_ELAPSED: 'engagement',
   CIRCUIT_TEST_SUCCESS: 'engagement',
   CIRCUIT_TEST_FAIL: 'engagement',
@@ -486,6 +485,9 @@ function dispatch(event) {
     const ctx = {
       validate: (from, to, evt) => validateDomainTransition(domainName, from, to, evt),
       dispatchGlobal: (globalEvent) => dispatch(globalEvent),
+      // NOTE: getGlobalState is reserved for Phase 6 ctx.getPolicy() integration.
+      // Domain FSMs will query constitutional policy context via getGlobalState()
+      // when POLICY_BROADCAST is implemented and ctx.getPolicy() is added.
       getGlobalState: () => _currentState,
     };
 
