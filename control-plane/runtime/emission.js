@@ -131,7 +131,7 @@ async function emitMutation(mut) {
     raw: { table: mut.table, reason: mut.reason },
   });
 
-  await mutationSubstrate.applyMutation(mut.table, mut.id, mut.updates, mut.reason);
+  await mutationSubstrate.applyMutation(mut.table, mut.id, mut.updates, undefined, mut.reason);
   return { ok: true };
 }
 
