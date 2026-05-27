@@ -157,6 +157,24 @@ const TRANSITION_MAP = {
       return [];
     },
   },
+
+  // ── Conversations stored by persistence substrate ───────────────────────
+  // Persistence emits this after storing raw conversation records.
+  // No state change — FSM simply acknowledges receipt and records lineage.
+  CONVERSATION_STORED: {
+    target: (event) => _localState, // no state change
+    guard: (event) => {
+      if (!event?.conversations || !Array.isArray(event.conversations)) {
+        return { allowed: false, reason: 'CONVERSATION_STORED requires conversations array' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => [{
+      type: 'PROCESS_CONVERSATIONS',
+      conversations: event.conversations,
+      accountId: event.accountId,
+    }],
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -254,7 +272,66 @@ function init(rehydratedState) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 6. Observability
+// 6. Messaging Window Policy
+//
+// Pure policy function: computes 24h customer messaging window from last customer
+// message timestamp. Called by governance-layer callers to derive window state
+// from raw timestamps stored by the persistence substrate.
+//
+// Policy constants:
+//   - Window duration: 24 hours
+//   - When window is open: customer messaged within the last 24 hours
+//   - Template required: when window is closed (cannot freely message)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const MESSAGING_WINDOW_HOURS = 24;
+
+/**
+ * Computes the 24h customer messaging window state from the last customer
+ * message timestamp.
+ *
+ * @param {string|null} lastCustomerMessageAt - ISO8601 timestamp of customer's last message
+ * @returns {{ is_open: boolean, hours_remaining: number|null, window_expires_at: string|null, can_send_messages: boolean, requires_template: boolean }}
+ */
+function computeMessagingWindow(lastCustomerMessageAt) {
+  if (!lastCustomerMessageAt) {
+    return {
+      is_open: false,
+      hours_remaining: null,
+      window_expires_at: null,
+      can_send_messages: false,
+      requires_template: true,
+    };
+  }
+
+  const lastMs = new Date(lastCustomerMessageAt).getTime();
+  const nowMs = Date.now();
+  const hoursSince = (nowMs - lastMs) / (1000 * 60 * 60);
+
+  if (hoursSince >= MESSAGING_WINDOW_HOURS) {
+    return {
+      is_open: false,
+      hours_remaining: 0,
+      window_expires_at: new Date(lastMs + MESSAGING_WINDOW_HOURS * 60 * 60 * 1000).toISOString(),
+      can_send_messages: false,
+      requires_template: true,
+    };
+  }
+
+  const hoursRemaining = Math.max(0, MESSAGING_WINDOW_HOURS - hoursSince);
+  const windowExpiresAt = new Date(nowMs + hoursRemaining * 60 * 60 * 1000).toISOString();
+
+  return {
+    is_open: true,
+    hours_remaining: parseFloat(hoursRemaining.toFixed(3)),
+    window_expires_at: windowExpiresAt,
+    can_send_messages: true,
+    requires_template: false,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 7. Observability
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function getState() {
@@ -276,4 +353,5 @@ module.exports = {
   getState,
   exportState,
   getHealth,
+  computeMessagingWindow,
 };
