@@ -1,0 +1,145 @@
+# ============================================
+# Constitutional Runtime Simulation
+# Test Infrastructure - Docker Compose
+# ============================================
+# Purpose: Ephemeral, isolated test environment
+# for governance runtime validation and
+# orchestration boundary testing.
+#
+# Stack:
+#   - Redis (ephemeral): Intent queue, dedup cache
+#   - PostgreSQL (ephemeral): Governance lineage,
+#     telemetry projections, execution state
+#   - Test isolation via network partitioning
+#   - Deterministic startup topology
+#
+# Usage:
+#   docker-compose -f docker-compose.test.yml up -d
+#   docker-compose -f docker-compose.test.yml down -v
+# ============================================
+
+services:
+  # ----------------------------------------
+  # Redis - Ephemeral Test Instance
+  # ----------------------------------------
+  test-redis:
+    image: redis:7-alpine
+    container_name: instagram-test-redis
+    restart: "no"
+    command: [
+      "redis-server",
+      "--appendonly", "no",
+      "--save", "",  # Disable persistence for clean test runs
+      "--loglevel", "debug",
+      "--port", "6379"
+    ]
+    ports:
+      - "6379:6379"
+    networks:
+      - test-runtime-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - test-redis-data:/data
+    mem_limit: 256m
+    cpu_shares: 512
+
+  # ----------------------------------------
+  # PostgreSQL - Ephemeral Test Instance
+  # ----------------------------------------
+  test-postgres:
+    image: postgres:15-alpine
+    container_name: instagram-test-postgres
+    restart: "no"
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testgovernance
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports:
+      - "5432:5432"
+    networks:
+      - test-runtime-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d testgovernance"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - test-postgres-data:/var/lib/postgresql/data
+      - ./tests/init-scripts:/docker-entrypoint-initdb.d:ro
+    mem_limit: 512m
+    cpu_shares: 1024
+    command: >
+      postgres
+      -c max_connections=50
+      -c shared_buffers=128MB
+      -c work_mem=16MB
+      -c log_statement=all
+      -c log_min_duration_statement=1000
+
+  # ----------------------------------------
+  # Test Orchestration Runner
+  # ----------------------------------------
+  test-runner:
+    image: node:18-alpine
+    container_name: instagram-test-runner
+    restart: "no"
+    working_dir: /app
+    command: ["sleep", "infinity"]
+    networks:
+      - test-runtime-net
+    environment:
+      NODE_ENV: test
+      REDIS_URL: redis://test-redis:6379
+      POSTGRES_HOST: test-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testgovernance
+      # Deterministic startup: wait for dependencies
+      WAIT_FOR_REDIS: "true"
+      WAIT_FOR_POSTGRES: "true"
+    depends_on:
+      test-redis:
+        condition: service_healthy
+      test-postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules  # Isolated node_modules
+    mem_limit: 512m
+    cpu_shares: 512
+
+  # ----------------------------------------
+  # Fault Injection - Network Partitioning
+  # ----------------------------------------
+  # Purpose: Simulate network splits, Redis/PG
+  # failures for chaos testing in governance
+  # boundary validation.
+  network-partitioner:
+    image: alpine:latest
+    container_name: instagram-test-partitioner
+    restart: "no"
+    command: ["sleep", "infinity"]
+    networks:
+      - test-runtime-net
+    cap_add:
+      - NET_ADMIN
+    mem_limit: 64m
+    cpu_shares: 128
+
+networks:
+  test-runtime-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  test-redis-data:
+  test-postgres-data:

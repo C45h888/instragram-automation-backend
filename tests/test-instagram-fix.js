@@ -10,7 +10,7 @@
 // 4. Required fields validation
 // ============================================
 
-const { getSupabaseAdmin, initializeSupabase } = require('./config/supabase');
+const { getSupabaseAdmin, initializeSupabase } = require('../config/supabase');
 
 // ANSI color codes for console output
 const colors = {
