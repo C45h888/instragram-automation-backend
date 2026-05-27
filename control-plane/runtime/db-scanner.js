@@ -161,6 +161,8 @@ async function runScan(governance) {
             currentStatus: item.currentStatus,
           });
         }
+      } else {
+        console.warn('[db-scanner] Governance not set — skipping DB_SCAN_EMITTED events for account', account.id);
       }
 
       totalEmitted += scheduledEmitted.length + queueEmitted.length;

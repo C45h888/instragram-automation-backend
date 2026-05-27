@@ -123,6 +123,11 @@ const TRANSITION_MAP = {
       if (!event?.target || !event?.recordId) {
         return { allowed: false, reason: 'DB_SCAN_EMITTED requires target and recordId' };
       }
+      // Guard: target must be a known value — reject corrupted events silently
+      const validTargets = ['scheduled_post', 'post_queue'];
+      if (!validTargets.includes(event.target)) {
+        return { allowed: false, reason: `DB_SCAN_EMITTED: unknown target "${event.target}" — expected one of ${validTargets.join(', ')}` };
+      }
       return { allowed: true };
     },
     buildActions: (event) => {
@@ -305,6 +310,15 @@ function computeMessagingWindow(lastCustomerMessageAt) {
   }
 
   const lastMs = new Date(lastCustomerMessageAt).getTime();
+  if (Number.isNaN(lastMs)) {
+    return {
+      is_open: false,
+      hours_remaining: null,
+      window_expires_at: null,
+      can_send_messages: false,
+      requires_template: true,
+    };
+  }
   const nowMs = Date.now();
   const hoursSince = (nowMs - lastMs) / (1000 * 60 * 60);
 
