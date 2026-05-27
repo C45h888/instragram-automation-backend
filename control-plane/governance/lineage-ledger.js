@@ -149,20 +149,20 @@ async function getSize() {
  *   domains.{name}  ← last entry where domain='{name}' → nextState
  *
  * @param {Array<object>} entries — worker-format lineage entries
- * @returns {{ globalState: string, domains: { acquisition: string, publishing: string, scheduling: string, dedup: string }, lastEvent: object|null, entryCount: number }}
+ * @returns {{ globalState: string, domains: { acquisition: string, publishing: string, scheduling: string, dedup: string, reconciliation: string }, lastEvent: object|null, entryCount: number }}
  */
 function materializeState(entries) {
   if (!entries || entries.length === 0) {
     return {
       globalState: 'BOOTING',
-      domains: { acquisition: 'IDLE', publishing: 'IDLE', scheduling: 'IDLE', dedup: 'IDLE' },
+      domains: { acquisition: 'IDLE', publishing: 'IDLE', scheduling: 'IDLE', dedup: 'IDLE', reconciliation: 'IDLE' },
       lastEvent: null,
       entryCount: 0,
     };
   }
 
   let globalState = 'BOOTING';
-  const domains = { acquisition: 'IDLE', publishing: 'IDLE', scheduling: 'IDLE', dedup: 'IDLE' };
+  const domains = { acquisition: 'IDLE', publishing: 'IDLE', scheduling: 'IDLE', dedup: 'IDLE', reconciliation: 'IDLE' };
   let lastEvent = null;
 
   for (const entry of entries) {
@@ -226,7 +226,7 @@ async function computeHash() {
  * Returns the last N lineage entries for a specific domain.
  * Filters by domain field (worker format), not authority pattern.
  *
- * @param {string} domainName — 'acquisition' | 'publishing' | 'scheduling' | 'dedup'
+ * @param {string} domainName — 'acquisition' | 'publishing' | 'scheduling' | 'dedup' | 'reconciliation'
  * @param {number} [n] — number of recent entries to return (default: all)
  * @returns {Promise<Array<object>>}
  */

@@ -1,7 +1,7 @@
 // control-plane/orchastrator.js
 // Orchestrator: constitutional composition root.
 //
-// Owns: wiring constitutional kernel + 4 domain FSMs + 6 membrane orchestrators,
+// Owns: wiring constitutional kernel + 6 domain FSMs + 6 membrane orchestrators,
 //        boot/shutdown sequencing.
 // Does NOT own: domain semantics, execution intelligence, governance policy,
 //               retry decisions, degradation logic, signal interpretation.
@@ -26,11 +26,13 @@ const persistence = require('../substrates/persistence');
 const syncSubstrate = require('../substrates/sync-substrate');
 const lineageWorker = require('./governance/lineage-worker');
 
-// ── 4 Domain FSMs ───────────────────────────────────────────────────────────
+// ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
 const publishingFsm = require('./governance/domains/publishing-fsm');
 const schedulingFsm = require('./governance/domains/scheduling-fsm');
 const dedupFsm = require('./governance/domains/dedup-fsm');
+const engagementFsm = require('./governance/domains/engagement-fsm');
+const reconciliationFsm = require('./governance/domains/reconciliation-fsm');
 
 // ── 6 Membrane orchestrators ─────────────────────────────────────────────────
 const cadenceOrchestrator     = require('./orchestration/cadence-orchestrator');
@@ -55,6 +57,8 @@ function _wire() {
   constitutional.registerDomain(publishingFsm);
   constitutional.registerDomain(schedulingFsm);
   constitutional.registerDomain(dedupFsm);
+  constitutional.registerDomain(engagementFsm);
+  constitutional.registerDomain(reconciliationFsm);
 
   // Wire execution bridge's governance reference for observation emission
   executionBridge.setGovernance(constitutional);
@@ -71,7 +75,7 @@ function _wire() {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 async function startAllWorkers() {
-  console.log('[orchestrator] Starting constitutional kernel with 4 domain FSMs...');
+  console.log('[orchestrator] Starting constitutional kernel with 5 domain FSMs...');
   _wire();
 
   // Initialize the observability plane before any other subsystem starts

@@ -190,6 +190,12 @@ addRule('dedup', 'fsm', null, null, (raw) => ({
   raw,
 }));
 
+// Reconciliation FSM transitions (Phase 5 — federated governance)
+addRule('reconciliation', 'fsm', null, null, (raw) => ({
+  entityId: 'reconciliation-fsm',
+  raw,
+}));
+
 // Buffer transitions
 addRule('buffer', 'buffer', 'IDLE', 'INGESTING', (raw) => ({
   entityId: raw.accountId || 'unknown',

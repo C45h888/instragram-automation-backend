@@ -1,33 +1,28 @@
 // control-plane/governance/reconciliation-engine.js
-// Reconciliation Engine: standalone constitutional equilibrium verifier.
+// Reconciliation Engine: semantically blind comparison substrate.
 //
-// Owns: running full reconciliation cycles — epoch creation, hash computation,
-//        three-reality comparison (lineage ↔ materialized ↔ operational),
-//        factual drift signal detection, drift severity classification.
+// Owns: three-reality comparison (lineage ↔ materialized ↔ operational),
+//        factual drift signal detection, drift severity classification,
+//        constitutional hash computation.
 //
 // Does NOT own: governance decisions, corrective action, state mutation,
-//               domain logic, substrate semantics — those belong to CK and FSMs.
+//               domain logic, substrate semantics, observability emission,
+//               epoch creation, lifecycle management — those belong to
+//               the reconciliation FSM and constitutional kernel.
 //
-// Called by: constitutional-kernel.js on RECONCILIATION_TICK.
+// Called by: CK bridge subscriber (after reconciliation FSM signals CYCLE_STARTED).
 //
 // Architecture invariant:
-//   This engine is COMPUTATION-ONLY. It compares and classifies.
+//   This engine is a DUMB SUBSTRATE. It compares and classifies only.
 //   It NEVER decides what to do about drift.
 //   It NEVER mutates domain state, substrate state, or lineage.
-//   Constitutional authority remains singular in the CK.
-//
-// Epoch markers and cycle results are emitted through the observability plane.
-// The lineage worker ingests these transitions and writes them to the canonical
-// ledger (lineage:ledger:entries). The engine NEVER writes to the ledger directly.
-//
-// Uses recon-lineage-interpreter for bounded full observability access.
-// Interpreter ensures namespace filtering at read time (Recon has full view).
+//   It NEVER emits observability or writes to the ledger.
+//   All governance authority lives in the reconciliation FSM and HSM (CK).
 //
 // Contract:
-//   engine.runCycle({ fsms, substrates, lineageLedger }) → { epochId, hash, observations, worstSeverity }
+//   engine.compare({ fsms, substrates, lineageLedger }) → { hash, observations, worstSeverity }
 
 const crypto = require('crypto');
-const reconInterpreter = require('./interpreters/recon-lineage-interpreter');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Drift Signal Constants — factual observations, NOT severity judgments
@@ -44,6 +39,8 @@ const DRIFT_SIGNAL = {
   AUTH_STRIKE_DRIFT: 'auth_strike_drift',
   DEDUP_ORPHAN_KEY: 'dedup_orphan_key',
   DEDUP_REPLAY_COLLISION: 'dedup_replay_collision',
+  CIRCUIT_BREAKER_COLLISION: 'circuit_breaker_collision',
+  ENGAGEMENT_STALE_STATE: 'engagement_stale_state',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -72,12 +69,13 @@ function _classifySignal(signal) {
     case DRIFT_SIGNAL.AUTH_STRIKE_DRIFT:
     case DRIFT_SIGNAL.DEDUP_ORPHAN_KEY:
     case DRIFT_SIGNAL.DEDUP_REPLAY_COLLISION:
+    case DRIFT_SIGNAL.CIRCUIT_BREAKER_COLLISION:
       return DRIFT_SEVERITY.SUBSTRATE;
     case DRIFT_SIGNAL.STALE_MATERIALIZED_STATE:
     case DRIFT_SIGNAL.LINEAGE_POSITION_MISMATCH:
+    case DRIFT_SIGNAL.ENGAGEMENT_STALE_STATE:
       return DRIFT_SEVERITY.REPLAY;
     case DRIFT_SIGNAL.CADENCE_GAP:
-      // First occurrence is transient; engine leaves escalation decision to CK
       return DRIFT_SEVERITY.TRANSIENT;
     default:
       return DRIFT_SEVERITY.SUBSTRATE;
@@ -385,6 +383,109 @@ function _reconcileDedup(fsm, substrates, domainLineage) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Engagement domain reconciliation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Reconcile the engagement domain across lineage, FSM materialized state, and substrate reality.
+ *
+ * Engagement domain owns: circuit breaker lifecycle, auth strike tracking, retry counting.
+ * Three realities compared:
+ *   - Lineage: canonical history of circuit_breaker and auth_strike transitions
+ *   - FSM: engagement-fsm Maps (_circuitBreakers, _authFailureStrikes, _executionRetries)
+ *   - Substrate: retry-substrate._rateLimitedAccounts mechanical state
+ *
+ * @param {object} fsm — engagement FSM instance
+ * @param {object} substrates — substrate query interface
+ * @param {Array<object>} domainLineage — recent lineage entries for engagement domain
+ * @returns {{ driftSignals: Array, fsmState: object }}
+ */
+function _reconcileEngagement(fsm, substrates, domainLineage) {
+  const driftSignals = [];
+
+  if (!fsm || typeof fsm.getEngagementSnapshot !== 'function') {
+    return { driftSignals: [{ signal: DRIFT_SIGNAL.NONE, detail: 'Engagement FSM not registered' }], fsmState: null };
+  }
+
+  const snapshot = fsm.getEngagementSnapshot();
+  const { circuitBreakers, authStrikes, executionRetries, fsmState } = snapshot;
+  const now = Date.now();
+
+  // ── Stale materialized state vs lineage ───────────────────────────────
+  const lastDomainEntry = domainLineage.length > 0 ? domainLineage[domainLineage.length - 1] : null;
+  if (lastDomainEntry && lastDomainEntry.nextState && fsmState !== lastDomainEntry.nextState) {
+    driftSignals.push({
+      signal: DRIFT_SIGNAL.ENGAGEMENT_STALE_STATE,
+      detail: `Engagement FSM state '${fsmState}' diverges from last lineage state '${lastDomainEntry.nextState}'`,
+    });
+  }
+
+  // ── Orphaned circuit breakers (FSM has active, lineage has no OPEN entry) ─
+  for (const { accountId, until } of circuitBreakers) {
+    const hasLineageEntry = domainLineage.some(e =>
+      e.entity === 'circuit_breaker' &&
+      (e.nextState === 'OPEN' || e.nextState === 'RATE_LIMITED') &&
+      e.entityId === accountId
+    );
+    if (!hasLineageEntry) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.ORPHANED_CIRCUIT_BREAKER,
+        detail: `Circuit breaker active for ${accountId} (until ${new Date(until).toISOString()}) but no OPEN lineage entry found`,
+      });
+    }
+
+    // ── Circuit breaker collision: re-tripped before prior cooldown expired ─
+    const priorLineage = domainLineage.filter(e =>
+      e.entity === 'circuit_breaker' && e.entityId === accountId
+    );
+    if (priorLineage.length >= 2) {
+      // Check if this breaker has multiple OPEN events before its until time
+      const priorOpens = priorLineage.filter(e => e.nextState === 'OPEN');
+      if (priorOpens.length > 1) {
+        const oldestOpen = priorOpens[0];
+        const newestOpen = priorOpens[priorOpens.length - 1];
+        if (oldestOpen.ts && newestOpen.ts && (newestOpen.ts - oldestOpen.ts) < 300000) {
+          driftSignals.push({
+            signal: DRIFT_SIGNAL.CIRCUIT_BREAKER_COLLISION,
+            detail: `Circuit breaker for ${accountId} opened multiple times within 5 minutes — possible cooldown evasion`,
+          });
+        }
+      }
+    }
+  }
+
+  // ── Auth strike drift (FSM shows strikes, no lineage AUTH_FAILURE_STRIKE entries) ─
+  for (const { accountId, strikes } of authStrikes) {
+    if (strikes > 0) {
+      const hasAuthLineage = domainLineage.some(e =>
+        e.entity === 'auth_strike' && e.entityId === accountId
+      );
+      if (!hasAuthLineage) {
+        driftSignals.push({
+          signal: DRIFT_SIGNAL.AUTH_STRIKE_DRIFT,
+          detail: `Auth strike count ${strikes} for ${accountId} but no auth_strike lineage entries found`,
+        });
+      }
+    }
+  }
+
+  // ── Substrate/FSM circuit breaker divergence ─────────────────────────────
+  if (typeof substrates.retryInFlight === 'function' && circuitBreakers.length > 0) {
+    for (const { accountId } of circuitBreakers) {
+      const substrateRateLimited = substrates.retryInFlight(accountId);
+      if (!substrateRateLimited) {
+        driftSignals.push({
+          signal: DRIFT_SIGNAL.ORPHANED_CIRCUIT_BREAKER,
+          detail: `Engagement FSM shows circuit breaker for ${accountId} but retry substrate shows not rate-limited`,
+        });
+      }
+    }
+  }
+
+  return { driftSignals, fsmState: snapshot };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Domain reconciliation dispatcher
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -393,52 +494,40 @@ const DOMAIN_RECONCILERS = {
   publishing: _reconcilePublishing,
   scheduling: _reconcileScheduling,
   dedup: (fsm, substrates, domainLineage) => _reconcileDedup(fsm, substrates, domainLineage),
+  engagement: (fsm, substrates, domainLineage) => _reconcileEngagement(fsm, substrates, domainLineage),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Public API: runCycle()
+// Public API: compare()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Run a full reconciliation cycle across all registered domains.
+ * Run a three-reality comparison across all registered domains.
  *
- * COMPUTATION-ONLY — never mutates state, never decides corrective action.
+ * DUMB SUBSTRATE — computation only. No state mutation, no observability,
+ * no epoch management, no governance decisions.
  *
  * @param {object} params
  * @param {Map<string, object>} params.fsms — Map of domainName → FSM instance
  * @param {object} params.substrates — substrate query interface
  * @param {object} params.lineageLedger — lineage ledger module
- * @returns {{ epochId: string, lineagePosition: number, hash: string, observations: Array, worstSeverity: number }}
+ * @returns {{ hash: string, observations: Array, worstSeverity: number }}
  */
-async function runCycle({ fsms, substrates, lineageLedger }) {
-  // 1. Generate epoch — no longer calls createEpoch() which wrote directly to ledger.
-  //    Instead, emit through observability so the worker writes it (sole bridge).
-  const epochId = crypto.randomUUID();
+async function compare({ fsms, substrates, lineageLedger }) {
+  // 1. Load lineage entries and compute constitutional hash
   const entries = await lineageLedger.getLineage();
-  const lineagePosition = entries.length;
-
-  _emitReconciliationTransition({
-    domain: 'governance', entity: 'reconciliation', entityId: epochId,
-    previousState: null, nextState: 'EPOCH_CREATED',
-    authority: 'reconciliation-engine',
-    raw: { epochId, lineagePosition },
-  });
-
-  // 2. Compute constitutional hash via ledger
   const hash = await lineageLedger.computeHash();
 
-  // 3. Materialize state from the entries we already fetched
+  // 2. Materialize state from the entries we already fetched
   const materialized = lineageLedger.materializeState(entries);
 
-  // 4. Reconcile each domain
+  // 3. Reconcile each domain
   const observations = [];
   let worstSeverity = DRIFT_SEVERITY.NONE;
 
   for (const [domainName, reconciler] of Object.entries(DOMAIN_RECONCILERS)) {
     const fsm = fsms.get(domainName);
 
-    // Dedup may have an FSM (Phase 5) or may be substrate-only (backward compat).
-    // No longer a special case — handled like any other domain with optional FSM.
     if (!fsm) {
       observations.push({
         domain: domainName,
@@ -455,7 +544,7 @@ async function runCycle({ fsms, substrates, lineageLedger }) {
     // Get recent domain lineage (last 20 entries)
     const domainLineage = await lineageLedger.getDomainLineage(domainName, 20);
 
-    // Run domain reconciler — fsm is always passed now
+    // Run domain reconciler
     const reconcilerResult = reconciler(fsm, substrates, domainLineage);
     const { driftSignals } = reconcilerResult;
     const snapshot = reconcilerResult.substrateSnapshot;
@@ -475,7 +564,7 @@ async function runCycle({ fsms, substrates, lineageLedger }) {
       ? driftSignals
       : [{ signal: DRIFT_SIGNAL.NONE, detail: 'All three layers converge' }];
 
-    // Build materialized state string — uses FSM state when available, substrate snapshot otherwise
+    // Build materialized state string
     let materializedStateStr;
     if (domainName === 'dedup') {
       const fsmStateStr = fsm && fsm.getState ? fsm.getState() : 'unknown';
@@ -497,34 +586,7 @@ async function runCycle({ fsms, substrates, lineageLedger }) {
     }
   }
 
-  // 5. Emit cycle completion through observability — worker writes to ledger
-  const resultantState = worstSeverity === DRIFT_SEVERITY.NONE ? 'CONVERGENT' : 'DRIFTED';
-  _emitReconciliationTransition({
-    domain: 'governance', entity: 'reconciliation', entityId: epochId,
-    previousState: 'RECONCILING', nextState: resultantState,
-    authority: 'reconciliation-engine',
-    raw: {
-      epochId, lineagePosition, hash: hash.slice(0, 16),
-      worstSeverity, domainCount: observations.length,
-      driftedDomains: observations.filter(o => o.severity > 0).length,
-    },
-  });
-
-  return { epochId, lineagePosition, hash, observations, worstSeverity };
-}
-
-/**
- * Emit a reconciliation event through the observability plane.
- * The lineage worker ingests this transition and writes it to the canonical
- * ledger, ensuring the worker remains the sole ledger writer.
- *
- * @param {object} params — transition parameters (domain, entity, nextState, etc.)
- */
-function _emitReconciliationTransition(params) {
-  try {
-    const observability = require('../observability');
-    observability.transition(params);
-  } catch (_) {}
+  return { hash, observations, worstSeverity };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -532,7 +594,7 @@ function _emitReconciliationTransition(params) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 module.exports = {
-  runCycle,
+  compare,
   DRIFT_SIGNAL,
   DRIFT_SEVERITY,
 };

@@ -30,7 +30,6 @@
 // (ctx.recordLineage) — they never directly access the lineage ledger.
 
 const lineageLedger = require('./lineage-ledger');
-const reconciliationEngine = require('./reconciliation-engine');
 
 // Lazy import to avoid circular dependency at module load time
 let _observabilityTransition = null;
@@ -53,14 +52,25 @@ const STARTED_AT = Date.now();
 
 // Events NOT in this map are handled as global constitutional events.
 const DOMAIN_EVENT_MAP = {
-  // Acquisition domain
+  // Acquisition domain — lifecycle only (engagement signals routed to engagement domain)
   ACQUISITION_INTENT_RECEIVED: 'acquisition',
   ACQUISITION_EXECUTING: 'acquisition',
   ACQUISITION_COMPLETE: 'acquisition',
   EXECUTION_OBSERVATION: 'acquisition',
-  AUTH_FAILURE_STRIKE: 'acquisition',
-  RATE_LIMIT_DETECTED: 'acquisition',
-  RETRY_EXHAUSTED: 'acquisition',
+
+  // Engagement domain — circuit breaker, auth strikes, retry counting
+  AUTH_FAILURE_STRIKE: 'engagement',
+  RATE_LIMIT_DETECTED: 'engagement',
+  RETRY_EXHAUSTED: 'engagement',
+  CIRCUIT_BREAKER_OPEN: 'engagement',
+  CIRCUIT_BREAKER_CLOSED: 'engagement',
+  CIRCUIT_COOLDOWN_ELAPSED: 'engagement',
+  CIRCUIT_TEST_SUCCESS: 'engagement',
+  CIRCUIT_TEST_FAIL: 'engagement',
+  CIRCUIT_BREAKER_CLEARED: 'engagement',
+  AUTH_STRIKES_RESET: 'engagement',
+  AUTH_SUCCESS: 'engagement',
+  RETRY_COUNT_INCREMENTED: 'engagement',
 
   // Publishing domain
   BUFFER_EVENT_INGESTED: 'publishing',
@@ -79,6 +89,10 @@ const DOMAIN_EVENT_MAP = {
   DEDUP_INTENT_MARKED: 'dedup',
   DEDUP_REPLAY_DETECTED: 'dedup',
   DEDUP_BATCH_END: 'dedup',
+
+  // Reconciliation domain
+  RECONCILIATION_TICK: 'reconciliation',
+  RECONCILIATION_RESULTS_RECEIVED: 'reconciliation',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -307,10 +321,6 @@ let _rehydratedDomainStates = null;
 const _actionSubscribers = new Map(); // actionType → Set<fn>
 let _legacyActionSubscriber = null;
 
-// Reconciliation drift aggregation — counters persist across epochs
-const _driftCounters = { substrate: 0, replay: 0 };
-const DRIFT_ESCALATION_THRESHOLD = 3; // consecutive epochs before escalation
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // 5. Action dispatcher
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -396,13 +406,13 @@ function validateDomainTransition(domainName, from, to, event) {
     return { allowed: false, reason: 'Global runtime is HALTED — all domain transitions blocked' };
   }
 
-  // DEGRADED restriction — allow scheduling (health checks) but block others
-  if (_currentState === 'DEGRADED' && domainName !== 'scheduling') {
+  // DEGRADED restriction — allow scheduling and reconciliation (health checks) but block others
+  if (_currentState === 'DEGRADED' && domainName !== 'scheduling' && domainName !== 'reconciliation') {
     return { allowed: false, reason: `Domain transitions blocked while global is DEGRADED` };
   }
 
-  // RECOVERY restriction — allow scheduling (health checks) but block others
-  if (_currentState === 'RECOVERY' && domainName !== 'scheduling') {
+  // RECOVERY restriction — allow scheduling and reconciliation (health checks) but block others
+  if (_currentState === 'RECOVERY' && domainName !== 'scheduling' && domainName !== 'reconciliation') {
     return { allowed: false, reason: `Domain transitions blocked during RECOVERY` };
   }
 
@@ -433,6 +443,13 @@ function registerDomain(fsm) {
       fsm.init(rehydratedState);
       console.log(`[constitutional-kernel] Domain '${fsm.name}' initialized with rehydrated state: ${rehydratedState}`);
     }
+  }
+
+  // Wire reconciliation bridge when reconciliation FSM registers.
+  // The bridge subscriber catches RECONCILIATION_CYCLE_STARTED actions,
+  // calls the dumb engine substrate, verifies hash, and dispatches results back.
+  if (fsm.name === 'reconciliation') {
+    _wireReconciliationBridge();
   }
 
   console.log(`[constitutional-kernel] Registered domain: ${fsm.name}`);
@@ -494,11 +511,6 @@ function dispatch(event) {
 
   // ── Handle as global constitutional event ──────────────────────────────
   const txn = GLOBAL_TRANSITION_MAP[event.type];
-
-  // ── Kernel-internal: RECONCILIATION_TICK triggers the reconciliation cycle ─
-  if (event.type === 'RECONCILIATION_TICK') {
-    return _onReconciliationTick();
-  }
 
   if (!txn) {
     return { allowed: false, reason: `unknown event type: ${event.type}` };
@@ -637,12 +649,22 @@ function stopLoop() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 11. Reconciliation — constitutional equilibrium verification
+// 11. Reconciliation bridge — async engine comparison subscriber
+//
+// When the reconciliation FSM transitions to RECONCILING, it emits a
+// RECONCILIATION_CYCLE_STARTED action. This subscriber catches that action,
+// calls the dumb reconciliation engine (semantically blind substrate),
+// verifies constitutional hash integrity, and dispatches results back
+// to the FSM via RECONCILIATION_RESULTS_RECEIVED.
+//
+// The FSM governs lifecycle. This bridge performs the async mechanical work.
+// The HSM (CK) retains hash verification authority.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * Build the substrate query interface for the reconciliation engine.
  * Provides bounded access to operational substrates for three-reality comparison.
+ * Preserved from prior CK-owned reconciliation — now only used by the bridge subscriber.
  */
 function _buildSubstrateQueries() {
   const dedupSubstrate = require('../../substrates/dedup-substrate');
@@ -680,92 +702,54 @@ function _buildSubstrateQueries() {
 }
 
 /**
- * Run a reconciliation cycle by calling the standalone reconciliation engine.
- * The engine computes drift signals, classifies severity, and returns results.
- * The CK then verifies the result and decides corrective action.
+ * Wire the reconciliation bridge subscriber.
+ * Called when the reconciliation FSM is registered.
+ * Subscribes to RECONCILIATION_CYCLE_STARTED actions emitted by the FSM.
  *
- * @returns {{ allowed: boolean, lineageId?: string, reason?: string }}
+ * The subscriber:
+ *   1. Calls the dumb engine.compare() (async mechanical work)
+ *   2. Independently verifies constitutional hash (HSM authority)
+ *   3. Dispatches RECONCILIATION_RESULTS_RECEIVED back to the FSM
+ *
+ * The FSM then governs lifecycle interpretation, counter management,
+ * escalation evaluation, and HSM signaling (via dispatchGlobal).
  */
-async function _onReconciliationTick() {
-  console.log('[constitutional-kernel] RECONCILIATION_TICK — running reconciliation cycle');
+function _wireReconciliationBridge() {
+  subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
+    try {
+      const engine = require('./reconciliation-engine');
+      const substrates = _buildSubstrateQueries();
+      const results = await engine.compare({ fsms: _domains, substrates, lineageLedger });
 
-  try {
-    const substrates = _buildSubstrateQueries();
-    const result = await reconciliationEngine.runCycle({
-      fsms: _domains,
-      substrates,
-      lineageLedger,
-    });
-
-    const { epochId, hash, observations, worstSeverity } = result;
-
-    // ── Verify constitutional hash ────────────────────────────────────────
-    const currentHash = await lineageLedger.computeHash();
-    if (hash !== currentHash) {
-      console.error(`[constitutional-kernel] Constitutional HASH MISMATCH — epoch ${epochId.slice(0, 8)}`);
-      _resetDriftCounters();
-      _emitGovernanceTransition(_currentState, _currentState, {
-        intent: 'RECONCILIATION_HASH_MISMATCH',
-        reason: `Constitutional identity divergence — epoch ${epochId.slice(0, 8)}`,
-        epochId,
-      });
-      return { allowed: true, reason: 'hash mismatch detected — constitutional identity divergence' };
-    }
-
-    // ── Update drift counters ─────────────────────────────────────────────
-    if (worstSeverity === reconciliationEngine.DRIFT_SEVERITY.NONE) {
-      _resetDriftCounters();
-      console.log(`[constitutional-kernel] Reconciliation epoch ${epochId.slice(0, 8)}: CONVERGENT — no drift detected`);
-    } else {
-      // Increment relevant counters
-      for (const obs of observations) {
-        if (obs.severity === reconciliationEngine.DRIFT_SEVERITY.SUBSTRATE) {
-          _driftCounters.substrate++;
-        } else if (obs.severity === reconciliationEngine.DRIFT_SEVERITY.REPLAY) {
-          _driftCounters.replay++;
-        }
+      // HSM independently verifies constitutional hash — this is constitutional identity,
+      // not domain concern. The FSM receives hashMismatch as a signal but does not act on it.
+      const currentHash = await lineageLedger.computeHash();
+      const hashMismatch = results.hash !== currentHash;
+      if (hashMismatch) {
+        console.error('[constitutional-kernel] Constitutional HASH MISMATCH during reconciliation');
+        _emitGovernanceTransition(_currentState, _currentState, {
+          intent: 'RECONCILIATION_HASH_MISMATCH',
+          reason: 'Constitutional identity divergence detected during reconciliation cycle',
+        });
       }
 
-      const driftedDomains = observations.filter(o => o.severity > 0).map(o => o.domain).join(', ');
-      console.warn(
-        `[constitutional-kernel] Reconciliation epoch ${epochId.slice(0, 8)}: DRIFTED (severity=${worstSeverity}, domains=[${driftedDomains}], counters={substrate:${_driftCounters.substrate}, replay:${_driftCounters.replay}})`
-      );
-    }
-
-    // ── Escalation: substrate drift persists across threshold ─────────────
-    const multiDomainDrift = observations.filter(o => o.severity >= reconciliationEngine.DRIFT_SEVERITY.SUBSTRATE).length >= 2;
-
-    if (_driftCounters.substrate >= DRIFT_ESCALATION_THRESHOLD || multiDomainDrift) {
-      console.error(`[constitutional-kernel] Reconciliation drift escalated — substrate counter ${_driftCounters.substrate}/${DRIFT_ESCALATION_THRESHOLD}, multiDomain=${multiDomainDrift}`);
-      _resetDriftCounters();
-
-      // Dispatch into global transition map — enters DEGRADED with RECONCILING substate
       dispatch({
-        type: 'RECONCILIATION_DRIFT_DETECTED',
-        reason: multiDomainDrift
-          ? `Multi-domain substrate drift detected: ${observations.filter(o => o.severity >= 3).map(o => o.domain).join(', ')}`
-          : `Substrate drift persisted across ${DRIFT_ESCALATION_THRESHOLD} consecutive epochs`,
-        details: { epochId, observations: observations.filter(o => o.severity >= 3) },
+        type: 'RECONCILIATION_RESULTS_RECEIVED',
+        observations: results.observations,
+        worstSeverity: results.worstSeverity,
+        hash: results.hash,
+        hashMismatch,
       });
-
-      return { allowed: true, reason: 'reconciliation drift escalated to DEGRADED' };
+    } catch (err) {
+      console.error('[constitutional-kernel] Reconciliation bridge error:', err.message);
     }
-
-    return { allowed: true, reason: 'reconciliation cycle complete' };
-  } catch (err) {
-    console.error('[constitutional-kernel] Reconciliation cycle failed:', err.message);
-    return { allowed: false, reason: `reconciliation cycle error: ${err.message}` };
-  }
-}
-
-function _resetDriftCounters() {
-  _driftCounters.substrate = 0;
-  _driftCounters.replay = 0;
+  });
 }
 
 /**
  * Trigger a reconciliation cycle externally.
  * Called by the orchestrator on a 60s timer, independent of maintenance cadence.
+ * Now routes through DOMAIN_EVENT_MAP → reconciliation FSM.
  */
 function triggerReconciliation() {
   dispatch({ type: 'RECONCILIATION_TICK' });
@@ -848,31 +832,31 @@ function getAccountIds() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 14. Domain FSM state query proxies — delegate to acquisition domain
+// 14. Domain FSM state query proxies — delegate to engagement domain
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function isCircuitBreakerActive(accountId) {
-  const fsm = _domains.get('acquisition');
+  const fsm = _domains.get('engagement');
   return fsm && typeof fsm.isCircuitBreakerActive === 'function' ? fsm.isCircuitBreakerActive(accountId) : false;
 }
 
 function getAuthStrikes(accountId) {
-  const fsm = _domains.get('acquisition');
+  const fsm = _domains.get('engagement');
   return fsm && typeof fsm.getAuthStrikes === 'function' ? fsm.getAuthStrikes(accountId) : 0;
 }
 
 function getRetryCount(intentId) {
-  const fsm = _domains.get('acquisition');
+  const fsm = _domains.get('engagement');
   return fsm && typeof fsm.getRetryCount === 'function' ? fsm.getRetryCount(intentId) : 0;
 }
 
 function resetAuthStrikes(accountId) {
-  const fsm = _domains.get('acquisition');
+  const fsm = _domains.get('engagement');
   if (fsm && typeof fsm.resetAuthStrikes === 'function') fsm.resetAuthStrikes(accountId);
 }
 
 function clearCircuitBreaker(accountId) {
-  const fsm = _domains.get('acquisition');
+  const fsm = _domains.get('engagement');
   if (fsm && typeof fsm.clearCircuitBreaker === 'function') fsm.clearCircuitBreaker(accountId);
 }
 

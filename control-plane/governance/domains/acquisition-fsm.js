@@ -18,6 +18,9 @@ function _obs() {
   }
   return _observability;
 }
+
+// Captured ctx for buildActions closures that need to dispatch to engagement domain
+let _dispatchCtx = null;
 //
 // Architectural invariant:
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
@@ -38,9 +41,7 @@ const crypto = require('crypto');
 // 0. Execution Policy Constants — domain-owned thresholds
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const AUTH_FAILURE_MAX_STRIKES = 3;
 const MAX_ACQUISITION_RETRIES = 1;
-const CIRCUIT_BREAKER_COOLDOWN_MS = 3600000; // 1 hour
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
@@ -140,13 +141,12 @@ const TRANSITION_MAP = {
       // Track execution state for retry decisions
       _executionState.set(intentId, { accountId, domain, lastError: event.error || null });
 
-      // ── Success → clear everything, return result ───────────────────────
+      // ── Success → clear engagement state via engagement FSM ───────────
       if (status === 'completed') {
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-        if (_authFailureStrikes.has(accountId)) {
-          _authFailureStrikes.delete(accountId);
-        }
+        // Dispatch success to engagement FSM to clear strikes/breakers
+        _dispatchCtx.dispatchGlobal({ type: 'AUTH_SUCCESS', accountId, intentId });
         return [{
           type: 'WRITE_ACQUISITION_RESULT',
           accountId, domain, intentId,
@@ -154,41 +154,33 @@ const TRANSITION_MAP = {
         }];
       }
 
-      // ── Auth failure → increment strikes, evaluate disconnect threshold ─
+      // ── Auth failure → route to engagement domain for strike tracking ──
       if (error_category === 'auth_failure') {
-        const strikes = (_authFailureStrikes.get(accountId) || 0) + 1;
-        _authFailureStrikes.set(accountId, strikes);
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-
-        if (strikes >= AUTH_FAILURE_MAX_STRIKES) {
-          return [
-            { type: 'DISCONNECT_ACCOUNT', accountId, reason: `Auth failure strike ${strikes}/${AUTH_FAILURE_MAX_STRIKES}` },
-            { type: 'CREATE_SYSTEM_ALERT', alertType: 'auth_failure', accountId,
-              message: `Acquisition auth failure: ${event.error || 'unknown'}`,
-              details: { source: 'execution_bridge', error: event.error, strikes } },
-          ];
-        }
-        return [{ type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: `Auth failure strike ${strikes}/${AUTH_FAILURE_MAX_STRIKES} for ${accountId}` }];
+        // Dispatch to engagement FSM (which handles strike accumulation and disconnect)
+        _dispatchCtx.dispatchGlobal({ type: 'AUTH_FAILURE_STRIKE', accountId, error: event.error });
+        return [];
       }
 
-      // ── Rate limit → engage circuit breaker ─────────────────────────────
+      // ── Rate limit → route to engagement domain for circuit breaker ───
       if (error_category === 'rate_limit') {
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-        return [
-          { type: 'ENGAGE_CIRCUIT_BREAKER', accountId, domain, cooldownMs: CIRCUIT_BREAKER_COOLDOWN_MS },
-          { type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: `Rate limit detected for ${accountId}/${domain}` },
-        ];
+        const cooldownMs = (event.retryAfterSeconds || 3600) * 1000;
+        _dispatchCtx.dispatchGlobal({ type: 'RATE_LIMIT_DETECTED', accountId, cooldownMs });
+        return [{ type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: `Rate limit for ${accountId}/${domain} — circuit breaker engaged` }];
       }
 
-      // ── Transient/retryable → increment retry count, decide retry or exhaust
+      // ── Transient/retryable → increment retry count ────────────────────
       if (retryable) {
         const retryCount = (_executionRetries.get(intentId) || 0) + 1;
         _executionRetries.set(intentId, retryCount);
 
         if (retryCount <= MAX_ACQUISITION_RETRIES) {
           const delayMs = event.retryAfterMs || 30000;
+          // Forward retry count to engagement FSM for tracking
+          _dispatchCtx.dispatchGlobal({ type: 'RETRY_COUNT_INCREMENTED', intentId, retryCount });
           return [{
             type: 'RETRY_ACQUISITION',
             accountId, domain, intentId,
@@ -198,15 +190,11 @@ const TRANSITION_MAP = {
           }];
         }
 
-        // Retries exhausted
+        // Retries exhausted → route to engagement FSM
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-        return [
-          { type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId, error: 'max_retries_exceeded' },
-          { type: 'CREATE_SYSTEM_ALERT', alertType: 'retry_exhausted', accountId,
-            message: `Acquisition retries exhausted for ${domain}/${accountId} intent ${intentId}`,
-            details: { domain, intentId, attempts: retryCount, lastError: event.error } },
-        ];
+        _dispatchCtx.dispatchGlobal({ type: 'RETRY_EXHAUSTED', accountId, domain, intentId, error: 'max_retries_exceeded' });
+        return [];
       }
 
       // ── Permanent failure (non-retryable, non-auth, non-rate) ───────────
@@ -215,59 +203,6 @@ const TRANSITION_MAP = {
       return [{
         type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId, error: event.error || 'unknown',
       }];
-    },
-  },
-
-  // ── Auth failure strike (emitted by retry substrate) ────────────────────
-  AUTH_FAILURE_STRIKE: {
-    target: (event) => _localState,
-    guard: () => ({ allowed: true }),
-    buildActions: (event) => {
-      const { accountId, error } = event;
-      const strikes = (_authFailureStrikes.get(accountId) || 0) + 1;
-      _authFailureStrikes.set(accountId, strikes);
-
-      if (strikes >= AUTH_FAILURE_MAX_STRIKES) {
-        return [
-          { type: 'DISCONNECT_ACCOUNT', accountId, reason: `Auth failure strikes exceeded: ${strikes}` },
-          { type: 'CREATE_SYSTEM_ALERT', alertType: 'auth_failure', accountId,
-            message: `Account disconnected: ${strikes} auth failures. Last error: ${error || 'unknown'}`,
-            details: { source: 'retry_substrate', error, strikes } },
-        ];
-      }
-      return [];
-    },
-  },
-
-  // ── Rate limit detected (emitted by retry substrate) ───────────────────
-  RATE_LIMIT_DETECTED: {
-    target: (event) => _localState,
-    guard: () => ({ allowed: true }),
-    buildActions: (event) => {
-      const { accountId, retryAfterSeconds } = event;
-      const cooldownMs = (retryAfterSeconds || 3600) * 1000;
-      return [
-        { type: 'ENGAGE_CIRCUIT_BREAKER', accountId, cooldownMs },
-        { type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE',
-          reason: `Rate limit for ${accountId}, cooldown ${cooldownMs / 1000}s` },
-      ];
-    },
-  },
-
-  // ── Retry exhausted (emitted when all retries consumed) ─────────────────
-  RETRY_EXHAUSTED: {
-    target: (event) => _localState,
-    guard: () => ({ allowed: true }),
-    buildActions: (event) => {
-      const { accountId, domain, intentId, error } = event;
-      _executionRetries.delete(intentId);
-      _executionState.delete(intentId);
-      return [
-        { type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId, error: error || 'retry_exhausted' },
-        { type: 'CREATE_SYSTEM_ALERT', alertType: 'retry_exhausted', accountId,
-          message: `Retries exhausted for ${domain}/${accountId}`,
-          details: { domain, intentId, error } },
-      ];
     },
   },
 };
@@ -279,8 +214,6 @@ const TRANSITION_MAP = {
 let _localState = 'IDLE';
 
 // ── Execution state tracking ─────────────────────────────────────────────────
-const _authFailureStrikes = new Map();  // accountId → strike count
-const _circuitBreakers = new Map();     // accountId → { until: timestampMs }
 const _executionRetries = new Map();    // intentId → retry count
 const _executionState = new Map();      // intentId → { accountId, domain, lastError }
 
@@ -336,6 +269,9 @@ function dispatch(event, ctx) {
 
   // 4. THEN materialize state
   _localState = target;
+
+  // 5. Capture ctx for buildActions closures (engagement domain dispatch)
+  _dispatchCtx = ctx;
 
   // 6. Emit observability transition for domain FSM state change
   // Fire-and-forget — observability failures never affect domain FSM behavior
@@ -395,66 +331,23 @@ function getState() {
 function exportState() {
   return {
     state: _localState,
-    authFailureAccounts: _authFailureStrikes.size,
-    activeCircuitBreakers: Array.from(_circuitBreakers.values()).filter(c => c.until > Date.now()).length,
     pendingRetries: _executionRetries.size,
   };
 }
 
 function getHealth() {
-  const breakerCount = Array.from(_circuitBreakers.values()).filter(c => c.until > Date.now()).length;
   return {
-    ok: _authFailureStrikes.size === 0 && breakerCount === 0 && _executionRetries.size < 10,
+    ok: _executionRetries.size < 10,
     signals: {
-      authFailures: _authFailureStrikes.size,
-      activeBreakers: breakerCount,
       pendingRetries: _executionRetries.size,
     },
   };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 7. Domain-specific state queries (called by acquisition orchestrator membrane)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function isCircuitBreakerActive(accountId) {
-  const breaker = _circuitBreakers.get(accountId);
-  if (!breaker) return false;
-  if (Date.now() >= breaker.until) {
-    _circuitBreakers.delete(accountId);
-    return false;
-  }
-  return true;
-}
-
-function getAuthStrikes(accountId) {
-  return _authFailureStrikes.get(accountId) || 0;
-}
-
-function getRetryCount(intentId) {
-  return _executionRetries.get(intentId) || 0;
-}
-
-function resetAuthStrikes(accountId) {
-  _authFailureStrikes.delete(accountId);
-}
-
-function clearCircuitBreaker(accountId) {
-  _circuitBreakers.delete(accountId);
-}
-
-// ── Reconciliation engine getters — expose domain state for three-reality comparison ──
-
-function getCircuitBreakers() {
-  return new Map(_circuitBreakers);
-}
+// ── Reconciliation engine getters ───────────────────────────────────────────
 
 function getExecutionRetries() {
   return new Map(_executionRetries);
-}
-
-function getAuthStrikeMap() {
-  return new Map(_authFailureStrikes);
 }
 
 module.exports = {
@@ -464,12 +357,5 @@ module.exports = {
   getState,
   exportState,
   getHealth,
-  isCircuitBreakerActive,
-  getAuthStrikes,
-  getRetryCount,
-  resetAuthStrikes,
-  clearCircuitBreaker,
-  getCircuitBreakers,
   getExecutionRetries,
-  getAuthStrikeMap,
 };

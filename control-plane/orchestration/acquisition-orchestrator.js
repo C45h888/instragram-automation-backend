@@ -16,6 +16,7 @@ const domainRegistry = require('../execution/domain-registry');
 const retryWorker = require('./retry-worker');
 const persistence = require('../../substrates/persistence');
 const syncSubstrate = require('../../substrates/sync-substrate');
+const retrySubstrate = require('../../substrates/retry');
 
 /**
  * Execute a single bounded acquisition attempt via retry worker.
@@ -133,9 +134,13 @@ function wire(gov, acquisitionFsm) {
     });
   });
 
-  // ── ENGAGE_CIRCUIT_BREAKER → logging only (acquisition FSM owns state) ──
+  // ── ENGAGE_CIRCUIT_BREAKER → retry substrate (mechanical state write) ───
   gov.subscribeAction('ENGAGE_CIRCUIT_BREAKER', (action) => {
-    console.warn(`[acquisition-orchestrator] Circuit breaker engaged for ${action.accountId}/${action.domain || 'all'}, cooldown ${(action.cooldownMs || 3600000) / 1000}s`);
+    const { accountId, cooldownMs = 3600000 } = action;
+    // Engagement FSM authorizes the breaker; retry substrate performs the mechanical state write
+    const retryAfterSeconds = Math.ceil((cooldownMs || 3600000) / 1000);
+    retrySubstrate.markAccountRateLimited(accountId, retryAfterSeconds);
+    console.warn(`[acquisition-orchestrator] Circuit breaker engaged for ${accountId}, cooldown ${retryAfterSeconds}s`);
   });
 
   // ── START_INTENT_DISCOVERY → sync substrate ────────────────────────────

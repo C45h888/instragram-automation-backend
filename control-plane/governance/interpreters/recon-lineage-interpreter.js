@@ -32,7 +32,7 @@ async function getReconLineage(n) {
  * @returns {Promise<object>} map of domain -> entries
  */
 async function getDomainGroupedLineage(n) {
-  const domains = ['acquisition', 'publishing', 'scheduling', 'governance'];
+  const domains = ['acquisition', 'publishing', 'scheduling', 'governance', 'reconciliation'];
   const result = {};
 
   for (const domain of domains) {
