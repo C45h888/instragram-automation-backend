@@ -73,6 +73,12 @@ const DOMAIN_EVENT_MAP = {
   DATABASE_SCANNED: 'scheduling',
   LIFECYCLE_REFRESHED: 'scheduling',
   SAFETY_CHECK_COMPLETE: 'scheduling',
+
+  // Dedup domain
+  DEDUP_BATCH_BEGIN: 'dedup',
+  DEDUP_INTENT_MARKED: 'dedup',
+  DEDUP_REPLAY_DETECTED: 'dedup',
+  DEDUP_BATCH_END: 'dedup',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -664,6 +670,11 @@ function _buildSubstrateQueries() {
     },
     cadenceLastTick: () => {
       return cadence.lastTick ? cadence.lastTick() : null;
+    },
+    dedupSnapshot: () => {
+      return typeof dedupSubstrate.getInflightSnapshot === 'function'
+        ? dedupSubstrate.getInflightSnapshot()
+        : { identityCount: 0, resourceCount: 0, sample: [] };
     },
   };
 }

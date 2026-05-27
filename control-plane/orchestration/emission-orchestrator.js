@@ -3,16 +3,23 @@
 //
 // Owns: routing EVALUATE actions downward through the
 //        evaluation → mutation → emission pipeline,
-//        forwarding EMISSION_OBSERVATION upward.
+//        forwarding EMISSION_OBSERVATION upward,
+//        bridging dedup FSM governance with async evaluation.
 // Does NOT own: evaluation policy, publishing rules, intent construction,
 //               dedup logic, emission mechanics.
 //
 // Constitutional purity: this orchestrator mechanically sequences
 // evaluator → emitter without understanding what evaluation means.
 // It never interprets policy outcomes or intent semantics.
+//
+// Phase 5: dedup FSM integration — orchestrator dispatches DEDUP_BATCH_BEGIN
+// before evaluation, DEDUP_INTENT_MARKED / DEDUP_REPLAY_DETECTED per intent,
+// and DEDUP_BATCH_END after evaluation, bridging async substrate work to
+// synchronous dedup FSM governance.
 
 const evaluator = require('../runtime/evaluation');
 const emitter = require('../runtime/emission');
+const dedupSubstrate = require('../../substrates/dedup-substrate');
 
 /**
  * Execute the evaluation → mutation → emission pipeline for a single account.
@@ -29,8 +36,45 @@ async function executeEvaluationPipeline(governance, accountId, events) {
   // Observability: evaluation pipeline state transition
   _emitTransition(accountId, 'IDLE', 'RUNNING');
 
+  // ── Dedup FSM: open batch governance window ────────────────────────────
+  governance.dispatch({
+    type: 'DEDUP_BATCH_BEGIN',
+    accountId,
+    eventCount: events.length,
+  });
+
   try {
     const result = await evaluator.evaluate(accountId, events);
+
+    // ── Dedup FSM: report mark counts to governance ──────────────────────
+    const { dedup: dedupMeta } = result;
+    if (dedupMeta) {
+      for (let i = 0; i < dedupMeta.marks; i++) {
+        governance.dispatch({
+          type: 'DEDUP_INTENT_MARKED',
+          accountId,
+          isReplay: false,
+        });
+      }
+      for (const replay of dedupMeta.replayDetails) {
+        governance.dispatch({
+          type: 'DEDUP_REPLAY_DETECTED',
+          accountId,
+          resourceId: replay.resourceId,
+          intentId: replay.intentId,
+          previousIntentId: replay.previousIntentId,
+        });
+      }
+    }
+
+    // ── Mechanical: clear dedup identity cache after governance dispatch ──
+    dedupSubstrate.clearTick();
+
+    // ── Dedup FSM: close batch governance window ─────────────────────────
+    governance.dispatch({
+      type: 'DEDUP_BATCH_END',
+      accountId,
+    });
 
     for (const mut of result.mutations) {
       await emitter.emitMutation(mut);
@@ -58,6 +102,14 @@ async function executeEvaluationPipeline(governance, accountId, events) {
     _emitTransition(accountId, 'RUNNING', pipelineState);
   } catch (err) {
     console.error(`[emission-orchestrator] Evaluation pipeline error for ${accountId}:`, err.message);
+
+    // ── Dedup FSM: close batch even on error (graceful degradation) ──────
+    dedupSubstrate.clearTick();
+    governance.dispatch({
+      type: 'DEDUP_BATCH_END',
+      accountId,
+    });
+
     // Observability: evaluation pipeline error
     _emitTransition(accountId, 'RUNNING', 'ERROR');
     governance.dispatch({

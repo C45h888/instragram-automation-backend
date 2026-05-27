@@ -75,6 +75,7 @@ const _projections = {
     acquisition: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0, retryPressure: 0 },
     publishing: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
     scheduling: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0, cadenceContinuity: 1.0 },
+    dedup: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
   },
   governanceRuntime: {
     runtimeState: 'BOOTING',

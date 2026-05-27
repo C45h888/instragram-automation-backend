@@ -174,6 +174,22 @@ addRule('metrics', 'health_signal', 'DEGRADED', 'HEALTHY', (raw) => ({
 addRule('dedup', 'dedup_entry', 'PENDING', 'IN_FLIGHT', () => ({}));
 addRule('dedup', 'dedup_entry', 'IN_FLIGHT', 'CLEARED', () => ({}));
 
+// Dedup resource tracker transitions (Phase 4a — lineage-aware identity)
+addRule('dedup', 'resource_tracker', null, 'TRACKED', (raw) => ({
+  entityId: raw.resourceKey || null,
+  raw,
+}));
+addRule('dedup', 'resource_tracker', 'TRACKED', 'REPLAY_DETECTED', (raw) => ({
+  entityId: raw.resourceKey || null,
+  raw,
+}));
+
+// Dedup FSM transitions (Phase 5 — federated governance)
+addRule('dedup', 'fsm', null, null, (raw) => ({
+  entityId: 'dedup-fsm',
+  raw,
+}));
+
 // Buffer transitions
 addRule('buffer', 'buffer', 'IDLE', 'INGESTING', (raw) => ({
   entityId: raw.accountId || 'unknown',

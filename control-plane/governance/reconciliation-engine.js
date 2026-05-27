@@ -42,6 +42,8 @@ const DRIFT_SIGNAL = {
   CADENCE_GAP: 'cadence_gap',
   LINEAGE_POSITION_MISMATCH: 'lineage_position_mismatch',
   AUTH_STRIKE_DRIFT: 'auth_strike_drift',
+  DEDUP_ORPHAN_KEY: 'dedup_orphan_key',
+  DEDUP_REPLAY_COLLISION: 'dedup_replay_collision',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -68,6 +70,8 @@ function _classifySignal(signal) {
     case DRIFT_SIGNAL.ORPHANED_CIRCUIT_BREAKER:
     case DRIFT_SIGNAL.GHOST_EMISSION:
     case DRIFT_SIGNAL.AUTH_STRIKE_DRIFT:
+    case DRIFT_SIGNAL.DEDUP_ORPHAN_KEY:
+    case DRIFT_SIGNAL.DEDUP_REPLAY_COLLISION:
       return DRIFT_SEVERITY.SUBSTRATE;
     case DRIFT_SIGNAL.STALE_MATERIALIZED_STATE:
     case DRIFT_SIGNAL.LINEAGE_POSITION_MISMATCH:
@@ -267,6 +271,119 @@ function _reconcileScheduling(fsm, substrates, domainLineage) {
   return { driftSignals, materializedState };
 }
 
+/**
+ * Reconcile the dedup domain across lineage, FSM materialized state, and substrate reality.
+ *
+ * Phase 5: dedup now has a domain FSM. Reconciliation compares three layers:
+ *   - Substrate snapshot (mechanical Redis keys — what actually exists)
+ *   - FSM materialized state (governance understanding — what the FSM believes)
+ *   - Lineage (canonical history — what was recorded)
+ *
+ * When the FSM is not registered (backward-compat), falls back to substrate-only comparison.
+ *
+ * @param {object|null} fsm — dedup FSM instance (may be null)
+ * @param {object} substrates — substrate query interface (includes dedupSnapshot)
+ * @param {Array<object>} domainLineage — recent lineage entries for dedup domain
+ * @returns {{ driftSignals: Array<{ signal: string, detail: string }>, substrateSnapshot: object, fsmState: object|null }}
+ */
+function _reconcileDedup(fsm, substrates, domainLineage) {
+  const driftSignals = [];
+
+  // ── Substrate snapshot ─────────────────────────────────────────────
+  let snapshot = { identityCount: 0, resourceCount: 0, sample: [] };
+  if (typeof substrates.dedupSnapshot === 'function') {
+    try {
+      snapshot = substrates.dedupSnapshot();
+    } catch {
+      // Substrate unavailable — not a drift, just unobservable
+    }
+  }
+
+  // ── Active IN_FLIGHT entries from lineage (not yet CLEARED) ────────
+  const inFlightEntries = domainLineage.filter(e =>
+    e.entity === 'dedup_entry' && e.nextState === 'IN_FLIGHT'
+  );
+
+  // ── Orphaned substrate keys ────────────────────────────────────────
+  // Substrate has identity key, but no matching IN_FLIGHT lineage entry
+  // within TTL window (120s). This means a key was set in Redis but the
+  // corresponding transition never reached the ledger.
+  const now = Date.now();
+  const TTL_MS = 120_000;
+  for (const sample of snapshot.sample) {
+    const hasLineage = inFlightEntries.some(e => {
+      const rawIntentId = e.raw?.raw?.intentId || e.raw?.intentId;
+      const entryAge = now - (e.timestamp || 0);
+      return rawIntentId === sample.intentId && entryAge <= TTL_MS;
+    });
+    if (!hasLineage) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.DEDUP_ORPHAN_KEY,
+        detail: `Substrate has in-flight key with intentId=${sample.intentId} but no matching IN_FLIGHT lineage entry within TTL window`,
+      });
+    }
+  }
+
+  // ── Replay collisions ──────────────────────────────────────────────
+  // resource_tracker REPLAY_DETECTED entries are normal — they indicate
+  // a different intent hit the same resource, which is allowed. Signal
+  // only when replay rate is anomalously high relative to tracked resources.
+  const replayEntries = domainLineage.filter(e =>
+    e.entity === 'resource_tracker' && e.nextState === 'REPLAY_DETECTED'
+  );
+  if (replayEntries.length > 0 && snapshot.resourceCount > 0) {
+    const replayRatio = replayEntries.length / snapshot.resourceCount;
+    if (replayRatio > 0.5) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.DEDUP_REPLAY_COLLISION,
+        detail: `${replayEntries.length} replay detections vs ${snapshot.resourceCount} tracked resources — replay ratio ${(replayRatio * 100).toFixed(0)}% exceeds threshold`,
+      });
+    }
+  }
+
+  // ── FSM materialized state vs lineage (Phase 5) ─────────────────────
+  const fsmState = fsm && typeof fsm.getBatchState === 'function'
+    ? fsm.getBatchState()
+    : null;
+
+  if (fsm && fsmState) {
+    const materializedState = fsm.getState ? fsm.getState() : 'unknown';
+
+    // Stale materialized state vs lineage
+    const lastDomainEntry = domainLineage.length > 0
+      ? domainLineage[domainLineage.length - 1]
+      : null;
+    if (lastDomainEntry && lastDomainEntry.nextState && materializedState !== lastDomainEntry.nextState) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
+        detail: `Dedup FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
+      });
+    }
+
+    // FSM believes batch is ACTIVE but substrate has no in-flight keys
+    if (fsmState.active && snapshot.identityCount === 0 && snapshot.resourceCount === 0) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.DEDUP_ORPHAN_KEY,
+        detail: `Dedup FSM in ACTIVE state but substrate snapshot is empty — possible lost batch window`,
+      });
+    }
+
+    // FSM degradation count from FSM vs lineage degradation events
+    const degradationCount = fsm.getDegradationCount ? fsm.getDegradationCount() : 0;
+    const lineageDegradations = domainLineage.filter(e =>
+      e.nextState === 'PARTIAL_FAILURE' || e.nextState === 'DEGRADED'
+    );
+    if (degradationCount > 0 && lineageDegradations.length === 0) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.DEDUP_ORPHAN_KEY,
+        detail: `Dedup FSM reports ${degradationCount} degradation signals but no matching lineage degradation entries`,
+      });
+    }
+  }
+
+  return { driftSignals, substrateSnapshot: snapshot, fsmState };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Domain reconciliation dispatcher
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -275,6 +392,7 @@ const DOMAIN_RECONCILERS = {
   acquisition: _reconcileAcquisition,
   publishing: _reconcilePublishing,
   scheduling: _reconcileScheduling,
+  dedup: (fsm, substrates, domainLineage) => _reconcileDedup(fsm, substrates, domainLineage),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -318,6 +436,9 @@ async function runCycle({ fsms, substrates, lineageLedger }) {
 
   for (const [domainName, reconciler] of Object.entries(DOMAIN_RECONCILERS)) {
     const fsm = fsms.get(domainName);
+
+    // Dedup may have an FSM (Phase 5) or may be substrate-only (backward compat).
+    // No longer a special case — handled like any other domain with optional FSM.
     if (!fsm) {
       observations.push({
         domain: domainName,
@@ -334,8 +455,11 @@ async function runCycle({ fsms, substrates, lineageLedger }) {
     // Get recent domain lineage (last 20 entries)
     const domainLineage = await lineageLedger.getDomainLineage(domainName, 20);
 
-    // Run domain reconciler
-    const { driftSignals } = reconciler(fsm, substrates, domainLineage);
+    // Run domain reconciler — fsm is always passed now
+    const reconcilerResult = reconciler(fsm, substrates, domainLineage);
+    const { driftSignals } = reconcilerResult;
+    const snapshot = reconcilerResult.substrateSnapshot;
+    const fsmState = reconcilerResult.fsmState;
 
     // Classify severity from signals
     let domainSeverity = DRIFT_SEVERITY.NONE;
@@ -351,11 +475,20 @@ async function runCycle({ fsms, substrates, lineageLedger }) {
       ? driftSignals
       : [{ signal: DRIFT_SIGNAL.NONE, detail: 'All three layers converge' }];
 
+    // Build materialized state string — uses FSM state when available, substrate snapshot otherwise
+    let materializedStateStr;
+    if (domainName === 'dedup') {
+      const fsmStateStr = fsm && fsm.getState ? fsm.getState() : 'unknown';
+      materializedStateStr = `fsm:${fsmStateStr}, substrate:${snapshot?.identityCount || 0} inflight, ${snapshot?.resourceCount || 0} tracked`;
+    } else {
+      materializedStateStr = fsm && fsm.getState ? fsm.getState() : 'unknown';
+    }
+
     observations.push({
       domain: domainName,
       driftSignals: signals,
       severity: domainSeverity,
-      materializedState: fsm.getState ? fsm.getState() : 'unknown',
+      materializedState: materializedStateStr,
       lineageState: materialized.domains[domainName] || 'unknown',
     });
 

@@ -6,11 +6,21 @@
 // Does NOT own: intent emission, Redis, worker lifecycle, signal intake.
 //
 // Contract:
-//   evaluator.evaluate(accountId, events) → Promise<{ intents: [...], mutations: [...] }>
+//   evaluator.evaluate(accountId, events) → Promise<{ intents: [...], mutations: [...], dedup: { marks, replays, duplicates } }>
 //
 // Dedup is Redis-backed — must be async to check/set Redis keys.
-// Caller handles emission and mutation execution.
+// Caller handles emission, mutation execution, and governance dispatch.
+//
+// Phase 4a: lineage-aware dedup — each intent carries a unique intentId.
+// Dedup now distinguishes duplicate (same intentId, block) from replay
+// (different intentId touching same resource, allow with observability signal).
+//
+// Phase 5: dedup FSM governance — evaluation returns dedup metadata for the
+// orchestrator to dispatch DEDUP_BATCH_BEGIN / DEDUP_INTENT_MARKED /
+// DEDUP_REPLAY_DETECTED / DEDUP_BATCH_END through the constitutional kernel.
+// clearTick() is now called by the orchestrator after governance dispatch.
 
+const crypto = require('crypto');
 const publishingPolicy = require('../policies/publishing');
 const dedupSubstrate = require('../../substrates/dedup-substrate');
 
@@ -56,6 +66,14 @@ async function evaluate(accountId, events) {
   const intents = [];
   const mutations = [];
 
+  // ── Dedup governance metadata — collected for orchestrator dispatch ─────
+  const dedupMeta = {
+    marks: 0,
+    replays: 0,
+    duplicates: 0,
+    replayDetails: [], // [{ resourceId, intentId, previousIntentId }]
+  };
+
   for (const { table, record } of events) {
     const outcome = publishingPolicy.evaluateRecord(table, record);
 
@@ -76,13 +94,31 @@ async function evaluate(accountId, events) {
     if (outcome.action === 'emit') {
       const { intent } = outcome;
       const resourceId = record.id;
+      const intentId = crypto.randomUUID();
 
-      if (await dedupSubstrate.isInFlight(accountId, intent.action_type, resourceId)) {
+      // Lineage-aware dedup check — structured result distinguishes duplicate from replay
+      const dedupResult = await dedupSubstrate.isInFlight(accountId, intent.action_type, resourceId, intentId);
+
+      if (dedupResult.blocked && dedupResult.reason === 'duplicate') {
+        dedupMeta.duplicates++;
         continue;
       }
-      await dedupSubstrate.markInFlight(accountId, intent.action_type, resourceId);
+
+      // Substrate marks in-flight (mechanical operation — governance recorded by orchestrator)
+      await dedupSubstrate.markInFlight(accountId, intent.action_type, resourceId, { intentId });
+      dedupMeta.marks++;
+
+      if (dedupResult.reason === 'replay') {
+        dedupMeta.replays++;
+        dedupMeta.replayDetails.push({
+          resourceId,
+          intentId,
+          previousIntentId: dedupResult.existingIntentId,
+        });
+      }
 
       intents.push({
+        intent_id: intentId,
         account_id: accountId,
         action_type: intent.action_type,
         resource_id: resourceId,
@@ -94,7 +130,7 @@ async function evaluate(accountId, events) {
     }
   }
 
-  dedupSubstrate.clearTick();
+  // clearTick() is now called by the orchestrator after governance dispatch
 
   // Emit IDLE transition when evaluation completes
   if (_evalState !== 'IDLE') {
@@ -113,7 +149,7 @@ async function evaluate(accountId, events) {
     } catch (_) {}
   }
 
-  return { intents, mutations };
+  return { intents, mutations, dedup: dedupMeta };
 }
 
 module.exports = { evaluate };

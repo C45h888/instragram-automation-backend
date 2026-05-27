@@ -99,6 +99,29 @@ async function getLineage(n) {
 }
 
 /**
+ * Returns the last N lineage entries from the worker-produced canonical ledger.
+ * Used by the lineage worker for buffer rehydration on boot.
+ * Returns entries in chronological order (oldest first).
+ *
+ * @param {number} n — number of recent entries to return
+ * @returns {Promise<Array<object>>}
+ */
+async function getWorkerLineage(n) {
+  const redis = _getRedis();
+  if (!redis || typeof redis.lrange !== 'function') return [];
+  if (typeof n !== 'number' || n <= 0) n = 500;
+  try {
+    const raw = await redis.lrange(REDIS_KEY_WORKER, -n, -1);
+    if (!Array.isArray(raw)) return [];
+    // lrange -n,-1 returns entries newest-first; reverse to chronological
+    return raw.map(item => _parseEntry(item)).filter(Boolean).reverse();
+  } catch (err) {
+    console.error('[lineage-ledger] getWorkerLineage error:', err.message);
+    return [];
+  }
+}
+
+/**
  * Returns total number of recorded lineage events in the worker ledger.
  *
  * @returns {Promise<number>}
@@ -126,20 +149,20 @@ async function getSize() {
  *   domains.{name}  ← last entry where domain='{name}' → nextState
  *
  * @param {Array<object>} entries — worker-format lineage entries
- * @returns {{ globalState: string, domains: { acquisition: string, publishing: string, scheduling: string }, lastEvent: object|null, entryCount: number }}
+ * @returns {{ globalState: string, domains: { acquisition: string, publishing: string, scheduling: string, dedup: string }, lastEvent: object|null, entryCount: number }}
  */
 function materializeState(entries) {
   if (!entries || entries.length === 0) {
     return {
       globalState: 'BOOTING',
-      domains: { acquisition: 'IDLE', publishing: 'IDLE', scheduling: 'IDLE' },
+      domains: { acquisition: 'IDLE', publishing: 'IDLE', scheduling: 'IDLE', dedup: 'IDLE' },
       lastEvent: null,
       entryCount: 0,
     };
   }
 
   let globalState = 'BOOTING';
-  const domains = { acquisition: 'IDLE', publishing: 'IDLE', scheduling: 'IDLE' };
+  const domains = { acquisition: 'IDLE', publishing: 'IDLE', scheduling: 'IDLE', dedup: 'IDLE' };
   let lastEvent = null;
 
   for (const entry of entries) {
@@ -203,7 +226,7 @@ async function computeHash() {
  * Returns the last N lineage entries for a specific domain.
  * Filters by domain field (worker format), not authority pattern.
  *
- * @param {string} domainName — 'acquisition' | 'publishing' | 'scheduling'
+ * @param {string} domainName — 'acquisition' | 'publishing' | 'scheduling' | 'dedup'
  * @param {number} [n] — number of recent entries to return (default: all)
  * @returns {Promise<Array<object>>}
  */
@@ -362,6 +385,7 @@ async function record(entry) {
 module.exports = {
   record,
   getLineage,
+  getWorkerLineage,
   getSize,
   materializeState,
   rehydrate,

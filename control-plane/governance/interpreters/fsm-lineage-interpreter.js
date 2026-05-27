@@ -20,6 +20,7 @@ const FSM_DOMAINS = {
   acquisition: 'acquisition',
   publishing: 'publishing',
   scheduling: 'scheduling',
+  dedup: 'dedup',
 };
 
 /**
