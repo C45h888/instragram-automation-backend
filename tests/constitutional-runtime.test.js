@@ -7,14 +7,28 @@
 // ============================================
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { getRedisClient } from '../../config/redis.js';
+import { getRedisClient } from '../config/redis.js';
 
 describe('Constitutional Runtime Simulation', () => {
   let redis;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     redis = getRedisClient();
-  });
+    // Wait for Redis connection to be ready
+    if (redis.status !== 'ready') {
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Redis connection timeout')), 5000);
+        redis.once('ready', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        redis.once('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+    }
+  }, 10000);
 
   afterAll(async () => {
     // Cleanup handled by global teardown

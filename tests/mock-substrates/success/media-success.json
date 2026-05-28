@@ -1,0 +1,23 @@
+{
+  "type": "acquisition",
+  "variant": "success",
+  "media": {
+    "id": "media-123456789",
+    "accountId": "test-account-001",
+    "mediaType": "IMAGE",
+    "caption": "Successful test post",
+    "likeCount": 42,
+    "commentCount": 5,
+    "timestamp": "2024-01-15T10:30:00.000Z",
+    "permalink": "https://instagram.com/p/test123/"
+  },
+  "normalization": {
+    "expectedSchema": "instagram-media-normalized",
+    "requiredFields": ["accountId", "mediaId", "mediaType", "timestamp"]
+  },
+  "lineage": {
+    "source": "mock-substrate",
+    "variant": "success",
+    "sequence": 1
+  }
+}

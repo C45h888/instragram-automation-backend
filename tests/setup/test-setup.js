@@ -30,16 +30,15 @@ async function flushTestRedisKeys() {
 /**
  * Per-test setup hook.
  * Runs before each test file.
+ * Returns a promise so vitest can await it before running tests.
  */
-export function setupTestEnvironment() {
+export async function setupTestEnvironment() {
   // Seed deterministic randomness for replay-safe tests
   const seed = process.env.TEST_SEED || Date.now();
   Math.random.seedRandom?.(seed); // if available
 
-  // Reset test keyspace
-  flushTestRedisKeys().catch((err) => {
-    console.warn('[TestSetup] Redis flush warning:', err.message);
-  });
+  // Reset test keyspace — MUST await to ensure clean state before tests run
+  await flushTestRedisKeys();
 }
 
 /**

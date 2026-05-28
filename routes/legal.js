@@ -3,6 +3,13 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 
+function isAuthorizedAdminRequest(req) {
+  const authHeader = req.headers.authorization;
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (!adminKey) return false;
+  return authHeader === `Bearer ${adminKey}`;
+}
+
 // Import legal content (you'll need to convert the TypeScript to JavaScript or use a build process)
 // For now, we'll define it directly here for the backend
 const LEGAL_CONTENT = {
@@ -1167,12 +1174,7 @@ router.post('/process-deletions', async (req, res) => {
 // Get all deletion requests (admin only)
 router.get('/admin/deletion-requests', async (req, res) => {
   try {
-    // TODO: Add proper admin authentication
-    // For now, require API key
-    const authHeader = req.headers.authorization;
-    const expectedKey = process.env.ADMIN_API_KEY || process.env.SUPABASE_SERVICE_KEY;
-
-    if (!authHeader || authHeader !== `Bearer ${expectedKey}`) {
+    if (!isAuthorizedAdminRequest(req)) {
       return res.status(401).json({
         error: 'Unauthorized',
         message: 'Admin access required'
@@ -1226,11 +1228,7 @@ router.get('/admin/deletion-requests', async (req, res) => {
 // Get deletion statistics (admin only)
 router.get('/admin/deletion-stats', async (req, res) => {
   try {
-    // TODO: Add proper admin authentication
-    const authHeader = req.headers.authorization;
-    const expectedKey = process.env.ADMIN_API_KEY || process.env.SUPABASE_SERVICE_KEY;
-
-    if (!authHeader || authHeader !== `Bearer ${expectedKey}`) {
+    if (!isAuthorizedAdminRequest(req)) {
       return res.status(401).json({
         error: 'Unauthorized',
         message: 'Admin access required'

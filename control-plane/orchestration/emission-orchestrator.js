@@ -22,6 +22,39 @@ const emitter = require('../runtime/emission');
 const dedupSubstrate = require('../../substrates/dedup-substrate');
 const mutationSubstrate = require('../mutation-substrate');
 
+const MUTATION_POLICY = {
+  scheduled_posts: {
+    allowedStatuses: ['publishing'],
+    expectedPriorStatuses: ['approved'],
+  },
+  post_queue: {
+    allowedStatuses: ['processing'],
+    expectedPriorStatuses: ['pending', 'failed'],
+  },
+};
+
+function _validateApplyMutationAction(action) {
+  const { table, recordId, updates, expectedPriorStatus } = action || {};
+  if (!table || !recordId || !updates || typeof updates !== 'object') {
+    return { ok: false, reason: 'missing required fields' };
+  }
+  const policy = MUTATION_POLICY[table];
+  if (!policy) {
+    return { ok: false, reason: `table "${table}" is not allowed` };
+  }
+  const keys = Object.keys(updates);
+  if (keys.length !== 1 || keys[0] !== 'status') {
+    return { ok: false, reason: 'only status-only updates are allowed' };
+  }
+  if (!policy.allowedStatuses.includes(updates.status)) {
+    return { ok: false, reason: `status "${updates.status}" is not allowed for ${table}` };
+  }
+  if (expectedPriorStatus && !policy.expectedPriorStatuses.includes(expectedPriorStatus)) {
+    return { ok: false, reason: `expectedPriorStatus "${expectedPriorStatus}" is not allowed for ${table}` };
+  }
+  return { ok: true };
+}
+
 /**
  * Execute the evaluation → mutation → emission pipeline for a single account.
  * Pure mechanical sequencing — no policy interpretation.
@@ -160,8 +193,9 @@ function wire(governance) {
   // Calls mutation-substrate with idempotent .eq() guards.
   governance.subscribeAction('APPLY_MUTATION', async (action) => {
     const { table, recordId, updates, expectedPriorStatus, reason } = action;
-    if (!table || !recordId || !updates) {
-      console.warn('[emission-orchestrator] APPLY_MUTATION missing required fields:', action);
+    const validation = _validateApplyMutationAction(action);
+    if (!validation.ok) {
+      console.warn(`[emission-orchestrator] APPLY_MUTATION rejected: ${validation.reason}`, action);
       return;
     }
     try {

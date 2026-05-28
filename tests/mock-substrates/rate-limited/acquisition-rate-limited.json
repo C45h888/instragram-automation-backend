@@ -1,0 +1,16 @@
+{
+  "type": "acquisition",
+  "variant": "rate-limited",
+  "media": null,
+  "error": {
+    "code": 429,
+    "message": "Rate limit exceeded",
+    "retryAfter": 3600
+  },
+  "expectedBehavior": "RATE_LIMIT_DETECTED",
+  "lineage": {
+    "source": "mock-substrate",
+    "variant": "rate-limited",
+    "sequence": 5
+  }
+}

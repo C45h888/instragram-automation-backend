@@ -1,0 +1,20 @@
+{
+  "type": "acquisition",
+  "variant": "stale",
+  "media": {
+    "id": "media-stale-001",
+    "accountId": "test-account-001",
+    "mediaType": "IMAGE",
+    "caption": "Stale post",
+    "likeCount": 50,
+    "commentCount": 3,
+    "timestamp": "2023-01-01T00:00:00.000Z"
+  },
+  "stalenessHours": 8760,
+  "expectedBehavior": "STALE_PAYLOAD_DETECTED",
+  "lineage": {
+    "source": "mock-substrate",
+    "variant": "stale",
+    "sequence": 4
+  }
+}

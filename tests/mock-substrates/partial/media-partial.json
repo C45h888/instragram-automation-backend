@@ -1,0 +1,15 @@
+{
+  "type": "acquisition",
+  "variant": "partial",
+  "media": {
+    "id": "media-partial-001",
+    "accountId": "test-account-001"
+  },
+  "missingFields": ["mediaType", "caption", "likeCount", "commentCount", "timestamp"],
+  "expectedBehavior": "PARTIAL_PAYLOAD_RECONSTRUCTED",
+  "lineage": {
+    "source": "mock-substrate",
+    "variant": "partial",
+    "sequence": 6
+  }
+}

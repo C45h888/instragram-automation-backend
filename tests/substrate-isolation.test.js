@@ -7,14 +7,21 @@
 // ============================================
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getRedisClient } from '../../config/redis.js';
+import { getRedisClient } from '../config/redis.js';
 
 describe('Substrate Isolation', () => {
   let redis;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     redis = getRedisClient();
-  });
+    if (redis.status !== 'ready') {
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Redis connection timeout')), 5000);
+        redis.once('ready', () => { clearTimeout(timeout); resolve(); });
+        redis.once('error', (err) => { clearTimeout(timeout); reject(err); });
+      });
+    }
+  }, 10000);
 
   describe('Dedup Substrate', () => {
     it('should track deduplication keys in isolated namespace', async () => {

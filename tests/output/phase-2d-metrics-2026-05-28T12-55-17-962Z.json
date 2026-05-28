@@ -1,0 +1,13 @@
+{
+  "phase": "2D",
+  "test": "redis-durability-window",
+  "startedCursor": 5,
+  "endedCursor": 538,
+  "ticksInjected": 39,
+  "entryCount": 533,
+  "redisRecovered": true,
+  "recoveryLatencyMs": 1895,
+  "lagAtRisk": false,
+  "hasPostRestartAcquisitionTransitions": true,
+  "generatedAt": "2026-05-28T12:55:17.961Z"
+}

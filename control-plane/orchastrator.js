@@ -26,6 +26,7 @@ const persistence = require('../substrates/persistence');
 const syncSubstrate = require('../substrates/sync-substrate');
 const lineageWorker = require('./governance/lineage-worker');
 const engagementTelemetryAdapter = require('./governance/interpreters/engagement-telemetry-adapter');
+const telemetryWorkers = require('./telemetry-workers');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');

@@ -1,0 +1,24 @@
+{
+  "phase": "2C",
+  "test": "long-run-endurance",
+  "startedCursor": 5,
+  "endedCursor": 2263,
+  "ticksInjected": 165,
+  "workerRecycleCount": 2,
+  "entryCount": 2258,
+  "checkpointCount": 3,
+  "lagAtRisk": false,
+  "lagHeadSeries": [
+    574,
+    1136,
+    1691
+  ],
+  "projectionTransitionCount": 1928,
+  "soakConfig": {
+    "SOAK_DURATION_MS": 20000,
+    "TICK_MS": 120,
+    "CHECKPOINT_MS": 5000,
+    "RECYCLE_MS": 7000
+  },
+  "generatedAt": "2026-05-28T13:04:24.614Z"
+}

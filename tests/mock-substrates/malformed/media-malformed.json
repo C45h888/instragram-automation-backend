@@ -1,0 +1,22 @@
+{
+  "type": "acquisition",
+  "variant": "malformed",
+  "media": {
+    "id": "media-malformed-001",
+    "accountId": null,
+    "mediaType": "INVALID_TYPE",
+    "caption": 12345,
+    "likeCount": "not-a-number",
+    "timestamp": "invalid-timestamp"
+  },
+  "expectedValidationErrors": [
+    "accountId is required",
+    "mediaType must be IMAGE|VIDEO|CAROUSEL|ALBUM",
+    "timestamp must be ISO8601"
+  ],
+  "lineage": {
+    "source": "mock-substrate",
+    "variant": "malformed",
+    "sequence": 2
+  }
+}
