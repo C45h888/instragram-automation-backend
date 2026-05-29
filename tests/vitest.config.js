@@ -68,8 +68,9 @@ export default defineConfig({
     // ----------------------------------------
     // Test Timeout & Retry
     // ----------------------------------------
-    testTimeout: 30000,
-    hookTimeout: 15000,
+    // Phase 5D soak requires 61-minute timeout (1hr soak + 2min teardown)
+    testTimeout: 3660000,
+    hookTimeout: 120000,
 
     // Retry failed tests once for flakiness detection
     retry: process.env.CI ? 2 : 0,

@@ -44,7 +44,7 @@ services:
       retries: 5
     volumes:
       - test-redis-data:/data
-    mem_limit: 256m
+    mem_limit: 512m
     cpu_shares: 512
 
   # ----------------------------------------
@@ -111,8 +111,8 @@ services:
     volumes:
       - .:/app
       - ./node_modules:/app/node_modules  # Bind-mount host node_modules so vitest is available inside container
-    mem_limit: 512m
-    cpu_shares: 512
+    mem_limit: 1g
+    cpu_shares: 1024
 
   # ----------------------------------------
   # Fault Injection - Network Partitioning
