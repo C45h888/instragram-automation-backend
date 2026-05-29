@@ -21,7 +21,7 @@ import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
 import lineageWorker from '../control-plane/governance/lineage-worker.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForProjectionFlush, waitForLedgerEntryCount } = require('./helpers/sync-barriers');
-const { deterministicEntryHash, assertNoTimestampRegression } = require('./helpers/constitutional-invariants');
+const { deterministicEntryHash, assertNoTimestampRegression, assertCausalChainIntegrity } = require('./helpers/constitutional-invariants');
 
 describe('Phase 4E: Replay Reconstruction Determinism', () => {
   beforeAll(async () => {
@@ -89,6 +89,11 @@ describe('Phase 4E: Replay Reconstruction Determinism', () => {
 
     // Constitutional determinism: same entries → same hash regardless of replay timing
     expect(rebuiltHash).toBe(originalHash);
+
+    // Extended check: causal chain integrity must be preserved after replay
+    // assertReplayConvergence already calls assertCausalChainIntegrity internally,
+    // but we assert it explicitly here for clarity about what's being verified
+    assertCausalChainIntegrity(ledgerAfter);
   });
 
   it('replay continuity survives worker death — all lineage entries recoverable', async () => {

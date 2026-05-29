@@ -25,7 +25,7 @@ import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
 import lineageWorker from '../control-plane/governance/lineage-worker.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForCursorAdvance } = require('./helpers/sync-barriers');
-const { assertNoCrossDomainContamination } = require('./helpers/constitutional-invariants');
+const { assertNoCrossDomainContamination, assertCausalChainIntegrity } = require('./helpers/constitutional-invariants');
 
 const PROJECTION_AUTHORITIES = [
   'runtime-projection-worker',
@@ -176,5 +176,99 @@ describe('Phase 4J: Telemetry Isolation Under Pressure', () => {
       (e) => CONSTITUTIONAL_DOMAINS.includes(e.domain) && e.domain !== 'projection'
     );
     expect(suspicious.length).toBe(0);
+  });
+
+  it('stale window projections cannot corrupt active governance state after worker restart', async () => {
+    const { injectMixedDomainWave } = require('./event-injector.js');
+    const waveId = `phase4j-stale-${Date.now()}`;
+
+    // Inject a sustained workload so lineage buffer has content
+    for (let i = 0; i < 8; i++) {
+      await injectMixedDomainWave({ waveId, seq: i, includeFault: false });
+    }
+    await waitForLedgerEntryCount(8, 10000);
+
+    // Stop lineage worker — simulates it being behind or stopped
+    await lineageWorker.stop();
+
+    // Capture current projection state as a baseline
+    const projectionBefore = lineageWorker.getProjections();
+    const ledgerBefore = await lineageLedger.getLineage(200);
+
+    // Restart lineage worker — triggers buffer rehydration from Redis
+    await lineageWorker.start(300);
+    await waitForLedgerEntryCount(8, 8000);
+
+    // After restart/rehydration, verify causal chain integrity is maintained
+    // even with the buffer repopulated from persisted ledger
+    const ledgerAfter = await lineageLedger.getLineage(200);
+    assertCausalChainIntegrity(ledgerAfter);
+
+    // Verify no new divergences were introduced by the restart/rehydration
+    const divergences = lineageWorker.getDivergences();
+    const preRestartDivCount = divergences.length;
+
+    // Inject another wave to exercise the rehydrated buffer
+    const waveId2 = `phase4j-stale-2-${Date.now()}`;
+    for (let i = 0; i < 5; i++) {
+      await injectMixedDomainWave({ waveId: waveId2, seq: i, includeFault: false });
+    }
+    await waitForLedgerEntryCount(ledgerBefore.length + 5, 8000);
+
+    // Causal chain must remain intact after rehydrated buffer is used for
+    // parentTransitionId resolution checks
+    const ledgerFinal = await lineageLedger.getLineage(500);
+    assertCausalChainIntegrity(ledgerFinal);
+
+    // No new BROKEN_CAUSATION_CHAIN anomalies should appear after restart
+    const newDivs = lineageWorker.getDivergences().slice(preRestartDivCount);
+    const newBrokenChain = newDivs.filter((d) => d.type === 'BROKEN_CAUSATION_CHAIN');
+    expect(newBrokenChain.length).toBe(0);
+  });
+
+  it('replay from stale window produces no causal chain corruption', async () => {
+    const { injectBrokenCausalChain, injectMixedDomainWave } = require('./event-injector.js');
+
+    // Establish a valid causal chain first
+    const waveId = `phase4j-replay-${Date.now()}`;
+    for (let i = 0; i < 5; i++) {
+      await injectMixedDomainWave({ waveId, seq: i, includeFault: false });
+    }
+    await waitForLedgerEntryCount(5, 8000);
+
+    // Stop lineage worker
+    await lineageWorker.stop();
+
+    // Capture cursor position before restart
+    const healthBefore = lineageWorker.getHealth();
+    const ledgerBefore = await lineageLedger.getLineage(200);
+
+    // Inject a broken causal chain while worker is stopped
+    const brokenParentId = `stale-window-broken-parent-${Date.now()}`;
+    injectBrokenCausalChain({
+      domain: 'governance',
+      entity: 'fsm',
+      entityId: `stale-gov-${Date.now()}`,
+      previousState: 'IDLE',
+      nextState: 'BROKEN_ACTIVE',
+      brokenParentTransitionId: brokenParentId,
+    });
+
+    // Restart worker — rehydrates buffer and processes the stale window entry
+    await lineageWorker.start(300);
+    await waitForLedgerEntryCount(ledgerBefore.length + 1, 8000);
+
+    // BROKEN_CAUSATION_CHAIN must be recorded because the rehydrated buffer
+    // does not contain the brokenParentId
+    const divergences = lineageWorker.getDivergences();
+    const brokenChainDiv = divergences.find(
+      (d) => d.type === 'BROKEN_CAUSATION_CHAIN' &&
+             d.details && d.details.parentTransitionId === brokenParentId
+    );
+    expect(brokenChainDiv).toBeDefined();
+
+    // The broken entry is in the ledger but causal integrity check fails on it
+    const ledger = await lineageLedger.getLineage(500);
+    expect(() => assertCausalChainIntegrity(ledger)).toThrow();
   });
 });

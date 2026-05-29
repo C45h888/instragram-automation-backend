@@ -20,7 +20,7 @@ import observability from '../control-plane/observability/index.js';
 import lineageWorker from '../control-plane/governance/lineage-worker.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForLedgerEntry } = require('./helpers/sync-barriers');
-const { assertNoTimestampRegression, assertMonotonicCursors, assertIdempotentReplay, assertStaleEntriesFlagged } = require('./helpers/constitutional-invariants');
+const { assertNoTimestampRegression, assertMonotonicCursors, assertIdempotentReplay, assertStaleEntriesFlagged, assertCausalChainIntegrity } = require('./helpers/constitutional-invariants');
 
 describe('Phase 4F: Causal Ordering Guarantees', () => {
   beforeAll(async () => {
@@ -133,5 +133,56 @@ describe('Phase 4F: Causal Ordering Guarantees', () => {
     expect(conflictEntries.length).toBe(2);
     const allFlagged = conflictEntries.every((e) => e.raw?.raw?.conflictAttempt);
     expect(allFlagged).toBe(true);
+  });
+
+  it('broken causal chain reference is detected and recorded as divergence', async () => {
+    const { injectBrokenCausalChain } = require('./event-injector.js');
+    const brokenParentId = `non-existent-parent-${Date.now()}`;
+    const entityId = `broken-causal-${Date.now()}`;
+
+    // Inject a transition with a parentTransitionId pointing to a traceId
+    // that does not exist in the ledger
+    injectBrokenCausalChain({
+      domain: 'acquisition',
+      entity: 'acquisition_intent',
+      entityId,
+      previousState: 'RECEIVED',
+      nextState: 'PROCESSED',
+      brokenParentTransitionId: brokenParentId,
+    });
+
+    // Wait for lineage worker to consume the broken entry
+    await waitForLedgerEntryCount(1, 8000);
+
+    // The entry should be ingested (lineage worker ingests even broken chains
+    // and records them as anomalies rather than rejecting outright)
+    const ledger = await lineageLedger.getLineage(50);
+    const brokenEntries = ledger.filter((e) => e.entityId === entityId);
+    expect(brokenEntries.length).toBe(1);
+
+    // The lineage worker's divergence log should contain a BROKEN_CAUSATION_CHAIN entry
+    const divergences = lineageWorker.getDivergences();
+    const brokenChainDiv = divergences.find(
+      (d) => d.type === 'BROKEN_CAUSATION_CHAIN' &&
+             d.details && d.details.parentTransitionId === brokenParentId
+    );
+    expect(brokenChainDiv).toBeDefined();
+    expect(brokenChainDiv.details.traceId).toBe(brokenEntries[0].traceId);
+  });
+
+  it('ledger entries pass causal chain integrity after sustained concurrent workload', async () => {
+    const { injectMixedDomainWave } = require('./event-injector.js');
+    const waveId = `phase4f-integrity-${Date.now()}`;
+
+    // Inject a sustained workload across multiple domains
+    for (let i = 0; i < 10; i++) {
+      await injectMixedDomainWave({ waveId, seq: i, includeFault: i % 5 === 0 });
+    }
+
+    await waitForLedgerEntryCount(10, 10000);
+    const ledger = await lineageLedger.getLineage(500);
+
+    // Assert causal chain integrity — every parentTransitionId must resolve
+    assertCausalChainIntegrity(ledger);
   });
 });

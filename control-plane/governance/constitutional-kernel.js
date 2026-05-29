@@ -50,6 +50,197 @@ const STARTED_AT = Date.now();
 // 0. Event → Domain routing map
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Membrane authority map — defines which authorities may mutate which domains.
+// This is the constitutional contract for membrane boundary enforcement.
+// CK is the HSM (Hierarchical State Machine) and sole interpreter of this map.
+// Cross-domain mutations are rejected if authority is not permitted for target domain.
+
+const MEMBRANE_AUTHORITY_MAP = {
+  'acquisition-fsm':     ['acquisition'],
+  'publishing-membrane': ['publishing'],
+  'telemetry-worker':    ['telemetry'],
+  'reconciliation-fsm':  ['reconciliation'],
+  'scheduling-fsm':      ['scheduling'],
+  'governance-kernel':   ['governance', 'execution', 'acquisition', 'publishing',
+                          'scheduling', 'telemetry', 'reconciliation', 'projection'],
+};
+
+function _extractForeignAuthorityDomain(authority) {
+  if (!authority || typeof authority !== 'string') return null;
+  // e.g. 'foreign-domain-attacker' → extract 'foreign-domain'
+  const match = authority.match(/^([a-z]+(?:[-][a-z]+)*)-/);
+  return match ? match[1] : null;
+}
+
+function _validateMembraneAuthority(authority, targetDomain) {
+  const permitted = MEMBRANE_AUTHORITY_MAP[authority];
+
+  if (permitted !== undefined) {
+    // Known membrane — verify domain is in its permitted list
+    if (!permitted.includes(targetDomain)) {
+      return {
+        allowed: false,
+        reason: `MEMBRANE_BYPASS: authority '${authority}' may not mutate domain '${targetDomain}'`,
+      };
+    }
+  } else {
+    // Foreign authority (not in map) — may only mutate its own domain
+    // e.g. 'foreign-domain-attacker' mutating 'acquisition' → bypass detected
+    const foreignDomain = _extractForeignAuthorityDomain(authority);
+    if (foreignDomain && foreignDomain !== targetDomain) {
+      return {
+        allowed: false,
+        reason: `MEMBRANE_BYPASS: foreign authority '${authority}' may not mutate '${targetDomain}'`,
+      };
+    }
+  }
+
+  return { allowed: true };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0b. Signal Ownership Contract — projection signal governance
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Signal classification — defines the derivation model for each signal category.
+// Ledger-derivable: recomputable from immutable ledger replay with no observation-time deps
+// Observer-relative: derived from mutable runtime state at observation tick time
+// Substrate-mechanical: mechanical substrate state with no semantic interpretation
+
+const SIGNAL_CLASS = {
+  LEDGER_DERIVABLE: 'ledger_derivable',
+  OBSERVER_RELATIVE: 'observer_relative',
+  SUBSTRATE_MECHANICAL: 'substrate_mechanical',
+};
+
+// Canonical signal ownership registry.
+// CK validates that each signal is only ever written by its canonical owner.
+// Unknown signals (not in this map) are rejected as unclassified.
+const SIGNAL_OWNERSHIP_MAP = {
+  // ── Ledger-derivable signals — lineage worker Layer B only ─────────────
+  // These signals are recomputable from immutable lineage:ledger:entries replay.
+  'health.transitionCount':           { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'health.lastTransition':             { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'health.executionHealth':            { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'health.authorityStability':          { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'integrity.structuralAnomalyCount':   { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'integrity.replayAnomalyProbability': { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'integrity.cadenceGapProbability':     { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'governanceRuntime.runtimeState':     { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'governanceRuntime.lastStateTransition': { owner: 'lineage-worker',       class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'governanceRuntime.degradationSignals': { owner: 'lineage-worker',        class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'governanceRuntime.epochCount':        { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'governanceRuntime.domainInstability': { owner: 'lineage-worker',         class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.acquisition.authorityCount':    { owner: 'lineage-worker',      class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.acquisition.lastAuthority':     { owner: 'lineage-worker',      class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.acquisition.authorityOscillation': { owner: 'lineage-worker',    class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.acquisition.continuityStatus':   { owner: 'lineage-worker',     class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.publishing.authorityCount':     { owner: 'lineage-worker',      class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.publishing.lastAuthority':       { owner: 'lineage-worker',      class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.publishing.authorityOscillation': { owner: 'lineage-worker',    class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.publishing.continuityStatus':   { owner: 'lineage-worker',      class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.scheduling.authorityCount':      { owner: 'lineage-worker',      class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.scheduling.lastAuthority':       { owner: 'lineage-worker',      class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.scheduling.authorityOscillation': { owner: 'lineage-worker',    class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'authority.scheduling.continuityStatus':    { owner: 'lineage-worker',      class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.acquisition.state':           { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.acquisition.transitionCount': { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.acquisition.lastTransition':  { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.acquisition.authorityStability': { owner: 'lineage-worker',       class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.publishing.state':            { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.publishing.transitionCount':   { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.publishing.lastTransition':   { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.publishing.authorityStability': { owner: 'lineage-worker',       class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.scheduling.state':            { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.scheduling.transitionCount':  { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.scheduling.lastTransition':   { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.scheduling.authorityStability': { owner: 'lineage-worker',         class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.scheduling.cadenceContinuity': { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.dedup.state':                { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.dedup.transitionCount':      { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.dedup.lastTransition':        { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.dedup.authorityStability':    { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.reconciliation.state':        { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.reconciliation.transitionCount': { owner: 'lineage-worker',       class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.reconciliation.lastTransition':  { owner: 'lineage-worker',       class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+  'domain.reconciliation.authorityStability': { owner: 'lineage-worker',     class: SIGNAL_CLASS.LEDGER_DERIVABLE },
+
+  // ── Observer-relative signals — telemetry workers only ─────────────────
+  // These signals depend on observation timing, polling cadence, or mutable
+  // runtime state. They cannot be reconstructed from immutable ledger replay.
+  'health.failureRate':              { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'health.retryPressure':            { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'health.bufferPressure':            { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'health.quotaPressure':             { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'health.circuitBreakers':           { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'health.interpretationConfidence': { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'integrity.executionPressure':      { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'governanceRuntime.governancePressure': { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'systemic.governancePressure':       { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'systemic.systemicStress':           { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'systemic.convergenceConfidence':   { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'systemic.domainInstability':       { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'health.runtimeEntropy':            { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'health.operationalStress':         { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+  'health.degradationSignals':        { owner: 'telemetry-workers', class: SIGNAL_CLASS.OBSERVER_RELATIVE },
+};
+
+/**
+ * Validate a projection snapshot against the signal ownership contract.
+ * Traverses all numeric signal paths in the snapshot and verifies each
+ * has a canonical owner matching the source worker.
+ *
+ * @param {object} snapshot — projection snapshot (e.g. from lineage-worker getProjections())
+ * @param {string} sourceWorker — 'lineage-worker' | 'telemetry-workers' | etc
+ * @returns {{ valid: boolean, violations: Array<{ signal: string, expectedOwner: string, actualOwner: string, signalClass: string }> }}
+ */
+function validateProjectionSnapshot(snapshot, sourceWorker) {
+  const violations = [];
+
+  function checkSignal(path, value) {
+    if (typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'boolean') return;
+
+    // Try to match this path against known signal names in OWNERSHIP_MAP
+    // Check both the full path and the leaf signal name
+    for (const [ownedSignal, contract] of Object.entries(SIGNAL_OWNERSHIP_MAP)) {
+      const signalName = ownedSignal.split('.').pop();
+      const pathLower = path.toLowerCase();
+
+      // Match by leaf signal name
+      if (pathLower.endsWith(signalName.toLowerCase())) {
+        if (contract.owner !== sourceWorker) {
+          violations.push({
+            signal: path,
+            expectedOwner: contract.owner,
+            actualOwner: sourceWorker,
+            signalClass: contract.class,
+          });
+        }
+        return; // Found match, stop searching
+      }
+    }
+    // Unknown signal (not in OWNERSHIP_MAP) — not a violation, could be a
+    // new signal type still being classified. Skip unknown signals.
+  }
+
+  function traverse(obj, path = '') {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+    for (const [key, value] of Object.entries(obj)) {
+      // Skip internal metadata and functions
+      if (key === '_meta' || key === 'raw' || typeof value === 'function') continue;
+      const currentPath = path ? `${path}.${key}` : key;
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        traverse(value, currentPath);
+      } else {
+        checkSignal(currentPath, value);
+      }
+    }
+  }
+
+  traverse(snapshot);
+  return { valid: violations.length === 0, violations };
+}
+
 // Events NOT in this map are handled as global constitutional events.
 const DOMAIN_EVENT_MAP = {
   // Acquisition domain — lifecycle only (engagement signals routed to engagement domain)
@@ -414,6 +605,15 @@ function validateDomainTransition(domainName, from, to, event) {
   // RECOVERY restriction — allow scheduling and reconciliation (health checks) but block others
   if (_currentState === 'RECOVERY' && domainName !== 'scheduling' && domainName !== 'reconciliation') {
     return { allowed: false, reason: `Domain transitions blocked during RECOVERY` };
+  }
+
+  // Membrane authority check — verify the event's authority is permitted to mutate this domain
+  const authority = event && (event.authority || (event.raw && event.raw.authority));
+  if (authority) {
+    const membraneCheck = _validateMembraneAuthority(authority, domainName);
+    if (!membraneCheck.allowed) {
+      return { allowed: false, reason: membraneCheck.reason };
+    }
   }
 
   return { allowed: true };
@@ -892,4 +1092,8 @@ module.exports = {
   resetAuthStrikes,
   clearCircuitBreaker,
   triggerReconciliation,
+  validateMembraneTransition: _validateMembraneAuthority,
+  validateProjectionSnapshot,
+  SIGNAL_CLASS,
+  SIGNAL_OWNERSHIP_MAP,
 };

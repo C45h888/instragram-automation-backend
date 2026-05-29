@@ -170,9 +170,12 @@ function project(transition) {
   // would lose unconsumed data.
   if (_transitionLog.length > MAX_LOG_ENTRIES) {
     const excess = _transitionLog.length - MAX_LOG_ENTRIES;
-    const minConsumerCursor = _getMinConsumerCursor();
+    // minConsumerCursor can be -1 when no consumers are registered.
+    // Clamp to 0 so truncation is also blocked when consumers haven't
+    // caught up yet — we never truncate entries a consumer might need.
+    const minConsumerCursor = Math.max(0, _getMinConsumerCursor());
 
-    if (minConsumerCursor >= 0 && minConsumerCursor < excess) {
+    if (minConsumerCursor < excess) {
       // At least one consumer is behind the truncation point.
       // Skip truncation to avoid data loss and emit a stall warning.
       if (_transitionLog.length % 100 === 0) {
@@ -303,7 +306,11 @@ function getEntriesSince(includeIndex) {
   const totalSize = _transitionLog.length;
   const start = Math.max(0, Math.min(includeIndex, totalSize));
   const entries = _transitionLog.slice(start);
-  return { entries, nextCursor: totalSize, totalSize };
+  // Return actual next cursor for the caller, not the log tail.
+  // This lets callers detect when they consumed a partial window
+  // (e.g., log truncated while they were reading).
+  const nextCursor = start + entries.length;
+  return { entries, nextCursor, totalSize };
 }
 
 /**

@@ -45,8 +45,15 @@ const LINEAGE_VERSION = '1.0.0';
 
 const CONSUMER_NAME = 'lineage-worker';
 const DEFAULT_POLL_MS = 5000;
+const MIN_POLL_MS = 500;          // fastest: 500ms when under severe pressure
+const MAX_POLL_MS = 5000;         // slowest: 5000ms when caught up
 const SNAPSHOT_INTERVAL_MS = 15_000; // how often to persist projection snapshot
 const HEALTH_TTL_S = 30; // worker health key TTL in Redis
+
+// Adaptive poll thresholds
+const PRESSURE_THRESHOLD_HIGH = 0.5;  // lag > 50% of MAX_LOG_ENTRIES → accelerate
+const PRESSURE_THRESHOLD_LOW  = 0.2;  // lag < 20% of MAX_LOG_ENTRIES → decelerate
+const MAX_LOG_ENTRIES = 10_000;
 
 // Required fields for a valid transition — missing any → ingestion rejected
 const REQUIRED_TRANSITION_FIELDS = ['traceId', 'correlationId', 'authority', 'timestamp', 'domain', 'entity'];
@@ -65,14 +72,22 @@ let _startedAt = null;
 let _lastTick = null;
 let _tickCount = 0;
 let _entryCount = 0;
+let _currentPollMs = DEFAULT_POLL_MS; // adaptive poll interval — changes under pressure
 
 // In-memory lineage buffer — consumed by Layer B for projection synthesis
 const _lineageBuffer = []; // Array<ledgerEntry>
 
 // Layer B — projection state (evolvable, versioned)
+//
+// SIGNAL OWNERSHIP CONTRACT (CK governance):
+//   Ledger-derivable signals only — recomputable from immutable lineage replay.
+//   Observer-relative signals (failureRate, governancePressure, etc.) MUST NOT
+//   be written here — they belong to telemetry-workers and are governed separately.
+//
+// See: SIGNAL_OWNERSHIP_MAP in constitutional-kernel.js
 const _projections = {
   domain: {
-    acquisition: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0, retryPressure: 0 },
+    acquisition: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
     publishing: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
     scheduling: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0, cadenceContinuity: 1.0 },
     dedup: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
@@ -81,7 +96,6 @@ const _projections = {
   governanceRuntime: {
     runtimeState: 'BOOTING',
     degradationSignals: {},
-    governancePressure: 0,
     replayContinuity: 'intact',
     domainInstability: 0,
     epochCount: 0,
@@ -89,12 +103,9 @@ const _projections = {
   },
   health: {
     executionHealth: 'STABLE',
-    retryPressure: 0,
-    bufferPressure: 0,
-    quotaPressure: 0,
-    circuitBreakers: 0,
-    failureRate: 0,
-    interpretationConfidence: 1.0,
+    transitionCount: 0,
+    lastTransition: null,
+    authorityStability: 1.0,
   },
   authority: {
     acquisition: { authorityCount: 0, lastAuthority: null, authorityOscillation: 0, continuityStatus: 'intact' },
@@ -102,11 +113,9 @@ const _projections = {
     scheduling: { authorityCount: 0, lastAuthority: null, authorityOscillation: 0, continuityStatus: 'intact' },
   },
   integrity: {
-    cadenceGapProbability: 0,
-    replayAnomalyProbability: 0,
-    authorityInstability: 0,
-    executionPressure: 0,
     structuralAnomalyCount: 0,
+    replayAnomalyProbability: 0,
+    cadenceGapProbability: 0,
   },
 };
 
@@ -252,6 +261,31 @@ function _ingestTick() {
 
   // Advance read cursor and feed back to projection (A2)
   _cursor = nextCursor;
+
+  // Bounded-overflow detection: if logSize > cursor and log has hit MAX_LOG cap,
+  // entries were silently evicted — this violates the constitutional invariant
+  // that no source entries are silently lost. Halt ingestion until acknowledged.
+  const logSize = observability.query.getLogSize();
+  const MAX_LOG = 10_000;
+  if (logSize > _cursor && logSize >= MAX_LOG) {
+    // Entries have been silently evicted. Emit a divergence entry and halt.
+    _recordStructuralAnomaly('LINEAGE_TRUNCATION_DETECTED', {
+      readCursor: _cursor,
+      logSize,
+      maxLog: MAX_LOG,
+      evictedCount: logSize - _cursor,
+      consumedBeforeHalt: consumed,
+    });
+    // Do NOT update consumer cursor — this signals to governance that the
+    // worker has stalled at the truncation boundary. Ingestion halts
+    // by returning without advancing _lastPersistedCursor.
+    _consecutiveFailures++;
+    if (_consecutiveFailures >= 2) {
+      _emitBackpressure();
+    }
+    return { consumed, rejected, newCursor: _cursor, truncated: true };
+  }
+
   observability.query.updateConsumerCursor(CONSUMER_NAME, _cursor);
 
   // Safe cursor advance — only when all entries in tick persisted (A3)
@@ -392,7 +426,13 @@ function _updateOscillation(proj, history) {
 
 /**
  * Project governance runtime signals from governance:runtime transitions.
- * These are observed runtime states, NOT constitutional legitimacy judgments.
+ * These are derived from immutable ledger entries — no observation-time deps.
+ *
+ * SIGNAL OWNERSHIP CONTRACT (CK):
+ *   runtimeState, lastStateTransition, degradationSignals, epochCount,
+ *   domainInstability, replayContinuity are LEDGER_DERIVABLE — owned by
+ *   lineage-worker Layer B. governancePressure is OBSERVER_RELATIVE —
+ *   owned by telemetry-workers and MUST NOT be computed here.
  */
 function _projectGovernanceRuntime(entry) {
   if (entry.domain !== 'governance' || entry.entity !== 'runtime') return;
@@ -403,78 +443,60 @@ function _projectGovernanceRuntime(entry) {
 
   const raw = entry.raw?.raw || entry.raw || {};
 
-  // Update degradation signals
+  // Update degradation signals — map of observed substate names
   if (raw.substate) {
     proj.degradationSignals[raw.substate.toLowerCase()] = entry.timestamp;
   }
 
-  // Governance pressure: DEGRADED + RECOVERY → elevated
-  if (entry.nextState === 'DEGRADED' || entry.nextState === 'RECOVERY') {
-    proj.governancePressure = Math.min(1.0, proj.governancePressure + 0.3);
-  } else if (entry.nextState === 'HEALTHY') {
-    proj.governancePressure = Math.max(0, proj.governancePressure - 0.2);
-  }
-
-  // Domain instability: detect if blocked transitions exist
+  // Domain instability: detect if blocked transitions exist in ledger
   if (raw.blocked) {
     proj.domainInstability++;
   }
 
-  // Epoch tracking
+  // Epoch tracking from ledger
   if (raw.epochId) {
     proj.epochCount++;
+  }
+
+  // replayContinuity: check if governance:runtime entries have gaps > 30s
+  const govEntries = _lineageBuffer.filter(
+    e => e.domain === 'governance' && e.entity === 'runtime'
+  );
+  if (govEntries.length >= 2) {
+    const last = govEntries[govEntries.length - 1];
+    const prev = govEntries[govEntries.length - 2];
+    const gap = last.timestamp - prev.timestamp;
+    proj.replayContinuity = gap > 30_000 ? 'gap_detected' : 'intact';
   }
 }
 
 /**
- * Project runtime health signals from execution, quota, buffer transitions.
+ * Project health signals from ledger entries.
+ * Only LEDGER_DERIVABLE signals — recomputable from immutable lineage replay.
+ *
+ * SIGNAL OWNERSHIP CONTRACT (CK):
+ *   transitionCount, lastTransition, executionHealth, authorityStability
+ *   are LEDGER_DERIVABLE — owned by lineage-worker Layer B.
+ *   failureRate, retryPressure, bufferPressure, quotaPressure, circuitBreakers,
+ *   interpretationConfidence are OBSERVER_RELATIVE — owned by telemetry-workers.
  */
 function _projectHealth(entry) {
   const proj = _projections.health;
 
-  switch (entry.domain) {
-    case 'execution': {
-      if (entry.entity === 'attempt') {
-        if (entry.nextState === 'FAILED') {
-          proj.failureRate = Math.min(1.0, proj.failureRate + 0.05);
-          proj.executionHealth = proj.failureRate > 0.3 ? 'DEGRADED' : 'PRESSURE';
-        } else if (entry.nextState === 'COMPLETED') {
-          proj.failureRate = Math.max(0, proj.failureRate - 0.02);
-          if (proj.failureRate < 0.1) proj.executionHealth = 'STABLE';
-        } else if (entry.nextState === 'RETRYING') {
-          proj.retryPressure = Math.min(1.0, proj.retryPressure + 0.1);
-        } else if (entry.nextState === 'SKIPPED') {
-          proj.circuitBreakers++;
-        }
-      }
-      break;
-    }
+  proj.transitionCount++;
+  proj.lastTransition = entry.timestamp;
 
-    case 'quota': {
-      if (entry.entity === 'quota') {
-        if (entry.nextState === 'CRITICAL') proj.quotaPressure = 1.0;
-        else if (entry.nextState === 'ELEVATED') proj.quotaPressure = 0.6;
-        else if (entry.nextState === 'NORMAL') proj.quotaPressure = 0;
-      } else if (entry.entity === 'circuit_breaker') {
-        if (entry.nextState === 'RATE_LIMITED') proj.circuitBreakers++;
-        else if (entry.nextState === 'IDLE') proj.circuitBreakers = Math.max(0, proj.circuitBreakers - 1);
-      }
-      break;
-    }
-
-    case 'buffer': {
-      if (entry.nextState === 'BUFFERING' || entry.nextState === 'FLUSHING') {
-        proj.bufferPressure = Math.min(1.0, proj.bufferPressure + 0.2);
-      } else if (entry.nextState === 'EMPTY' || entry.nextState === 'DESTROYED') {
-        proj.bufferPressure = Math.max(0, proj.bufferPressure - 0.15);
-      }
-      break;
-    }
+  // executionHealth derived from governance runtime state (ledger-derivable)
+  const govState = _projections.governanceRuntime.runtimeState;
+  if (govState === 'HALTED' || govState === 'ERROR') {
+    proj.executionHealth = 'CRITICAL';
+  } else if (govState === 'DEGRADED') {
+    proj.executionHealth = 'DEGRADED';
+  } else if (govState === 'RECOVERY') {
+    proj.executionHealth = 'RECOVERING';
+  } else {
+    proj.executionHealth = 'STABLE';
   }
-
-  // Interpretation confidence degrades when signals are volatile
-  const volatility = proj.retryPressure + proj.bufferPressure + proj.quotaPressure + proj.failureRate;
-  proj.interpretationConfidence = Math.max(0.3, 1.0 - volatility * 0.3);
 }
 
 /**
@@ -514,30 +536,40 @@ function _projectAuthority(entry) {
 }
 
 /**
- * Project runtime integrity — interpretation signals for the reconciliation engine.
- * NOT constitutional convergence — the reconciliation engine independently verifies.
+ * Project runtime integrity from ledger entries.
+ * Only LEDGER_DERIVABLE signals — recomputable from immutable lineage replay.
+ *
+ * SIGNAL OWNERSHIP CONTRACT (CK):
+ *   structuralAnomalyCount, replayAnomalyProbability, cadenceGapProbability
+ *   are LEDGER_DERIVABLE — owned by lineage-worker Layer B.
+ *   executionPressure, authorityInstability are OBSERVER_RELATIVE — owned by
+ *   telemetry-workers and MUST NOT be computed here.
  */
 function _projectIntegrity() {
   const proj = _projections.integrity;
 
-  // Cadence gap probability: infer from time gap since last governance tick
-  const govProj = _projections.governanceRuntime;
-  const lastTick = govProj.lastStateTransition;
-  if (lastTick) {
-    const gap = Date.now() - lastTick;
-    proj.cadenceGapProbability = Math.min(1.0, gap / 120_000); // 2min → 1.0
+  // Structural anomalies count — from divergence log
+  proj.structuralAnomalyCount = _divergences.filter(d => d.category === 'structural').length;
+
+  // Cadence gap probability: derived from ledger timestamps (not Date.now())
+  // Look at last N consecutive governance:runtime entry pairs, find max gap
+  const govEntries = _lineageBuffer
+    .filter(e => e.domain === 'governance' && e.entity === 'runtime')
+    .slice(-20); // last 20 governance entries
+  if (govEntries.length >= 2) {
+    let maxGap = 0;
+    for (let i = 1; i < govEntries.length; i++) {
+      const gap = govEntries[i].timestamp - govEntries[i - 1].timestamp;
+      if (gap > maxGap) maxGap = gap;
+    }
+    proj.cadenceGapProbability = Math.min(1.0, maxGap / 120_000); // 2min → 1.0
+  } else {
+    proj.cadenceGapProbability = 0;
   }
 
-  // Authority instability: max oscillation across domains
-  const authValues = Object.values(_projections.authority).map(a => a.authorityOscillation);
-  proj.authorityInstability = authValues.length > 0 ? Math.max(...authValues) : 0;
-
-  // Execution pressure: composite of retry + failure
-  const healthProj = _projections.health;
-  proj.executionPressure = (healthProj.retryPressure + healthProj.failureRate) / 2;
-
-  // Structural anomalies accumulate
-  proj.structuralAnomalyCount = _divergences.filter(d => d.category === 'structural').length;
+  // Replay anomaly probability: if replayContinuity shows gap, elevated risk
+  const govProj = _projections.governanceRuntime;
+  proj.replayAnomalyProbability = govProj.replayContinuity === 'gap_detected' ? 0.7 : 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -651,6 +683,18 @@ function _persistHealth() {
 }
 
 function _persistProjectionSnapshot() {
+  // CK signal ownership validation — emit divergence if contract is violated
+  try {
+    const CK = require('./constitutional-kernel');
+    const { valid, violations } = CK.validateProjectionSnapshot(_projections, 'lineage-worker');
+    if (!valid) {
+      _recordStructuralAnomaly('PROJECTION_SIGNAL_CONTRACT_VIOLATION', {
+        violations,
+        projectionVersion: PROJECTION_VERSION,
+      });
+    }
+  } catch (_) {}
+
   lineageLedger.persistWorkerProjection(_projections, HEALTH_TTL_S * 2);
 
   // Also record as ledger entry — governance discovers via ledger reading (B1)
@@ -696,21 +740,101 @@ async function _rehydrateCursor() {
 // Core tick — the polling loop body
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Read current buffer pressure from the observability plane.
+ * Returns a value 0..1 representing how backlogged the lineage worker is.
+ *   0 = caught up (cursor at log head)
+ *   1 = max backlog (log is full and worker is far behind)
+ *
+ * @returns {number} pressure 0..1
+ */
+function _getBufferPressure() {
+  try {
+    const observability = require('../observability');
+    const logSize = observability.query.getLogSize();
+    const lag = logSize - _cursor;
+    if (lag <= 0) return 0;
+    return Math.min(1.0, lag / MAX_LOG_ENTRIES);
+  } catch (_) {
+    return 0;
+  }
+}
+
+/**
+ * Compute the adaptive poll interval based on current buffer pressure.
+ * Called every tick so the poll rate responds to changing conditions.
+ *
+ * Pressure 0.0–0.2 (healthy):  MAX_POLL_MS (5000ms) — decelerate, conserve resources
+ * Pressure 0.2–0.5 (elevated): linear between MAX_POLL_MS and MIN_POLL_MS
+ * Pressure 0.5–1.0 (severe):   MIN_POLL_MS (500ms)  — drain as fast as possible
+ *
+ * @returns {number} poll interval in milliseconds
+ */
+function _computeAdaptivePollInterval() {
+  const pressure = _getBufferPressure();
+
+  if (pressure >= PRESSURE_THRESHOLD_HIGH) {
+    // Severe backlog — drain as fast as possible
+    return MIN_POLL_MS;
+  }
+
+  if (pressure <= PRESSURE_THRESHOLD_LOW) {
+    // Healthy — can afford to slow down
+    return MAX_POLL_MS;
+  }
+
+  // Elevated: linear interpolation between MAX and MIN
+  const range = PRESSURE_THRESHOLD_HIGH - PRESSURE_THRESHOLD_LOW;
+  const t = (pressure - PRESSURE_THRESHOLD_LOW) / range;
+  const interval = MAX_POLL_MS - (t * (MAX_POLL_MS - MIN_POLL_MS));
+  return Math.round(interval);
+}
+
 async function _tick() {
   _lastTick = Date.now();
   _tickCount++;
 
+  // Recompute adaptive poll interval every tick
+  const newPollMs = _computeAdaptivePollInterval();
+
   // Layer A: ingest transitions into immutable lineage
-  // Layer B removed — projection synthesis now in telemetry-workers/
-  const { consumed, rejected } = _ingestTick();
+  const { consumed, rejected, truncated } = _ingestTick();
+
+  // If buffer was truncated (eviction happened), max out drain speed immediately
+  if (truncated && _currentPollMs > MIN_POLL_MS) {
+    _currentPollMs = MIN_POLL_MS;
+    _reschedulePollTimer(MIN_POLL_MS);
+  } else if (newPollMs !== _currentPollMs) {
+    _currentPollMs = newPollMs;
+    _reschedulePollTimer(_currentPollMs);
+  }
 
   // Persist health on every tick
   _persistHealth();
 
   if (consumed > 0 || _tickCount % 3 === 0) {
     // Uncomment for verbose debugging:
-    // console.log(`[lineage-worker] tick ${_tickCount}: consumed=${consumed} rejected=${rejected} cursor=${_cursor} entries=${_entryCount}`);
+    // console.log(`[lineage-worker] tick ${_tickCount}: consumed=${consumed} rejected=${rejected} cursor=${_cursor} pressure=${_getBufferPressure().toFixed(3)} poll=${_currentPollMs}ms`);
   }
+}
+
+/**
+ * Reschedule the poll timer with a new interval.
+ * Called when adaptive logic determines the interval should change.
+ *
+ * @param {number} intervalMs — new poll interval
+ */
+function _reschedulePollTimer(intervalMs) {
+  if (_pollTimer) {
+    clearInterval(_pollTimer);
+  }
+  _pollTimer = setInterval(() => {
+    _tick().catch(err => {
+      console.error('[lineage-worker] Tick error:', err.message);
+    });
+  }, intervalMs);
+  _pollTimer.unref();
+  // console.log(`[lineage-worker] Poll interval adjusted → ${intervalMs}ms`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -754,6 +878,7 @@ async function start(pollIntervalMs = DEFAULT_POLL_MS) {
   _running = true;
   _startedAt = Date.now();
   _lastTick = Date.now();
+  _currentPollMs = pollIntervalMs;
 
   // Initial tick to catch up on any entries produced before worker started
   await _tick();
@@ -765,15 +890,10 @@ async function start(pollIntervalMs = DEFAULT_POLL_MS) {
   }, SNAPSHOT_INTERVAL_MS);
   _snapshotTimer.unref();
 
-  // Start the polling loop
-  _pollTimer = setInterval(() => {
-    _tick().catch(err => {
-      console.error('[lineage-worker] Tick error:', err.message);
-    });
-  }, pollIntervalMs);
-  _pollTimer.unref();
+  // Start the polling loop with adaptive interval
+  _reschedulePollTimer(_currentPollMs);
 
-  console.log(`[lineage-worker] Started — cursor=${_cursor}, poll=${pollIntervalMs}ms, snapshot=${SNAPSHOT_INTERVAL_MS}ms`);
+  console.log(`[lineage-worker] Started — cursor=${_cursor}, poll=${_currentPollMs}ms, snapshot=${SNAPSHOT_INTERVAL_MS}ms`);
 }
 
 /**

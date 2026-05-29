@@ -20,6 +20,44 @@ const normalizer = require('../normalizer');
 const projection = require('../projection');
 const { getCurrentContext } = require('../context');
 
+// Lazy import to avoid circular dependency at module load time
+// CK imports observability/emitters/transition-emitter (observability → CK direction)
+// so we import CK from here (CK ← observability) with lazy resolution
+let _ck = null;
+function _getCK() {
+  if (!_ck) {
+    try {
+      _ck = require('../../governance/constitutional-kernel');
+    } catch (_) {
+      _ck = null;
+    }
+  }
+  return _ck;
+}
+
+/**
+ * Emit a structural anomaly for a membrane bypass detection.
+ * Fire-and-forget — anomaly emission never blocks transition flow.
+ */
+function _emitMembraneBypassAnomaly(entry, reason) {
+  try {
+    projection.project({
+      domain: 'governance',
+      entity: 'membrane',
+      entityId: 'bypass-detector',
+      previousState: null,
+      nextState: 'MEMBRANE_BYPASS',
+      authority: 'governance-kernel',
+      raw: {
+        bypassedAuthority: entry.authority,
+        targetDomain: entry.domain,
+        reason,
+        timestamp: Date.now(),
+      },
+    });
+  } catch (_) {}
+}
+
 /**
  * Emit a state transition into the observability plane.
  *
@@ -97,6 +135,17 @@ function transition(params) {
       );
       if (parent) {
         normalized.parentTransitionId = parent.traceId;
+      }
+    }
+
+    // Membrane authority gate — reject cross-domain mutations that bypass constitutional authority
+    // _validateMembraneAuthority expects: (authority, targetDomain)
+    const ck = _getCK();
+    if (ck && ck.validateMembraneTransition) {
+      const membraneCheck = ck.validateMembraneTransition(normalized.authority, normalized.domain, normalized);
+      if (!membraneCheck.allowed) {
+        _emitMembraneBypassAnomaly(normalized, membraneCheck.reason);
+        return;
       }
     }
 

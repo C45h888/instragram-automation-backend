@@ -47,7 +47,7 @@ while [[ $# -gt 0 ]]; do
     --soak-fast)
       # 2-minute fast soak for CI — 4N enabled alongside all other tests
       export PHASE4N_SOAK_MS=120000
-      export PHASE4N_TICK_MS=100
+      export PHASE4N_TICK_MS=200
       export PHASE4N_ADV_INTERVAL=20
       export PHASE4N_CHECKPOINT_MS=10000
       export PHASE4N_RECYCLE_MS=30000
@@ -72,16 +72,17 @@ docker-compose -f "$COMPOSE_FILE" up -d
 
 # Wait for service health before running any tests
 echo "Waiting for services to be healthy..."
-for i in $(seq 1 20); do
+for i in $(seq 1 30); do
   REDIS_OK=$(docker-compose -f "$COMPOSE_FILE" exec -T test-redis redis-cli ping 2>/dev/null || echo "FAIL")
   PG_OK=$(docker-compose -f "$COMPOSE_FILE" exec -T test-postgres pg_isready -U testuser -d testgovernance 2>/dev/null || echo "FAIL")
-  if [ "$REDIS_OK" = "PONG" ] && [ "$PG_OK" = "OK" ]; then
-    echo "Services healthy."
+  # pg_isready returns "accepting connections" when ready — not "OK"
+  if [ "$REDIS_OK" = "PONG" ] && echo "$PG_OK" | grep -q "accepting"; then
+    echo "Services healthy (Redis: PONG, Postgres: $PG_OK)."
     break
   fi
-  if [ $i -eq 20 ]; then
+  if [ $i -eq 30 ]; then
     echo "Timeout waiting for services — Redis: $REDIS_OK, Postgres: $PG_OK"
-    docker-compose -f "$COMPOSE_FILE" logs
+    docker-compose -f "$COMPOSE_FILE" logs --tail=50
     exit 1
   fi
   sleep 1

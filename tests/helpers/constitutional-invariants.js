@@ -67,11 +67,16 @@ function assertReplayConvergence(originalEntries, rebuiltEntries) {
       `  Original entries: ${originalEntries.length}, Rebuilt entries: ${rebuiltEntries.length}`
     );
   }
+  // LAW 2 EXTENSION: validate causal chain integrity on rebuilt ledger
+  // Structural convergence alone is insufficient — every parentTransitionId
+  // must resolve to an existing traceId, proving causal fidelity.
+  assertCausalChainIntegrity(rebuiltEntries);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Law 2: A replay event may never mutate prior lineage history.
 //        Timestamps must never regress within a causal chain.
+//        A parentTransitionId must reference an entry that exists in the ledger.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -105,6 +110,41 @@ function assertNoTimestampRegression(entries) {
     );
   }
   return { regressions: 0, firstViolation: null };
+}
+
+/**
+ * Assert that every parentTransitionId in the ledger resolves to an existing
+ * traceId in the same ledger. A broken causal chain is a constitutional
+ * violation — parentTransitionId is a reference to a prior transition that must
+ * exist as a real ledger entry, not a dangling pointer to fiction.
+ *
+ * @param {Array<object>} entries — ledger entries to validate
+ * @returns {{ broken: number, firstBroken: object|null }}
+ */
+function assertCausalChainIntegrity(entries) {
+  const traceIds = new Set(entries.map(e => e.traceId));
+  const broken = [];
+  for (const entry of entries) {
+    if (entry.parentTransitionId && !traceIds.has(entry.parentTransitionId)) {
+      broken.push({
+        ledgerId: entry.ledgerId,
+        entityId: entry.entityId,
+        parentTransitionId: entry.parentTransitionId,
+        traceId: entry.traceId,
+      });
+    }
+  }
+  if (broken.length > 0) {
+    throw new Error(
+      `[constitutional-invariant] LAW 2 VIOLATION: Causal chain integrity broken.\n` +
+      `  ${broken.length} entry(ies) reference non-existent parent transitions:\n` +
+      broken.slice(0, 3).map(b =>
+        `    ledgerId=${b.ledgerId} parentTransitionId=${b.parentTransitionId} → not found in ledger`
+      ).join('\n') +
+      (broken.length > 3 ? `\n    ... and ${broken.length - 3} more` : '')
+    );
+  }
+  return { broken: 0, firstBroken: null };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -227,13 +267,124 @@ function assertNoSilentCorruption(entries) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Law 7: Projection signals must conform to CK signal ownership contract.
+// Ledger-derivable signals (transitionCount, lastTransition, authorityStability,
+// etc.) belong to lineage-worker Layer B. Observer-relative signals
+// (failureRate, governancePressure, interpretationConfidence, etc.) belong
+// to telemetry-workers. The two sets never overlap.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Ledger-derivable signals allowed in lineage worker Layer B projection snapshot
+const ALLOWED_LINEAGE_SIGNALS = new Set([
+  // domain
+  'domain.acquisition.state', 'domain.acquisition.transitionCount',
+  'domain.acquisition.lastTransition', 'domain.acquisition.authorityStability',
+  'domain.publishing.state', 'domain.publishing.transitionCount',
+  'domain.publishing.lastTransition', 'domain.publishing.authorityStability',
+  'domain.scheduling.state', 'domain.scheduling.transitionCount',
+  'domain.scheduling.lastTransition', 'domain.scheduling.authorityStability',
+  'domain.scheduling.cadenceContinuity',
+  'domain.dedup.state', 'domain.dedup.transitionCount',
+  'domain.dedup.lastTransition', 'domain.dedup.authorityStability',
+  'domain.reconciliation.state', 'domain.reconciliation.transitionCount',
+  'domain.reconciliation.lastTransition', 'domain.reconciliation.authorityStability',
+  // governanceRuntime
+  'governanceRuntime.runtimeState', 'governanceRuntime.lastStateTransition',
+  'governanceRuntime.degradationSignals', 'governanceRuntime.replayContinuity',
+  'governanceRuntime.domainInstability', 'governanceRuntime.epochCount',
+  // health
+  'health.executionHealth', 'health.transitionCount', 'health.lastTransition',
+  'health.authorityStability',
+  // authority
+  'authority.acquisition.authorityCount', 'authority.acquisition.lastAuthority',
+  'authority.acquisition.authorityOscillation', 'authority.acquisition.continuityStatus',
+  'authority.publishing.authorityCount', 'authority.publishing.lastAuthority',
+  'authority.publishing.authorityOscillation', 'authority.publishing.continuityStatus',
+  'authority.scheduling.authorityCount', 'authority.scheduling.lastAuthority',
+  'authority.scheduling.authorityOscillation', 'authority.scheduling.continuityStatus',
+  // integrity
+  'integrity.structuralAnomalyCount', 'integrity.replayAnomalyProbability',
+  'integrity.cadenceGapProbability',
+  // _meta
+  '_meta.projectionVersion', '_meta.lineageVersion', '_meta.updatedAt',
+  '_meta.entryCount', '_meta.cursor',
+]);
+
+// Observer-relative signal names that must NOT appear in lineage worker snapshot
+const FORBIDDEN_IN_LINEAGE = new Set([
+  'failureRate', 'interpretationConfidence', 'governancePressure',
+  'retryPressure', 'bufferPressure', 'quotaPressure', 'circuitBreakers',
+  'executionPressure', 'authorityInstability', 'runtimeEntropy',
+  'operationalStress', 'systemicStress', 'convergenceConfidence',
+]);
+
+/**
+ * Assert that a lineage worker projection snapshot contains only
+ * ledger-derivable signals and no observer-relative signals.
+ *
+ * @param {object} snapshot — lineage worker getProjections() output
+ */
+function assertProjectionSignalContract(snapshot) {
+  const violations = [];
+  const visited = new Set();
+
+  function traverse(obj, path = '') {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+    if (visited.has(obj)) return;
+    visited.add(obj);
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === '_meta' || typeof value === 'function') continue;
+      const currentPath = path ? `${path}.${key}` : key;
+
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        traverse(value, currentPath);
+      } else if (
+        !currentPath.startsWith('_meta') &&
+        typeof value !== 'string' &&
+        typeof value !== 'boolean' &&
+        typeof value !== 'number'
+      ) {
+        continue;
+      } else if (!currentPath.startsWith('_meta') && currentPath !== '_meta') {
+        // Check if this path is in the allowed set
+        if (!ALLOWED_LINEAGE_SIGNALS.has(currentPath)) {
+          // Check if it contains a forbidden signal name
+          for (const forbidden of FORBIDDEN_IN_LINEAGE) {
+            if (currentPath.endsWith(forbidden)) {
+              violations.push(currentPath);
+              return;
+            }
+          }
+          // Unknown signals with numeric values get a pass — could be new
+          // signal type still being classified, but log it
+        }
+      }
+    }
+  }
+
+  traverse(snapshot);
+
+  if (violations.length > 0) {
+    throw new Error(
+      `[constitutional-invariant] LAW 7 VIOLATION: Projection signal contract breached.\n` +
+      `  Observer-relative signals found in lineage worker snapshot:\n` +
+      `  ${violations.join(', ')}\n` +
+      `  These signals are owned by telemetry-workers.`
+    );
+  }
+}
+
 module.exports = {
   deterministicEntryHash,
   assertReplayConvergence,
   assertNoTimestampRegression,
+  assertCausalChainIntegrity,
   assertNoCrossDomainContamination,
   assertMonotonicCursors,
   assertStaleEntriesFlagged,
   assertIdempotentReplay,
   assertNoSilentCorruption,
+  assertProjectionSignalContract,
 };

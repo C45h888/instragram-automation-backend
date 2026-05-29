@@ -1,3 +1,4 @@
+
 const lineageLedger = require('../../governance/lineage-ledger');
 
 async function getNormalizedInputWindow({ pollIntervalMs, tickCount }) {

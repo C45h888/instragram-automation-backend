@@ -416,6 +416,44 @@ function injectDuplicateCausalChain({ domain = 'acquisition', entity = 'acquisit
 }
 
 /**
+ * Inject a transition with a broken causal chain reference — parentTransitionId
+ * points to a traceId that does not exist in the ledger. This simulates a
+ * corrupted or maliciously constructed transition where the causal parent
+ * reference cannot be resolved.
+ *
+ * @param {object} opts
+ * @param {string} [opts.domain='acquisition'] - domain
+ * @param {string} [opts.entity='acquisition_intent'] - entity
+ * @param {string} [opts.entityId] - entity ID (defaults to generated)
+ * @param {string} opts.previousState - previous state
+ * @param {string} opts.nextState - next state
+ * @param {string} [opts.brokenParentTransitionId='non-existent-trace-id'] - the broken reference
+ * @returns {object} injection result
+ */
+function injectBrokenCausalChain({ domain = 'acquisition', entity = 'acquisition_intent', entityId, previousState, nextState, brokenParentTransitionId = 'non-existent-trace-id-00000000' }) {
+  const now = Date.now();
+  const lineageId = `broken-chain-${now}`;
+  const traceId = `broken-trace-${now}`;
+  const cid = `broken-corr-${now}`;
+
+  observability.transition({
+    domain,
+    entity,
+    entityId: entityId || `${domain}-broken-${now}`,
+    previousState,
+    nextState,
+    authority: 'broken-chain-injector',
+    traceId,
+    correlationId: cid,
+    causationId: null,
+    parentTransitionId: brokenParentTransitionId,
+    raw: { lineageId, brokenCausalChain: true },
+  });
+
+  return { lineageId, traceId, correlationId: cid, brokenParentTransitionId, timestamp: now };
+}
+
+/**
  * Inject two conflicting transitions from the same previous state to the same entity.
  * Tests that conflicting FSM transitions are detected as violations.
  *
@@ -464,6 +502,7 @@ module.exports = {
   injectAdversarialTransition,
   injectOutOfOrderEntry,
   injectDuplicateCausalChain,
+  injectBrokenCausalChain,
   injectConflictingTransition,
   mockSubstrates,
 };
