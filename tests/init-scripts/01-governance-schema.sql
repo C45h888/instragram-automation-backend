@@ -18,7 +18,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- Canonical lineage event log (event-sourced truth)
 CREATE TABLE IF NOT EXISTS governance_lineage (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    sequence_number BIGSERIAL NOT NULL,
+    sequence_number BIGSERIAL NOT NULL UNIQUE,
     event_type VARCHAR(128) NOT NULL,
     event_payload JSONB NOT NULL,
     domain VARCHAR(64) NOT NULL,
@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS test_markers (
 INSERT INTO governance_lineage (event_type, event_payload, domain)
 VALUES (
     'CONSTITUTIONAL_KERNEL_BOOTSTRAP',
-    '{"kernel": "instagram-governance", "version": "2.0.0", "bootstrap_time": "' || NOW() || '"}',
+    jsonb_build_object('kernel', 'instagram-governance', 'version', '2.0.0', 'bootstrap_time', NOW()),
     'KERNEL'
 ) ON CONFLICT DO NOTHING;
 

@@ -32,8 +32,8 @@ let _redis = null;
 function _getRedis() {
   if (!_redis) {
     // eslint-disable-next-line global-require
-    const lib = require('../../config/redis');
-    _redis = lib.redis || lib;
+    const { getRedisClient } = require('../../config/redis');
+    _redis = getRedisClient();
   }
   return _redis;
 }
@@ -80,7 +80,7 @@ function _parseEntry(item) {
  */
 async function getLineage(n) {
   const redis = _getRedis();
-  if (!redis || typeof redis.lrange !== 'function') return [];
+  if (!redis || redis.status !== 'ready' || typeof redis.lrange !== 'function') return [];
   try {
     let raw;
     if (typeof n === 'number' && n > 0) {
@@ -108,7 +108,7 @@ async function getLineage(n) {
  */
 async function getWorkerLineage(n) {
   const redis = _getRedis();
-  if (!redis || typeof redis.lrange !== 'function') return [];
+  if (!redis || redis.status !== 'ready' || typeof redis.lrange !== 'function') return [];
   if (typeof n !== 'number' || n <= 0) n = 500;
   try {
     const raw = await redis.lrange(REDIS_KEY_WORKER, -n, -1);
@@ -128,7 +128,7 @@ async function getWorkerLineage(n) {
  */
 async function getSize() {
   const redis = _getRedis();
-  if (!redis || typeof redis.llen !== 'function') return 0;
+  if (!redis || redis.status !== 'ready' || typeof redis.llen !== 'function') return 0;
   try {
     return await redis.llen(REDIS_KEY_WORKER);
   } catch {
@@ -266,21 +266,21 @@ async function rehydrate() {
 /**
  * Record a lineage entry produced by the lineage worker.
  * Writes to the worker's dedicated Redis key: lineage:ledger:entries.
+ * Async — must be awaited by the caller to guarantee persistence.
  *
  * @param {object} entry — canonical ledger entry from the lineage worker
- * @returns {{ id: string, ts: number }}
+ * @returns {Promise<{ id: string, ts: number }>}
  */
-function recordWorkerEntry(entry) {
+async function recordWorkerEntry(entry) {
   const redis = _getRedis();
-  if (redis && typeof redis.rpush === 'function') {
+  if (redis && redis.status === 'ready' && typeof redis.rpush === 'function') {
     try {
-      redis.rpush(REDIS_KEY_WORKER, JSON.stringify(entry));
+      await redis.rpush(REDIS_KEY_WORKER, JSON.stringify(entry));
     } catch (err) {
-      console.error('[lineage-ledger] Worker entry persist error:', err.message);
-      throw err;
+      console.warn('[lineage-ledger] Worker entry persist failed (Redis not ready):', err.message);
     }
   }
-  return { id: entry.id, ts: entry.ts };
+  return { id: entry.ledgerId || entry.id, ts: entry.timestamp || entry.ts };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

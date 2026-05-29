@@ -6,6 +6,7 @@
 #   - Phase 1 (1A..1D + 1C chaos/replay)
 #   - Phase 2 (2A..2D long-run suites)
 #   - Phase 3 (3A..3D cross-domain suites)
+#   - Phase 4 (4A..4D projection-isolation suites)
 #
 # Usage:
 #   ./tests/run-comprehensive.sh
@@ -149,6 +150,10 @@ run_phase2 --2d-only
 echo ""
 echo "=== Phase 3: Cross-Domain Constitutional Interaction ==="
 "$SCRIPT_DIR/run-phase-3.sh" $KEEP_FLAG
+
+echo ""
+echo "=== Phase 4: Projection Isolation and Relay Integrity ==="
+"$SCRIPT_DIR/run-phase-4.sh" $KEEP_FLAG
 
 echo ""
 echo "Comprehensive constitutional runtime suite complete."

@@ -92,6 +92,10 @@ class BaseProjectionWorker {
     return {};
   }
 
+  async _getNormalizedInputWindow() {
+    return this._getSnapshotSource();
+  }
+
   /**
    * Synthesize semantic meaning from raw telemetry signals.
    * Subclasses override to implement projection-specific logic.
@@ -106,6 +110,10 @@ class BaseProjectionWorker {
    */
   _synthesize(projectionState, signals) {
     return {};
+  }
+
+  _runSynthesis(projectionState, normalizedWindow) {
+    return this._synthesize(projectionState, normalizedWindow);
   }
 
   /**
@@ -160,7 +168,7 @@ class BaseProjectionWorker {
       // These cursors allow forensic reconstruction and reconciliation
       // verification of which telemetry window was consumed.
       const lineageStartCursor = this._getLineageCursor();
-      const signals = await this._getSnapshotSource();
+      const signals = await this._getNormalizedInputWindow();
       const lineageEndCursor = this._getLineageCursor();
 
       // Build source telemetry window metadata with replay cursors
@@ -175,7 +183,7 @@ class BaseProjectionWorker {
       };
 
       // Synthesize semantic projection (deterministic)
-      const payload = this._synthesize(this._projectionCache || {}, signals);
+      const payload = this._runSynthesis(this._projectionCache || {}, signals);
 
       // Compute scores
       const confidence = signals.noiseGate ? 0.0 : this._computeConfidence(signals);

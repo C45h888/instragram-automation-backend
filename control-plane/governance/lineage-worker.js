@@ -131,7 +131,18 @@ const _stateHistory = new Map(); // "domain:entity:entityId" → [{ state, ts }]
  * @returns {{ valid: boolean, reason?: string }}
  */
 function _validateTransition(transition) {
-  for (const field of REQUIRED_TRANSITION_FIELDS) {
+  // traceId/correlationId are causal-chain fields — required only for FSM state transitions.
+  // Projection workers emit SEMANTIC_PROJECTION_TRANSITION entries with worker-specific
+  // domains (runtime, health, integrity, etc.) and do not participate in FSM causal chains.
+  const isProjectionEntry =
+    transition.domain === 'projection' ||
+    (transition.raw && transition.raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION');
+
+  const requiredFields = isProjectionEntry
+    ? ['authority', 'timestamp', 'domain', 'entity']
+    : REQUIRED_TRANSITION_FIELDS;
+
+  for (const field of requiredFields) {
     if (transition[field] == null || transition[field] === '') {
       return { valid: false, reason: `missing required field: ${field}` };
     }

@@ -303,6 +303,157 @@ async function storeLineageMarker(key, value) {
   return { key, storedAt: Date.now() };
 }
 
+/**
+ * Inject an adversarial transition attempting cross-domain authority violation.
+ * Used to test membrane attack resistance.
+ *
+ * @param {object} opts
+ * @param {string} opts.membrane - 'publishing' | 'telemetry' | 'reconciliation'
+ * @param {string} opts.targetDomain - domain being attacked
+ * @param {string} opts.entityId - entity ID of target
+ * @returns {object} injection result
+ */
+function injectAdversarialTransition({ membrane, targetDomain, entityId }) {
+  const now = Date.now();
+  const authorityMap = {
+    publishing: 'publishing-membrane',
+    telemetry: 'telemetry-worker',
+    reconciliation: 'reconciliation-fsm',
+  };
+  const authority = authorityMap[membrane] || membrane;
+
+  observability.transition({
+    domain: targetDomain,
+    entity: 'fsm',
+    entityId: entityId || `${targetDomain}-hijacked-${now}`,
+    previousState: 'IDLE',
+    nextState: membrane === 'telemetry' ? 'CORRUPTED' : 'HIJACKED',
+    authority,
+    raw: {
+      adversarial: true,
+      membrane,
+      targetDomain,
+      attemptedAt: now,
+    },
+  });
+
+  return { membrane, targetDomain, authority, timestamp: now };
+}
+
+/**
+ * Inject a transition with an intentionally older timestamp to test
+ * out-of-order replay detection.
+ *
+ * @param {object} opts
+ * @param {string} [opts.domain='governance'] - domain
+ * @param {string} [opts.entity='fsm'] - entity
+ * @param {string} opts.entityId - entity ID
+ * @param {string} opts.previousState - previous state
+ * @param {string} opts.nextState - next state
+ * @param {number} [opts.backDateMs=5000] - how many ms in the past
+ * @returns {object} injection result
+ */
+function injectOutOfOrderEntry({ domain = 'governance', entity = 'fsm', entityId, previousState, nextState, backDateMs = 5000 }) {
+  const now = Date.now();
+  const staleTimestamp = now - backDateMs;
+
+  observability.transition({
+    domain,
+    entity,
+    entityId: entityId || `${domain}-stale-${now}`,
+    previousState,
+    nextState,
+    authority: 'out-of-order-injector',
+    raw: {
+      outOfOrder: true,
+      emittedAt: staleTimestamp,
+      actualAt: now,
+    },
+  });
+
+  return { entityId, staleTimestamp, now, timestamp: now };
+}
+
+/**
+ * Inject the exact same transition twice to test duplicate causal chain detection.
+ * The runtime should handle this idempotently.
+ *
+ * @param {object} opts
+ * @param {string} [opts.domain='acquisition'] - domain
+ * @param {string} [opts.entity='acquisition_intent'] - entity
+ * @param {string} opts.entityId - entity ID
+ * @param {string} opts.previousState - previous state
+ * @param {string} opts.nextState - next state
+ * @returns {object} injection result with the two emission timestamps
+ */
+function injectDuplicateCausalChain({ domain = 'acquisition', entity = 'acquisition_intent', entityId, previousState, nextState }) {
+  const now = Date.now();
+  const lineageId = `dup-chain-${now}`;
+
+  // First emission
+  observability.transition({
+    domain,
+    entity,
+    entityId,
+    previousState,
+    nextState,
+    authority: 'duplicate-chain-injector',
+    raw: { lineageId, duplicateEmission: 1 },
+  });
+
+  // Second emission — identical
+  observability.transition({
+    domain,
+    entity,
+    entityId,
+    previousState,
+    nextState,
+    authority: 'duplicate-chain-injector',
+    raw: { lineageId, duplicateEmission: 2 },
+  });
+
+  return { entityId, lineageId, timestamp: now };
+}
+
+/**
+ * Inject two conflicting transitions from the same previous state to the same entity.
+ * Tests that conflicting FSM transitions are detected as violations.
+ *
+ * @param {object} opts
+ * @param {string} [opts.domain='governance'] - domain
+ * @param {string} [opts.entity='fsm'] - entity
+ * @param {string} opts.entityId - entity ID
+ * @param {string} opts.previousState - previous state (must be same for both)
+ * @param {string} opts.nextStateA - first conflicting nextState
+ * @param {string} opts.nextStateB - second conflicting nextState
+ * @returns {object} injection result
+ */
+function injectConflictingTransition({ domain = 'governance', entity = 'fsm', entityId, previousState, nextStateA, nextStateB }) {
+  const now = Date.now();
+
+  observability.transition({
+    domain,
+    entity,
+    entityId,
+    previousState,
+    nextState: nextStateA,
+    authority: 'conflict-injector',
+    raw: { conflictAttempt: 'first', timestamp: now },
+  });
+
+  observability.transition({
+    domain,
+    entity,
+    entityId,
+    previousState,
+    nextState: nextStateB,
+    authority: 'conflict-injector',
+    raw: { conflictAttempt: 'second', timestamp: now },
+  });
+
+  return { entityId, previousState, nextStateA, nextStateB, timestamp: now };
+}
+
 module.exports = {
   injectAcquisitionIntent,
   injectLineageEvent,
@@ -310,5 +461,9 @@ module.exports = {
   injectMixedDomainWave,
   injectDedupReplay,
   storeLineageMarker,
+  injectAdversarialTransition,
+  injectOutOfOrderEntry,
+  injectDuplicateCausalChain,
+  injectConflictingTransition,
   mockSubstrates,
 };
