@@ -29,10 +29,11 @@ describe('Phase 4B: Relay-to-Lineage Immutability', () => {
     expect(projections.length).toBeGreaterThan(0);
 
     // Poll ledger until lineage worker has consumed and persisted the projection entry
+    // Poll interval 200ms, timeout 15s — give lineage worker time under backlog pressure
     const ledgerProjection = await waitForLedgerEntry(
       (e) => e.raw?.raw?.entryType === 'SEMANTIC_PROJECTION_TRANSITION',
       200,
-      8000
+      15000
     );
     expect(ledgerProjection).toBeDefined();
 

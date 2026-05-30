@@ -74,6 +74,13 @@ let _tickCount = 0;
 let _entryCount = 0;
 let _currentPollMs = DEFAULT_POLL_MS; // adaptive poll interval — changes under pressure
 
+// Tick synchronization — stop() must wait for an in-flight tick to complete
+// before persisting cursor state. Without this, an in-flight _ingestTick() can
+// advance _lastPersistedCursor AFTER stop() writes stale state to Redis, causing
+// cursor regression on the next restart (LAW 4 violation).
+let _tickSync = Promise.resolve(); // resolves when current tick finishes
+let _tickResolve = null;           // called to resolve the current tick's promise
+
 // Deterministic commit visibility — callers await until _cursor >= their entryId
 const _commitWaiters = new Map(); // entryId → { resolve, reject, timeout }
 
@@ -805,6 +812,11 @@ function _computeAdaptivePollInterval() {
 }
 
 async function _tick() {
+  // Register this tick as in-flight — stop() awaits this so it doesn't
+  // write a stale cursor while a tick is still running (LAW 4 protection).
+  _tickResolve = null;
+  _tickSync = new Promise(resolve => { _tickResolve = resolve; });
+
   _lastTick = Date.now();
   _tickCount++;
 
@@ -829,6 +841,12 @@ async function _tick() {
   if (consumed > 0 || _tickCount % 3 === 0) {
     // Uncomment for verbose debugging:
     // console.log(`[lineage-worker] tick ${_tickCount}: consumed=${consumed} rejected=${rejected} cursor=${_cursor} pressure=${_getBufferPressure().toFixed(3)} poll=${_currentPollMs}ms`);
+  }
+
+  // Signal tick completion — stop() can now safely persist cursor
+  if (_tickResolve) {
+    _tickResolve();
+    _tickResolve = null;
   }
 }
 
@@ -869,6 +887,10 @@ async function start(pollIntervalMs = DEFAULT_POLL_MS) {
   }
 
   const observability = require('../observability');
+
+  // Reset tick sync — fresh start, no in-flight tick from prior lifecycle
+  _tickSync = Promise.resolve();
+  _tickResolve = null;
 
   // Register as consumer for truncation protection
   observability.query.registerConsumer(CONSUMER_NAME);
@@ -928,7 +950,18 @@ async function stop() {
     _snapshotTimer = null;
   }
 
-  // Final persistence
+  // ── LAW 4 guarantee ──────────────────────────────────────────────────────
+  // Wait for any in-flight tick to complete before persisting state.
+  // Without this, a tick running when stop() is called can advance
+  // _lastPersistedCursor AFTER stop() writes to Redis, causing cursor
+  // regression on restart (the Phase 4M bug).
+  await _tickSync;
+  // Reset so any subsequent stop() call is also clean
+  _tickSync = Promise.resolve();
+  _tickResolve = null;
+  // ────────────────────────────────────────────────────────────────────────
+
+  // Final persistence — cursor is now guaranteed to reflect all completed work
   _persistCursor();
   _persistHealth();
   _persistProjectionSnapshot();
