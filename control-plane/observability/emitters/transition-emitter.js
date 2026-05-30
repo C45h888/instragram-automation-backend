@@ -37,25 +37,17 @@ function _getCK() {
 
 /**
  * Emit a structural anomaly for a membrane bypass detection.
+ * Routes through: CK → observability.transition() → lineage worker → ledger.
+ * Constitutional topology preserved — worker remains sole writer.
+ *
  * Fire-and-forget — anomaly emission never blocks transition flow.
+ * Errors are propagated (not swallowed) for constitutional visibility.
  */
-function _emitMembraneBypassAnomaly(entry, reason) {
-  try {
-    projection.project({
-      domain: 'governance',
-      entity: 'membrane',
-      entityId: 'bypass-detector',
-      previousState: null,
-      nextState: 'MEMBRANE_BYPASS',
-      authority: 'governance-kernel',
-      raw: {
-        bypassedAuthority: entry.authority,
-        targetDomain: entry.domain,
-        reason,
-        timestamp: Date.now(),
-      },
-    });
-  } catch (_) {}
+async function _emitMembraneBypassAnomaly(entry, reason) {
+  const ck = _getCK();
+  if (ck && ck.recordMembraneBypassAnomaly) {
+    await ck.recordMembraneBypassAnomaly(entry, reason);
+  }
 }
 
 /**

@@ -84,12 +84,16 @@ function assertReplayConvergence(originalEntries, rebuiltEntries) {
  * is >= the previous entry's timestamp.
  *
  * @param {Array<object>} entries — ledger entries in chronological order
+ * @param {Array<object>} [excludeEntries] — entries to exclude from check
+ *        (e.g. adversarial injections with intentionally backdated timestamps)
  * @returns {{ regressions: number, firstViolation: object|null }}
  */
-function assertNoTimestampRegression(entries) {
+function assertNoTimestampRegression(entries, excludeEntries = []) {
+  const excluded = new Set(excludeEntries.map(e => e.ledgerId).filter(Boolean));
   let regressions = 0;
   let firstViolation = null;
   for (let i = 1; i < entries.length; i++) {
+    if (excluded.has(entries[i].ledgerId)) continue;
     if (entries[i].timestamp < entries[i - 1].timestamp) {
       regressions++;
       if (!firstViolation) {

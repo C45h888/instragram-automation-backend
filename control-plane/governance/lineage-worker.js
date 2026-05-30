@@ -74,6 +74,9 @@ let _tickCount = 0;
 let _entryCount = 0;
 let _currentPollMs = DEFAULT_POLL_MS; // adaptive poll interval — changes under pressure
 
+// Deterministic commit visibility — callers await until _cursor >= their entryId
+const _commitWaiters = new Map(); // entryId → { resolve, reject, timeout }
+
 // In-memory lineage buffer — consumed by Layer B for projection synthesis
 const _lineageBuffer = []; // Array<ledgerEntry>
 
@@ -261,6 +264,9 @@ function _ingestTick() {
 
   // Advance read cursor and feed back to projection (A2)
   _cursor = nextCursor;
+
+  // Notify any callers waiting for commit visibility — cursor now at or past their entryId
+  _notifyCommitWaiters();
 
   // Bounded-overflow detection: if logSize > cursor and log has hit MAX_LOG cap,
   // entries were silently evicted — this violates the constitutional invariant
@@ -978,6 +984,48 @@ function getLedgerSize() {
 }
 
 /**
+ * Notify waiters whose entryId has been consumed by the worker's cursor.
+ * Called after each ingestion tick completes.
+ */
+function _notifyCommitWaiters() {
+  for (const [entryId, waiter] of _commitWaiters) {
+    // entryId is the numeric cursor position at the time the entry was emitted
+    if (_cursor >= Number(entryId)) {
+      clearTimeout(waiter.timeout);
+      _commitWaiters.delete(entryId);
+      waiter.resolve(entryId);
+    }
+  }
+}
+
+/**
+ * Wait until the worker's cursor has advanced past the given entryId.
+ * This provides deterministic constitutional visibility — the caller knows
+ * when an emitted entry has been consumed and persisted, not just when it
+ * was written to the observability plane.
+ *
+ * This eliminates timing-relative test barriers (sleep-based timeouts).
+ *
+ * @param {string|number} entryId — the ledger entry ID to wait for commit visibility
+ * @param {number} [timeoutMs=30000] — maximum wait time; throws on timeout
+ * @returns {Promise<string>} — resolves with the committed entryId
+ * @throws {Error} — if timeout is exceeded
+ */
+function waitForCommit(entryId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    // If already committed, resolve immediately
+    if (_cursor >= Number(entryId)) {
+      return resolve(entryId);
+    }
+    const timer = setTimeout(() => {
+      _commitWaiters.delete(String(entryId));
+      reject(new Error(`CommitTimeout: entry ${entryId} not committed within ${timeoutMs}ms (cursor=${_cursor})`));
+    }, timeoutMs);
+    _commitWaiters.set(String(entryId), { resolve, reject, timeout: timer });
+  });
+}
+
+/**
  * Two-stage deterministic replay from a given cursor position.
  *
  * Stage 1: Immutable lineage reconstruction — deterministic, always same result.
@@ -1022,6 +1070,7 @@ module.exports = {
   getDivergences,
   getLedgerSize,
   replay,
+  waitForCommit,
   PROJECTION_VERSION,
   LINEAGE_VERSION,
 };

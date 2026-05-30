@@ -9,10 +9,12 @@ const Redis = require('ioredis');
 
 let _client = null;
 let _closing = false;
+let _readyPromise = null; // singleton — one promise per readiness cycle
 
 /**
  * Returns the shared Redis client. Lazy-initialises on first call.
  * Retries connection up to 3 times with backoff.
+ * The client may not be 'ready' immediately — use awaitRedisReady() to wait.
  *
  * @returns {import('ioredis').Redis|null}
  */
@@ -23,9 +25,12 @@ function getRedisClient() {
   const url = process.env.REDIS_URL || 'redis://localhost:6379';
 
   if (_client) {
-    // Existing client in non-ready state — disconnect and recreate
+    if (_client.status === 'connecting' || _client.status === 'ready') {
+      return _client;
+    }
     _client.disconnect();
     _client = null;
+    _readyPromise = null;
   }
 
   console.log(`[Redis] Connecting to ${url.replace(/\/\/.*@/, '//***@')}...`);
@@ -35,14 +40,14 @@ function getRedisClient() {
     retryStrategy(times) {
       if (times > 3) {
         console.error('[Redis] Max retries exceeded — giving up');
-        return null; // stop retrying
+        return null;
       }
       const delay = Math.min(times * 1000, 3000);
       console.warn(`[Redis] Retry ${times}/3 in ${delay}ms...`);
       return delay;
     },
     lazyConnect: false,
-    enableOfflineQueue: false, // fail fast — don't queue commands while disconnected
+    enableOfflineQueue: false,
   });
 
   _client.on('error', (err) => {
@@ -58,7 +63,47 @@ function getRedisClient() {
     console.log('[Redis] Connection closed');
   });
 
+  // Remove spin-wait entirely — use awaitRedisReady() for async readiness
+  // Spin-waiting blocks the Node.js event loop and violates deterministic
+  // cadence principles that this runtime is built on.
+
   return _client;
+}
+
+/**
+ * Await Redis connection readiness. Uses a singleton promise so concurrent
+ * awaiters share a single resolution — no listener accumulation.
+ *
+ * @returns {Promise<void>}
+ * @throws {Error} if Redis connection fails
+ */
+async function awaitRedisReady() {
+  const client = getRedisClient();
+  if (!client || _closing) {
+    throw new Error('Redis unavailable — connection closing');
+  }
+  if (client.status === 'ready') return;
+
+  if (!_readyPromise) {
+    _readyPromise = new Promise((resolve, reject) => {
+      if (client.status === 'ready') {
+        _readyPromise = null;
+        return resolve();
+      }
+      const onReady = () => {
+        _readyPromise = null;
+        resolve();
+      };
+      const onError = (err) => {
+        _readyPromise = null;
+        reject(err);
+      };
+      client.once('ready', onReady);
+      client.once('error', onError);
+    });
+  }
+
+  await _readyPromise;
 }
 
 /**
@@ -94,4 +139,4 @@ async function checkRedisHealth() {
   }
 }
 
-module.exports = { getRedisClient, closeRedis, checkRedisHealth };
+module.exports = { getRedisClient, closeRedis, checkRedisHealth, awaitRedisReady };

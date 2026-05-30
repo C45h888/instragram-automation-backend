@@ -26,6 +26,23 @@
 
 const crypto = require('crypto');
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Constitutional Error Types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Thrown when lineage write authority is unavailable.
+ * Failure is a valid constitutional state — it must be exposed, not swallowed.
+ * This enables explicit failure classification in Phase 6 collapse mapping.
+ */
+class LineageUnavailableError extends Error {
+  constructor(message = 'Lineage write authority unavailable') {
+    super(message);
+    this.name = 'LineageUnavailableError';
+    this.constitutional = true;
+  }
+}
+
 // Redis client — lazy initialization
 let _redis = null;
 
@@ -273,13 +290,12 @@ async function rehydrate() {
  */
 async function recordWorkerEntry(entry) {
   const redis = _getRedis();
-  if (redis && redis.status === 'ready' && typeof redis.rpush === 'function') {
-    try {
-      await redis.rpush(REDIS_KEY_WORKER, JSON.stringify(entry));
-    } catch (err) {
-      console.warn('[lineage-ledger] Worker entry persist failed (Redis not ready):', err.message);
-    }
+  if (!redis || redis.status !== 'ready' || typeof redis.rpush !== 'function') {
+    throw new LineageUnavailableError(
+      `Redis status=${redis?.status || 'null'} — constitutional write authority absent`
+    );
   }
+  await redis.rpush(REDIS_KEY_WORKER, JSON.stringify(entry));
   return { id: entry.ledgerId || entry.id, ts: entry.timestamp || entry.ts };
 }
 
@@ -383,6 +399,7 @@ async function record(entry) {
 }
 
 module.exports = {
+  LineageUnavailableError,
   record,
   getLineage,
   getWorkerLineage,

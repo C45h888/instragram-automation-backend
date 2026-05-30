@@ -241,6 +241,47 @@ function validateProjectionSnapshot(snapshot, sourceWorker) {
   return { valid: violations.length === 0, violations };
 }
 
+/**
+ * Emit a membrane bypass anomaly into the constitutional observability plane.
+ * Routes through: CK → observability.transition() → lineage worker → ledger.
+ * Constitutional topology preserved — worker remains sole writer.
+ *
+ * @param {object} rejectedEntry — the normalized transition that was rejected
+ * @param {string} reason — CK rejection reason string
+ * @returns {Promise<{ id: string, ts: number, cursor: number }>} includes observability log cursor
+ */
+async function recordMembraneBypassAnomaly(rejectedEntry, reason) {
+  const observability = require('../observability');
+  const anomalyId = require('crypto').randomUUID();
+  const now = Date.now();
+
+  // Capture log size BEFORE emitting — this is the cursor the anomaly will occupy
+  const cursorBefore = observability.query.getLogSize();
+
+  observability.transition({
+    domain: 'governance',
+    entity: 'membrane',
+    entityId: anomalyId,
+    previousState: null,
+    nextState: 'MEMBRANE_BYPASS',
+    authority: 'governance-kernel',
+    raw: {
+      entryType: 'divergence',
+      divergenceCategory: 'membrane_authority_violation',
+      bypassedAuthority: rejectedEntry.authority,
+      targetDomain: rejectedEntry.domain,
+      reason,
+      rejectedTraceId: rejectedEntry.traceId,
+      rejectedCorrelationId: rejectedEntry.correlationId,
+      projectionVersion: '1.0.0',
+      lineageVersion: '1.0.0',
+    },
+  });
+
+  // cursorBefore + 1 is the index the anomaly was written to
+  return { id: anomalyId, ts: now, cursor: cursorBefore + 1 };
+}
+
 // Events NOT in this map are handled as global constitutional events.
 const DOMAIN_EVENT_MAP = {
   // Acquisition domain — lifecycle only (engagement signals routed to engagement domain)
@@ -645,13 +686,6 @@ function registerDomain(fsm) {
     }
   }
 
-  // Wire reconciliation bridge when reconciliation FSM registers.
-  // The bridge subscriber catches RECONCILIATION_CYCLE_STARTED actions,
-  // calls the dumb engine substrate, verifies hash, and dispatches results back.
-  if (fsm.name === 'reconciliation') {
-    _wireReconciliationBridge();
-  }
-
   console.log(`[constitutional-kernel] Registered domain: ${fsm.name}`);
 }
 
@@ -905,57 +939,73 @@ function _buildSubstrateQueries() {
 }
 
 /**
- * Wire the reconciliation bridge subscriber.
- * Called when the reconciliation FSM is registered.
- * Subscribes to RECONCILIATION_CYCLE_STARTED actions emitted by the FSM.
+ * Trigger a complete reconciliation cycle.
  *
- * The subscriber:
- *   1. Calls the dumb engine.compare() (async mechanical work)
- *   2. Independently verifies constitutional hash (HSM authority)
- *   3. Dispatches RECONCILIATION_RESULTS_RECEIVED back to the FSM
+ * Owns the full lifecycle:
+ *   1. Dispatch RECONCILIATION_TICK → FSM transitions IDLE → RECONCILING
+ *      (FSM validates via ctx.validate, emits CYCLE_STARTED action)
+ *   2. Call the dumb engine.compare() directly (CK-owned async mechanical work)
+ *   3. Dispatch RECONCILIATION_RESULTS_RECEIVED → FSM → CONVERGENT/DRIFTED
+ *      (FSM validates via ctx.validate, evaluates counters)
+ *   4. Dispatch RECONCILIATION_CYCLE_COMPLETE → FSM → IDLE
+ *      (FSM validates via ctx.validate, signals HSM if thresholds exceeded)
  *
- * The FSM then governs lifecycle interpretation, counter management,
- * escalation evaluation, and HSM signaling (via dispatchGlobal).
+ * Constitutional invariant:
+ *   The cycle ALWAYS completes. Even on engine failure, a CYCLE_COMPLETE
+ *   is dispatched so the FSM returns to IDLE and subsequent cycles can proceed.
+ *   The FSM governs lifecycle interpretation; the CK performs mechanical work.
+ *   No fire-and-forget subscriber — the CK directly awaits the engine.
+ *
+ * @returns {Promise<void>}
  */
-function _wireReconciliationBridge() {
-  subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
-    try {
-      const engine = require('./reconciliation-engine');
-      const substrates = _buildSubstrateQueries();
-      const results = await engine.compare({ fsms: _domains, substrates, lineageLedger });
-
-      // HSM independently verifies constitutional hash — this is constitutional identity,
-      // not domain concern. The FSM receives hashMismatch as a signal but does not act on it.
-      const currentHash = await lineageLedger.computeHash();
-      const hashMismatch = results.hash !== currentHash;
-      if (hashMismatch) {
-        console.error('[constitutional-kernel] Constitutional HASH MISMATCH during reconciliation');
-        _emitGovernanceTransition(_currentState, _currentState, {
-          intent: 'RECONCILIATION_HASH_MISMATCH',
-          reason: 'Constitutional identity divergence detected during reconciliation cycle',
-        });
-      }
-
-      dispatch({
-        type: 'RECONCILIATION_RESULTS_RECEIVED',
-        observations: results.observations,
-        worstSeverity: results.worstSeverity,
-        hash: results.hash,
-        hashMismatch,
-      });
-    } catch (err) {
-      console.error('[constitutional-kernel] Reconciliation bridge error:', err.message);
-    }
-  });
-}
-
-/**
- * Trigger a reconciliation cycle externally.
- * Called by the orchestrator on a 60s timer, independent of maintenance cadence.
- * Now routes through DOMAIN_EVENT_MAP → reconciliation FSM.
- */
-function triggerReconciliation() {
+async function triggerReconciliation() {
+  // Phase 1: Initiate the cycle — FSM transitions IDLE → RECONCILING
   dispatch({ type: 'RECONCILIATION_TICK' });
+
+  // Phase 2: Run the engine comparison (CK-owned async mechanical work)
+  let observations = [];
+  let worstSeverity = 0;
+  let hash = '';
+  let hashMismatch = false;
+
+  try {
+    const engine = require('./reconciliation-engine');
+    const substrates = _buildSubstrateQueries();
+    const results = await engine.compare({ fsms: _domains, substrates, lineageLedger });
+
+    observations = results.observations;
+    worstSeverity = results.worstSeverity;
+    hash = results.hash;
+
+    // HSM independently verifies constitutional hash
+    const currentHash = await lineageLedger.computeHash();
+    hashMismatch = results.hash !== currentHash;
+    if (hashMismatch) {
+      console.error('[constitutional-kernel] Constitutional HASH MISMATCH during reconciliation');
+      _emitGovernanceTransition(_currentState, _currentState, {
+        intent: 'RECONCILIATION_HASH_MISMATCH',
+        reason: 'Constitutional identity divergence detected during reconciliation cycle',
+      });
+    }
+  } catch (err) {
+    console.error('[constitutional-kernel] Reconciliation engine error:', err.message);
+    // Cycle still completes — engine failure is a signal, not a blockage
+  }
+
+  // Phase 3: Route results through FSM — transitions to CONVERGENT or DRIFTED
+  // FSM validates via ctx.validate, evaluates counters, signals HSM if needed
+  dispatch({
+    type: 'RECONCILIATION_RESULTS_RECEIVED',
+    observations,
+    worstSeverity,
+    hash,
+    hashMismatch,
+  });
+
+  // Phase 4: Always complete the cycle — FSM returns to IDLE
+  // FSM validates via ctx.validate(CONVERGENT/DRIFTED, IDLE)
+  // FSM buildActions: evaluates escalation thresholds, signals HSM via ctx.dispatchGlobal
+  dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1094,6 +1144,7 @@ module.exports = {
   triggerReconciliation,
   validateMembraneTransition: _validateMembraneAuthority,
   validateProjectionSnapshot,
+  recordMembraneBypassAnomaly,
   SIGNAL_CLASS,
   SIGNAL_OWNERSHIP_MAP,
 };
