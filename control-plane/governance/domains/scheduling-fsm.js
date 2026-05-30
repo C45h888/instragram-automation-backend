@@ -119,6 +119,7 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
+let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
 
 // ── Cadence tracking — updated on every CADENCE_TICK ────────────────────────
 let _lastCadenceTickAt = null;
@@ -179,6 +180,7 @@ function dispatch(event, ctx) {
   }
 
   _localState = target;
+  _lastTransitionedAt = Date.now();
 
   // Emit observability transition for domain FSM state change
   try {
@@ -264,6 +266,10 @@ function getDomainList() {
   return [...DOMAIN_LIST];
 }
 
+function getLastTransitionedAt() {
+  return _lastTransitionedAt;
+}
+
 module.exports = {
   name: 'scheduling',
   dispatch,
@@ -272,5 +278,6 @@ module.exports = {
   exportState,
   getHealth,
   getLastCadenceTick,
+  getLastTransitionedAt,
   getDomainList,
 };

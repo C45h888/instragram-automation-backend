@@ -187,6 +187,7 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
+let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
@@ -230,6 +231,7 @@ function dispatch(event, ctx) {
   }
 
   _localState = target;
+  _lastTransitionedAt = Date.now();
 
   // Emit observability transition for domain FSM state change
   try {
@@ -360,6 +362,10 @@ function getHealth() {
   return { ok: _localState !== 'EMITTING', signals: { state: _localState } };
 }
 
+function getLastTransitionedAt() {
+  return _lastTransitionedAt;
+}
+
 module.exports = {
   name: 'publishing',
   dispatch,
@@ -367,5 +373,6 @@ module.exports = {
   getState,
   exportState,
   getHealth,
+  getLastTransitionedAt,
   computeMessagingWindow,
 };

@@ -211,6 +211,7 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
+let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
 
 // ── Execution state tracking ─────────────────────────────────────────────────
 const _executionRetries = new Map();    // intentId → retry count
@@ -268,6 +269,7 @@ function dispatch(event, ctx) {
 
   // 4. THEN materialize state
   _localState = target;
+  _lastTransitionedAt = Date.now();
 
   // 6. Emit observability transition for domain FSM state change
   // Fire-and-forget — observability failures never affect domain FSM behavior
@@ -342,6 +344,10 @@ function getHealth() {
 
 // ── Reconciliation engine getters ───────────────────────────────────────────
 
+function getLastTransitionedAt() {
+  return _lastTransitionedAt;
+}
+
 function getExecutionRetries() {
   return new Map(_executionRetries);
 }
@@ -353,5 +359,6 @@ module.exports = {
   getState,
   exportState,
   getHealth,
+  getLastTransitionedAt,
   getExecutionRetries,
 };

@@ -227,6 +227,7 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
+let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
 
 // ── Persistent counters (survive across cycles, rehydrated from lineage) ─────
 let _driftCounters = { substrate: 0, replay: 0 };
@@ -299,6 +300,7 @@ function dispatch(event, ctx) {
 
   // 4. Materialize state
   _localState = target;
+  _lastTransitionedAt = Date.now();
 
   // 5. Emit observability transition for domain FSM state change
   // Fire-and-forget — observability failures never affect domain FSM behavior.
@@ -438,6 +440,10 @@ function getEscalationState() {
   };
 }
 
+function getLastTransitionedAt() {
+  return _lastTransitionedAt;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 7. Internal helpers
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -457,6 +463,7 @@ module.exports = {
   getDriftCounters,
   getEpochCount,
   getEscalationState,
+  getLastTransitionedAt,
   ESCALATION_THRESHOLD,
   RECOVERY_CONVERGENCE_MIN,
 };

@@ -342,6 +342,7 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
+let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
 
 // ── Circuit breaker state: accountId → { until, cooldownMs, openedAt, reopenedAt } ──
 const _circuitBreakers = new Map();
@@ -404,6 +405,7 @@ function dispatch(event, ctx) {
 
   // 4. Materialize state
   _localState = target;
+  _lastTransitionedAt = Date.now();
 
   // 5. Emit observability transition for domain FSM state change
   // Fire-and-forget — observability failures never affect domain FSM behavior
@@ -591,6 +593,10 @@ function getEngagementSnapshot() {
   };
 }
 
+function getLastTransitionedAt() {
+  return _lastTransitionedAt;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Module export
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -611,4 +617,5 @@ module.exports = {
   getAuthStrikeMap,
   getExecutionRetries,
   getEngagementSnapshot,
+  getLastTransitionedAt,
 };

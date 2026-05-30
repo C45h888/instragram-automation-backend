@@ -195,6 +195,7 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
+let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
 
 // ── Batch-level counters (reset on DEDUP_BATCH_BEGIN) ────────────────────────
 let _batchMarks = 0;
@@ -258,6 +259,7 @@ function dispatch(event, ctx) {
 
   // 4. Materialize state
   _localState = target;
+  _lastTransitionedAt = Date.now();
 
   // 5. Emit observability transition for domain FSM state change
   // Fire-and-forget — observability failures never affect domain FSM behavior.
@@ -364,6 +366,10 @@ function getDegradationCount() {
   return _degradationCount;
 }
 
+function getLastTransitionedAt() {
+  return _lastTransitionedAt;
+}
+
 module.exports = {
   name: 'dedup',
   dispatch,
@@ -374,4 +380,5 @@ module.exports = {
   getBatchState,
   getReplayResources,
   getDegradationCount,
+  getLastTransitionedAt,
 };

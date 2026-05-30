@@ -33,6 +33,7 @@ const DRIFT_SIGNAL = {
   MISSING_SUBSTRATE_INTENT: 'missing_substrate_intent',
   ORPHANED_CIRCUIT_BREAKER: 'orphaned_circuit_breaker',
   STALE_MATERIALIZED_STATE: 'stale_materialized_state',
+  PROPAGATION_WINDOW: 'propagation_window',
   GHOST_EMISSION: 'ghost_emission',
   CADENCE_GAP: 'cadence_gap',
   LINEAGE_POSITION_MISMATCH: 'lineage_position_mismatch',
@@ -76,6 +77,7 @@ function _classifySignal(signal) {
     case DRIFT_SIGNAL.ENGAGEMENT_STALE_STATE:
       return DRIFT_SEVERITY.REPLAY;
     case DRIFT_SIGNAL.CADENCE_GAP:
+    case DRIFT_SIGNAL.PROPAGATION_WINDOW:
       return DRIFT_SEVERITY.TRANSIENT;
     default:
       return DRIFT_SEVERITY.SUBSTRATE;
@@ -104,10 +106,18 @@ function _reconcileAcquisition(fsm, substrates, domainLineage) {
     ? domainLineage[domainLineage.length - 1]
     : null;
   if (lastDomainEntry && lastDomainEntry.nextState && materializedState !== lastDomainEntry.nextState) {
-    driftSignals.push({
-      signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
-      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
-    });
+    const fsmTransitionedAt = fsm.getLastTransitionedAt ? fsm.getLastTransitionedAt() : null;
+    if (fsmTransitionedAt && fsmTransitionedAt > lastDomainEntry.timestamp) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.PROPAGATION_WINDOW,
+        detail: `FSM state '${materializedState}' transitioned at ${new Date(fsmTransitionedAt).toISOString()} — last lineage entry from ${new Date(lastDomainEntry.timestamp).toISOString()}, propagation in flight`,
+      });
+    } else {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
+        detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
+      });
+    }
   }
 
   // ── Orphaned circuit breakers ─────────────────────────────────────────
@@ -185,10 +195,18 @@ function _reconcilePublishing(fsm, substrates, domainLineage) {
     ? domainLineage[domainLineage.length - 1]
     : null;
   if (lastDomainEntry && lastDomainEntry.nextState && materializedState !== lastDomainEntry.nextState) {
-    driftSignals.push({
-      signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
-      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
-    });
+    const fsmTransitionedAt = fsm.getLastTransitionedAt ? fsm.getLastTransitionedAt() : null;
+    if (fsmTransitionedAt && fsmTransitionedAt > lastDomainEntry.timestamp) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.PROPAGATION_WINDOW,
+        detail: `FSM state '${materializedState}' transitioned at ${new Date(fsmTransitionedAt).toISOString()} — last lineage entry from ${new Date(lastDomainEntry.timestamp).toISOString()}, propagation in flight`,
+      });
+    } else {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
+        detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
+      });
+    }
   }
 
   // ── Ghost emissions — FSM in EMITTING but buffer is empty ────────────
@@ -232,10 +250,18 @@ function _reconcileScheduling(fsm, substrates, domainLineage, reconWindowStart) 
     ? domainLineage[domainLineage.length - 1]
     : null;
   if (lastDomainEntry && lastDomainEntry.nextState && materializedState !== lastDomainEntry.nextState) {
-    driftSignals.push({
-      signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
-      detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
-    });
+    const fsmTransitionedAt = fsm.getLastTransitionedAt ? fsm.getLastTransitionedAt() : null;
+    if (fsmTransitionedAt && fsmTransitionedAt > lastDomainEntry.timestamp) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.PROPAGATION_WINDOW,
+        detail: `FSM state '${materializedState}' transitioned at ${new Date(fsmTransitionedAt).toISOString()} — last lineage entry from ${new Date(lastDomainEntry.timestamp).toISOString()}, propagation in flight`,
+      });
+    } else {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
+        detail: `FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
+      });
+    }
   }
 
   // ── Cadence gap — last CADENCE_TICK before reconciliation window boundary ─
@@ -355,10 +381,18 @@ function _reconcileDedup(fsm, substrates, domainLineage) {
       ? domainLineage[domainLineage.length - 1]
       : null;
     if (lastDomainEntry && lastDomainEntry.nextState && materializedState !== lastDomainEntry.nextState) {
-      driftSignals.push({
-        signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
-        detail: `Dedup FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
-      });
+      const fsmTransitionedAt = fsm.getLastTransitionedAt ? fsm.getLastTransitionedAt() : null;
+      if (fsmTransitionedAt && fsmTransitionedAt > lastDomainEntry.timestamp) {
+        driftSignals.push({
+          signal: DRIFT_SIGNAL.PROPAGATION_WINDOW,
+          detail: `Dedup FSM state '${materializedState}' transitioned at ${new Date(fsmTransitionedAt).toISOString()} — last lineage entry from ${new Date(lastDomainEntry.timestamp).toISOString()}, propagation in flight`,
+        });
+      } else {
+        driftSignals.push({
+          signal: DRIFT_SIGNAL.STALE_MATERIALIZED_STATE,
+          detail: `Dedup FSM state '${materializedState}' diverges from last lineage state '${lastDomainEntry.nextState}' (entity: ${lastDomainEntry.entity})`,
+        });
+      }
     }
 
     // FSM believes batch is ACTIVE but substrate has no in-flight keys
@@ -417,10 +451,18 @@ function _reconcileEngagement(fsm, substrates, domainLineage) {
   // ── Stale materialized state vs lineage ───────────────────────────────
   const lastDomainEntry = domainLineage.length > 0 ? domainLineage[domainLineage.length - 1] : null;
   if (lastDomainEntry && lastDomainEntry.nextState && fsmState !== lastDomainEntry.nextState) {
-    driftSignals.push({
-      signal: DRIFT_SIGNAL.ENGAGEMENT_STALE_STATE,
-      detail: `Engagement FSM state '${fsmState}' diverges from last lineage state '${lastDomainEntry.nextState}'`,
-    });
+    const fsmTransitionedAt = fsm.getLastTransitionedAt ? fsm.getLastTransitionedAt() : null;
+    if (fsmTransitionedAt && fsmTransitionedAt > lastDomainEntry.timestamp) {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.PROPAGATION_WINDOW,
+        detail: `Engagement FSM state '${fsmState}' transitioned at ${new Date(fsmTransitionedAt).toISOString()} — last lineage entry from ${new Date(lastDomainEntry.timestamp).toISOString()}, propagation in flight`,
+      });
+    } else {
+      driftSignals.push({
+        signal: DRIFT_SIGNAL.ENGAGEMENT_STALE_STATE,
+        detail: `Engagement FSM state '${fsmState}' diverges from last lineage state '${lastDomainEntry.nextState}'`,
+      });
+    }
   }
 
   // ── Orphaned circuit breakers (FSM has active, lineage has no OPEN entry) ─
