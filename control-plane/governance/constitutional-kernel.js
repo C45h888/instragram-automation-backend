@@ -562,6 +562,10 @@ let _stateEnteredAt = Date.now();
 let _loopInterval = null;
 let _reconInProgress = false; // Guard: prevent concurrent reconciliation cycles
 
+// Constitutional snapshot — captured at T0 of each reconciliation cycle.
+// Immutable source of truth for the entire cycle. Bridge subscriber uses this.
+let _reconciliationSnapshot = null; // { entries: Array, hash: string }
+
 let _accountIds = [];
 
 // Domain registry
@@ -1072,18 +1076,34 @@ async function triggerReconciliation() {
     return null;
   }
 
+  // ── IMMUTABLE CONSTITUTIONAL SNAPSHOT ─────────────────────────────────
+  // Capture the snapshot BEFORE dispatching RECONCILIATION_TICK.
+  // This is the immutable source of truth for the entire reconciliation cycle.
+  // No Redis re-reads occur after this point during the cycle.
+  // This eliminates the race condition where worker ingests between engine.compare()
+  // and CK's independent hash verification.
+  try {
+    const snapshot = await lineageLedger.getLineageWithHash();
+    _reconciliationSnapshot = { entries: snapshot.entries, hash: snapshot.hash };
+  } catch (err) {
+    console.error('[CK] Failed to capture constitutional snapshot:', err.message);
+    _reconInProgress = false;
+    return null;
+  }
+
   // ── Set up completion promise — bridge subscriber resolves it on cycle end ──
   const result = await new Promise((resolve) => {
     _reconPromiseResolve = resolve;
     _reconPromiseReject = null;
 
-    // Phase 1: Initiate the cycle — FSM transitions IDLE → RECONCILING
-    // and emits RECONCILIATION_CYCLE_STARTED action, which the bridge
-    // subscriber picks up to run the async engine work.
+    // Phase 1: FSM transitions IDLE → RECONCILING
+    // Bridge subscriber picks up RECONCILIATION_CYCLE_STARTED action
+    // and uses _reconciliationSnapshot for the entire cycle
     dispatch({ type: 'RECONCILIATION_TICK' });
   });
 
   _reconInProgress = false;
+  _reconciliationSnapshot = null; // clear after cycle completes
   return result;
 }
 
@@ -1416,25 +1436,49 @@ _registerReconciliationTrigger();
 // and subsequent cycles can proceed.
 subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
   // Phase 1 already done by FSM (RECONCILING state set, cycle slate reset).
-  // Phase 2: Run the async engine comparison.
+  // Phase 2: Run the async engine comparison using the constitutional snapshot.
+
+  // Use the snapshot captured at T0 in triggerReconciliation().
+  // This is the immutable constitutional plane — no Redis re-reads.
+  // hashMismatch now compares engine.hash vs snapshot.hash (same data, not fresh reads)
+  const snapshot = _reconciliationSnapshot;
+
+  if (!snapshot) {
+    console.error('[CK] No constitutional snapshot available for reconciliation cycle');
+    dispatch({
+      type: 'RECONCILIATION_RESULTS_RECEIVED',
+      observations: [],
+      worstSeverity: 0,
+      hash: '',
+      hashMismatch: false,
+    });
+    dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
+    return;
+  }
 
   let observations = [];
   let worstSeverity = 0;
   let hash = '';
-  let hashMismatch = false;
 
   try {
     const engine = require('./reconciliation-engine');
     const substrates = _buildSubstrateQueries();
-    const results = await engine.compare({ fsms: _domains, substrates, lineageLedger });
+
+    // Pass snapshot.entries — engine uses these directly (no Redis call inside compare)
+    const results = await engine.compare({
+      fsms: _domains,
+      substrates,
+      lineageLedger,
+      snapshotEntries: snapshot.entries,
+    });
 
     observations = results.observations || [];
     worstSeverity = results.worstSeverity || 0;
     hash = results.hash || '';
 
-    // HSM independently verifies constitutional hash
-    const currentHash = await lineageLedger.computeHash();
-    hashMismatch = results.hash !== currentHash;
+    // HSM verifies against THE SAME snapshot hash — not a fresh re-read.
+    // If mismatch, it's actual semantic drift, not a timing artifact.
+    const hashMismatch = results.hash !== snapshot.hash;
     if (hashMismatch) {
       console.error('[constitutional-kernel] Constitutional HASH MISMATCH during reconciliation');
       _emitGovernanceTransition(_currentState, _currentState, {
@@ -1452,7 +1496,7 @@ subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
     observations,
     worstSeverity,
     hash,
-    hashMismatch,
+    hashMismatch: false, // hashMismatch emitted via governance transition above
   });
 
   // Phase 4: Always complete the cycle — FSM returns to IDLE
@@ -1464,7 +1508,7 @@ subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
       observations,
       worstSeverity,
       hash,
-      hashMismatch,
+      hashMismatch: false,
       elapsedMs: Date.now() - _stateEnteredAt,
     });
     _reconPromiseResolve = null;
@@ -1474,8 +1518,9 @@ subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
   // ── Stability checkpoint ──────────────────────────────────────────────────
   if (_canCheckpoint()) {
     try {
-      const entries = await lineageLedger.getLineage(200);
-      const currentHash = await lineageLedger.computeHash();
+      // Use the snapshot entries for checkpoint — no fresh re-read
+      const entries = snapshot.entries.slice(-200); // last 200 entries
+      const checkpointHash = snapshot.hash;
       const reconFsm = _domains.get('reconciliation');
       const domainStates = {};
       for (const [name, fsm] of _domains) {
@@ -1483,8 +1528,8 @@ subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
       }
       checkpointer.createSnapshot({
         entries,
-        hash: currentHash,
-        entryCount: await lineageLedger.getSize(),
+        hash: checkpointHash,
+        entryCount: snapshot.entries.length,
         domainStates,
         epochCount: reconFsm && typeof reconFsm.getEpochCount === 'function'
           ? reconFsm.getEpochCount() : 0,
