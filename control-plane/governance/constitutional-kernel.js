@@ -581,6 +581,13 @@ let _legacyActionSubscriber = null;
 let _reconPromiseResolve = null;
 let _reconPromiseReject = null;
 
+// ── Event-driven reconciliation trigger — anti-thrash guard ──────────────
+// Prevents cascading reconciliation cycles when multiple domains degrade
+// simultaneously. The subscriber fires on every LOG_DEGRADED, but only the
+// first one within MIN_RECON_INTERVAL_MS actually triggers reconciliation.
+let _lastReconTriggeredAt = 0;
+const MIN_RECON_INTERVAL_MS = 30_000;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 5. Action dispatcher
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -916,6 +923,58 @@ function stopLoop() {
     _loopInterval = null;
     console.log('[constitutional-kernel] Watchdog loop stopped');
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 10b. Event-Driven Reconciliation Trigger — degradation subscriber
+//
+// Replaces the blind timer-based reconciliation trigger. CK subscribes to
+// its own LOG_DEGRADED actions. When any domain FSM or CK global transition
+// produces a degradation signal, CK triggers a reconciliation cycle to verify
+// all three planes (FSM ↔ lineage ↔ substrate) are consistent.
+//
+// Exclusion: substate RECONCILING is the OUTPUT of a reconciliation cycle.
+// Triggering from it would create a feedback loop.
+//
+// Anti-thrash: MIN_RECON_INTERVAL_MS (30s) prevents cascading triggers when
+// multiple domains degrade simultaneously.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Register the event-driven reconciliation trigger.
+ * Called once at module init. Subscribes to LOG_DEGRADED actions and
+ * triggers reconciliation when degradation is detected.
+ *
+ * Deterministic trigger criteria:
+ *   1. action.substate !== 'RECONCILING'     — prevent feedback loop
+ *   2. reconciliation FSM is IDLE             — FSM ready for new cycle
+ *   3. !_reconInProgress                      — no concurrent cycle
+ *   4. ≥ MIN_RECON_INTERVAL_MS since last     — anti-thrash
+ */
+function _registerReconciliationTrigger() {
+  subscribeAction('LOG_DEGRADED', (action) => {
+    // ── Exclusion: RECONCILING substate is reconciliation OUTPUT → loop prevention ─
+    if (action.substate === 'RECONCILING') return;
+
+    // ── FSM gate: only trigger when reconciliation FSM is IDLE ───────────────
+    const reconFsm = _domains.get('reconciliation');
+    if (!reconFsm || reconFsm.getState() !== 'IDLE') return;
+
+    // ── Reentrancy gate: no concurrent reconciliation cycle ──────────────────
+    if (_reconInProgress) return;
+
+    // ── Anti-thrash gate: minimum interval between triggers ──────────────────
+    const now = Date.now();
+    if (now - _lastReconTriggeredAt < MIN_RECON_INTERVAL_MS) return;
+    _lastReconTriggeredAt = now;
+
+    // ── Fire-and-forget: do not block the action dispatch chain ──────────────
+    triggerReconciliation().catch(err =>
+      console.error('[constitutional-kernel] Degradation-triggered reconciliation failed:', err.message)
+    );
+  });
+
+  console.log('[constitutional-kernel] Event-driven reconciliation trigger registered');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1334,6 +1393,11 @@ function clearCircuitBreaker(accountId) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 15. Module initialization
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// Register the event-driven reconciliation trigger at module init.
+// This must happen before any domains are registered so the subscriber
+// is active when domain FSMs begin emitting LOG_DEGRADED actions.
+_registerReconciliationTrigger();
 
 // Rehydration is called explicitly by the orchestrator AFTER the lineage worker
 // has started. This ensures CK reads from a ledger populated by the worker

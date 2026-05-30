@@ -220,9 +220,10 @@ function _reconcilePublishing(fsm, substrates, domainLineage) {
  * @param {object} fsm — scheduling FSM instance
  * @param {object} substrates — substrate query interface
  * @param {Array<object>} domainLineage — recent lineage entries for this domain
+ * @param {number} reconWindowStart — timestamp of last RECONCILIATION_TICK (deterministic boundary)
  * @returns {{ driftSignals: Array<{ signal: string, detail: string }>, materializedState: string }}
  */
-function _reconcileScheduling(fsm, substrates, domainLineage) {
+function _reconcileScheduling(fsm, substrates, domainLineage, reconWindowStart) {
   const driftSignals = [];
   const materializedState = fsm.getState ? fsm.getState() : 'unknown';
 
@@ -237,17 +238,19 @@ function _reconcileScheduling(fsm, substrates, domainLineage) {
     });
   }
 
-  // ── Cadence gap — last CADENCE_TICK too old ──────────────────────────
+  // ── Cadence gap — last CADENCE_TICK before reconciliation window boundary ─
+  // Deterministic: gap is relative to the RECONCILIATION_TICK boundary (a lineage
+  // event), not wall-clock Date.now(). This is replay-safe and independent of
+  // when the reconciliation cycle actually runs.
   const lastCadenceTick = typeof fsm.getLastCadenceTick === 'function'
     ? fsm.getLastCadenceTick()
     : null;
-  if (lastCadenceTick) {
-    const gapMs = Date.now() - lastCadenceTick;
-    const maxGapMs = 120_000; // 2 minute max gap before signal
-    if (gapMs > maxGapMs) {
+  if (lastCadenceTick && reconWindowStart && reconWindowStart > 0) {
+    if (lastCadenceTick < reconWindowStart) {
+      const gapMs = reconWindowStart - lastCadenceTick;
       driftSignals.push({
         signal: DRIFT_SIGNAL.CADENCE_GAP,
-        detail: `Last CADENCE_TICK was ${Math.round(gapMs / 1000)}s ago (threshold: ${maxGapMs / 1000}s)`,
+        detail: `Last CADENCE_TICK was ${Math.round(gapMs / 1000)}s before reconciliation window start — scheduling cadence may have stalled`,
       });
     }
   }
@@ -435,21 +438,19 @@ function _reconcileEngagement(fsm, substrates, domainLineage) {
     }
 
     // ── Circuit breaker collision: re-tripped before prior cooldown expired ─
+    // Collision = 2+ OPEN events within the same reconciliation window.
+    // The window is bounded by the last RECONCILIATION_TICK (deterministic
+    // governance boundary), not by arbitrary wall-clock comparison.
     const priorLineage = domainLineage.filter(e =>
       e.entity === 'circuit_breaker' && e.entityId === accountId
     );
     if (priorLineage.length >= 2) {
-      // Check if this breaker has multiple OPEN events before its until time
       const priorOpens = priorLineage.filter(e => e.nextState === 'OPEN');
       if (priorOpens.length > 1) {
-        const oldestOpen = priorOpens[0];
-        const newestOpen = priorOpens[priorOpens.length - 1];
-        if (oldestOpen.ts && newestOpen.ts && (newestOpen.ts - oldestOpen.ts) < 300000) {
-          driftSignals.push({
-            signal: DRIFT_SIGNAL.CIRCUIT_BREAKER_COLLISION,
-            detail: `Circuit breaker for ${accountId} opened multiple times within 5 minutes — possible cooldown evasion`,
-          });
-        }
+        driftSignals.push({
+          signal: DRIFT_SIGNAL.CIRCUIT_BREAKER_COLLISION,
+          detail: `Circuit breaker for ${accountId} opened ${priorOpens.length} times within reconciliation window — possible cooldown evasion`,
+        });
       }
     }
   }
@@ -490,11 +491,11 @@ function _reconcileEngagement(fsm, substrates, domainLineage) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const DOMAIN_RECONCILERS = {
-  acquisition: _reconcileAcquisition,
-  publishing: _reconcilePublishing,
+  acquisition: (fsm, substrates, domainLineage, reconWindowStart) => _reconcileAcquisition(fsm, substrates, domainLineage),
+  publishing: (fsm, substrates, domainLineage, reconWindowStart) => _reconcilePublishing(fsm, substrates, domainLineage),
   scheduling: _reconcileScheduling,
-  dedup: (fsm, substrates, domainLineage) => _reconcileDedup(fsm, substrates, domainLineage),
-  engagement: (fsm, substrates, domainLineage) => _reconcileEngagement(fsm, substrates, domainLineage),
+  dedup: (fsm, substrates, domainLineage, reconWindowStart) => _reconcileDedup(fsm, substrates, domainLineage),
+  engagement: (fsm, substrates, domainLineage, reconWindowStart) => _reconcileEngagement(fsm, substrates, domainLineage),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -511,14 +512,23 @@ const DOMAIN_RECONCILERS = {
  * @param {Map<string, object>} params.fsms — Map of domainName → FSM instance
  * @param {object} params.substrates — substrate query interface
  * @param {object} params.lineageLedger — lineage ledger module
- * @returns {{ hash: string, observations: Array, worstSeverity: number }}
+ * @param {Array<object>} [params.snapshotEntries] — optional pre-fetched entries (for constitutional snapshot reconciliation)
+ * @returns {{ hash: string, entries: Array, observations: Array, worstSeverity: number }}
  */
-async function compare({ fsms, substrates, lineageLedger }) {
-  // 1. Load lineage entries and compute constitutional hash
-  const entries = await lineageLedger.getLineage();
-  const hash = await lineageLedger.computeHash();
+async function compare({ fsms, substrates, lineageLedger, snapshotEntries }) {
+  // 1. Load lineage entries — use provided snapshot if given, otherwise fetch from ledger
+  // When snapshotEntries is provided, we use the constitutional snapshot captured at T0
+  // No Redis access in this case — avoids race condition with async worker ingestion
+  const entries = snapshotEntries || await lineageLedger.getLineage();
 
-  // 2. Materialize state from the entries we already fetched
+  // 2. Compute hash from the same entries we already have
+  // Use computeHashFromEntries if available (local computation, no Redis)
+  // Fall back to computeHash(entries) which accepts pre-fetched entries
+  const hash = lineageLedger.computeHashFromEntries
+    ? lineageLedger.computeHashFromEntries(entries)
+    : (await lineageLedger.computeHash(entries));
+
+  // 3. Materialize state from the entries we already fetched
   const materialized = lineageLedger.materializeState(entries);
 
   // 3. Reconcile each domain
@@ -541,11 +551,15 @@ async function compare({ fsms, substrates, lineageLedger }) {
       continue;
     }
 
-    // Get recent domain lineage (last 20 entries)
-    const domainLineage = await lineageLedger.getDomainLineage(domainName, 20);
+    // ── Deterministic window: domain lineage bounded by last RECONCILIATION_TICK ──
+    // Replaces arbitrary n=20 positional truncation and wall-clock time windows.
+    // The window boundary is a governance event in the lineage itself — replay-safe
+    // and independent of global stream velocity or cross-domain coupling.
+    const reconWindowStart = await lineageLedger.getLastReconciliationTickTs(domainName);
+    const domainLineage = await lineageLedger.getDomainLineageSince(domainName, reconWindowStart);
 
-    // Run domain reconciler
-    const reconcilerResult = reconciler(fsm, substrates, domainLineage);
+    // Run domain reconciler — passes window boundary for deterministic time checks
+    const reconcilerResult = reconciler(fsm, substrates, domainLineage, reconWindowStart);
     const { driftSignals } = reconcilerResult;
     const snapshot = reconcilerResult.substrateSnapshot;
     const fsmState = reconcilerResult.fsmState;
@@ -586,7 +600,7 @@ async function compare({ fsms, substrates, lineageLedger }) {
     }
   }
 
-  return { hash, observations, worstSeverity };
+  return { hash, entries, observations, worstSeverity };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -13,7 +13,7 @@
 // spawned). This file just flushes — it does NOT init Redis.
 // ============================================
 
-import { getRedisClient } from '../config/redis.js';
+import { getRedisClient } from '../../config/redis.js';
 
 /**
  * Flush all test:* keys from Redis.

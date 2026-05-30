@@ -7,7 +7,7 @@
 // state across the entire test suite run.
 // ============================================
 
-import { getRedisClient } from '../config/redis.js';
+import { getRedisClient } from '../../config/redis.js';
 
 /**
  * Global setup — runs once before all test files.

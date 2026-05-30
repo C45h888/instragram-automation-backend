@@ -335,6 +335,17 @@ function _ingestTick() {
 function _persistEntry(entry) {
   try {
     lineageLedger.recordWorkerEntry(entry);
+    // Dual-write: domain-partitioned key for bounded authority reads.
+    // The domain key is a materialized projection — the global list remains canonical.
+    // Failure to write the domain key is non-fatal; reconciliation will detect any gap.
+    try {
+      lineageLedger.recordWorkerDomainEntry(entry.domain, entry);
+    } catch (domainErr) {
+      // Domain key write failure is logged but does not block ingestion.
+      // The global ledger remains authoritative; domain reads will be incomplete
+      // but reconciliation will flag the gap via STALE_MATERIALIZED_STATE.
+      console.error(`[lineage-worker] Domain key write failed for ${entry.domain}:`, domainErr.message);
+    }
     return true;
   } catch (err) {
     console.error('[lineage-worker] Failed to persist ledger entry:', err.message);

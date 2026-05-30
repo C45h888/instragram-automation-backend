@@ -50,18 +50,17 @@ export default defineConfig({
     // ----------------------------------------
     // singleFork=true: one process per test file, sequential.
     // No parallel forks → no cross-test Redis contamination.
+    // Vitest 4: poolOptions removed — singleFork is now a top-level option.
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
+    singleFork: true,
 
     // ----------------------------------------
     // Setup hooks — Redis cleanup per test file
     // ----------------------------------------
-    globalSetup: ['<rootDir>/tests/setup/global-setup.js'],
-    setupFiles: ['<rootDir>/tests/setup/test-setup.js'],
+    // Vitest 4: <rootDir> token is not resolved for globalSetup/setupFiles.
+    // Use path.resolve with __dirname for explicit absolute paths.
+    globalSetup: [path.resolve(__dirname, 'setup/global-setup.js')],
+    setupFiles: [path.resolve(__dirname, 'setup/test-setup.js')],
 
     // ----------------------------------------
     // Environment — container DNS, not localhost

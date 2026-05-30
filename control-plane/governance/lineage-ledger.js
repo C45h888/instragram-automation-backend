@@ -235,13 +235,14 @@ async function createEpoch() {
 }
 
 /**
- * Compute a deterministic SHA-256 constitutional hash from current lineage.
- * Hash includes: entry count, global state, domain projections, last event timestamp.
+ * Compute a deterministic SHA-256 constitutional hash from provided entries.
+ * No Redis access — caller provides the entries snapshot.
+ * Used when the caller already has the entries and wants a hash without re-reading.
  *
- * @returns {Promise<string>} hex-encoded SHA-256 hash
+ * @param {Array<object>} entries — lineage entries (already fetched)
+ * @returns {string} hex-encoded SHA-256 hash
  */
-async function computeHash() {
-  const entries = await getLineage();
+function computeHashFromEntries(entries) {
   const materialized = materializeState(entries);
   const payload = JSON.stringify({
     count: entries.length,
@@ -253,16 +254,153 @@ async function computeHash() {
 }
 
 /**
- * Returns the last N lineage entries for a specific domain.
- * Filters by domain field (worker format), not authority pattern.
+ * Compute a deterministic SHA-256 constitutional hash from current lineage.
+ * Hash includes: entry count, global state, domain projections, last event timestamp.
  *
- * @param {string} domainName — 'acquisition' | 'publishing' | 'scheduling' | 'dedup' | 'reconciliation'
- * @param {number} [n] — number of recent entries to return (default: all)
+ * @param {Array<object>} [entriesArg] — optional pre-fetched entries (avoids Redis re-read)
+ * @returns {Promise<string>} hex-encoded SHA-256 hash
+ */
+async function computeHash(entriesArg) {
+  const entries = entriesArg || await getLineage();
+  return computeHashFromEntries(entries);
+}
+
+/**
+ * Returns atomic snapshot: { entries, hash } in a single call.
+ * Used by reconciliation trigger to capture the immutable constitutional plane.
+ * Captures entries once and computes hash locally — no second Redis round-trip.
+ *
+ * @returns {Promise<{ entries: Array<object>, hash: string }>}
+ */
+async function getLineageWithHash() {
+  const entries = await getLineage();
+  const hash = computeHashFromEntries(entries);
+  return { entries, hash };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Domain-Partitioned Lineage — bounded authority reads
+//
+// Domain keys are materialized projections of the canonical global ledger.
+// The lineage worker writes to both simultaneously. Domain-specific reads
+// are isolated from other domains — cross-domain coupling is eliminated.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Record a lineage entry to a domain-specific key.
+ * Called by the lineage worker alongside recordWorkerEntry().
+ * Domain keys are materialized projections — the global list remains canonical.
+ *
+ * @param {string} domainName — constitutional domain name
+ * @param {object} entry — canonical ledger entry
+ * @returns {Promise<{ id: string, ts: number }>}
+ */
+async function recordWorkerDomainEntry(domainName, entry) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready' || typeof redis.rpush !== 'function') {
+    throw new LineageUnavailableError(
+      `Redis status=${redis?.status || 'null'} — domain write authority absent for ${domainName}`
+    );
+  }
+  const domainKey = DOMAIN_KEYS[domainName];
+  if (!domainKey) return { id: entry.ledgerId, ts: entry.timestamp }; // unrecognized domain — skip silently
+  await redis.rpush(domainKey, JSON.stringify(entry));
+  return { id: entry.ledgerId || entry.id, ts: entry.timestamp || entry.ts };
+}
+
+/**
+ * Returns lineage entries for a specific domain from the domain-partitioned key.
+ * Reads directly from lineage:ledger:domain:{domainName} — no global-list-then-filter.
+ *
+ * @param {string} domainName — constitutional domain name
+ * @param {number} [n] — number of recent entries (default: all)
  * @returns {Promise<Array<object>>}
  */
 async function getDomainLineage(domainName, n) {
-  const all = await getLineage(n);
-  return all.filter(e => e.domain === domainName);
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready' || typeof redis.lrange !== 'function') return [];
+  const domainKey = DOMAIN_KEYS[domainName];
+  if (!domainKey) return [];
+  try {
+    let raw;
+    if (typeof n === 'number' && n > 0) {
+      raw = await redis.lrange(domainKey, -n, -1);
+      if (!Array.isArray(raw)) return [];
+      return raw.map(item => _parseEntry(item)).filter(Boolean).reverse();
+    }
+    raw = await redis.lrange(domainKey, 0, -1);
+    if (!raw || !Array.isArray(raw)) return [];
+    return raw.map(item => _parseEntry(item)).filter(Boolean);
+  } catch (err) {
+    console.error(`[lineage-ledger] getDomainLineage(${domainName}) error:`, err.message);
+    return [];
+  }
+}
+
+/**
+ * Returns domain lineage entries since a given timestamp.
+ * Bounded by governance window (last RECONCILIATION_TICK), not arbitrary count.
+ * Scans the domain-specific key and returns entries with timestamp >= sinceTimestamp.
+ *
+ * @param {string} domainName — constitutional domain name
+ * @param {number} sinceTimestamp — epoch ms timestamp; entries with ts >= this are returned
+ * @returns {Promise<Array<object>>}
+ */
+async function getDomainLineageSince(domainName, sinceTimestamp) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready' || typeof redis.lrange !== 'function') return [];
+  const domainKey = DOMAIN_KEYS[domainName];
+  if (!domainKey) return [];
+
+  // If no boundary, fetch all domain entries
+  if (!sinceTimestamp || sinceTimestamp <= 0) {
+    return getDomainLineage(domainName);
+  }
+
+  try {
+    // Fetch all domain entries (domain keys are bounded by reconciliation cycles)
+    // then filter by timestamp. For large ledgers, this can be optimized with
+    // a binary search or Redis sorted sets in a future iteration.
+    const raw = await redis.lrange(domainKey, 0, -1);
+    if (!raw || !Array.isArray(raw)) return [];
+    const entries = raw.map(item => _parseEntry(item)).filter(Boolean);
+    return entries.filter(e => (e.timestamp || e.ts || 0) >= sinceTimestamp);
+  } catch (err) {
+    console.error(`[lineage-ledger] getDomainLineageSince(${domainName}) error:`, err.message);
+    return [];
+  }
+}
+
+/**
+ * Find the timestamp of the most recent RECONCILIATION_TICK entry for a domain.
+ * Scans the domain list backward to locate the governance boundary.
+ * Returns 0 if no RECONCILIATION_TICK is found — caller fetches all entries.
+ *
+ * @param {string} domainName — constitutional domain name
+ * @returns {Promise<number>} epoch ms timestamp of last RECONCILIATION_TICK, or 0
+ */
+async function getLastReconciliationTickTs(domainName) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready' || typeof redis.lrange !== 'function') return 0;
+  const domainKey = DOMAIN_KEYS[domainName];
+  if (!domainKey) return 0;
+
+  try {
+    // Scan last 200 entries backward looking for RECONCILIATION_TICK
+    const raw = await redis.lrange(domainKey, -200, -1);
+    if (!Array.isArray(raw)) return 0;
+    const entries = raw.map(item => _parseEntry(item)).filter(Boolean);
+    // Entries are newest-first from lrange -200,-1; scan for the tick
+    for (const entry of entries) {
+      if (entry && entry.nextState === 'RECONCILIATION_TICK') {
+        return entry.timestamp || entry.ts || 0;
+      }
+    }
+    return 0;
+  } catch (err) {
+    console.error(`[lineage-ledger] getLastReconciliationTickTs(${domainName}) error:`, err.message);
+    return 0;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -460,12 +598,18 @@ module.exports = {
   rehydrate,
   createEpoch,
   computeHash,
+  computeHashFromEntries,
+  getLineageWithHash,
   getDomainLineage,
+  getDomainLineageSince,
+  getLastReconciliationTickTs,
   injectTestEntry,
   clearDomainLineage,
   REDIS_KEY_WORKER,
+  DOMAIN_KEYS,
   WORKER_KEYS,
   recordWorkerEntry,
+  recordWorkerDomainEntry,
   persistWorkerCursor,
   getWorkerCursor,
   persistWorkerHealth,
