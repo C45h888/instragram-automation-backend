@@ -322,6 +322,9 @@ function injectAdversarialTransition({ membrane, targetDomain, entityId }) {
   };
   const authority = authorityMap[membrane] || membrane;
 
+  // Capture cursor BEFORE the transition — the anomaly will occupy this position
+  const beforeCursor = observability.query.getLogSize();
+
   observability.transition({
     domain: targetDomain,
     entity: 'fsm',
@@ -337,7 +340,7 @@ function injectAdversarialTransition({ membrane, targetDomain, entityId }) {
     },
   });
 
-  return { membrane, targetDomain, authority, timestamp: now };
+  return { membrane, targetDomain, authority, timestamp: now, anomalyCursor: beforeCursor + 1 };
 }
 
 /**

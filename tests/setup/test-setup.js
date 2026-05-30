@@ -1,26 +1,43 @@
 // ============================================
-// Per-Test Setup
-// Constitutional Runtime Simulation
+// Per-Test-File Setup
+// Constitutional Runtime Test Suite
 // ============================================
-// Purpose: Per-test isolation, mock cleanup,
-// and substrate state reset between tests.
+// Purpose: Per-test-file Redis flush — runs in the vitest fork
+// BEFORE each test file starts. Ensures the test:* keyspace is
+// clean so that global-setup's initial flush is the only one
+// needed at suite start.
+//
+// NOTE: This runs inside the vitest fork process. Redis client
+// must already be connected (globalSetup runs first and waits
+// for getRedisClient() to become ready before any fork is
+// spawned). This file just flushes — it does NOT init Redis.
 // ============================================
 
 import { getRedisClient } from '../config/redis.js';
 
 /**
- * Flush Redis test keys to ensure isolation.
+ * Flush all test:* keys from Redis.
  * Uses SCAN to avoid blocking on large keyspaces.
+ * No-op if Redis is not yet connected (globalSetup guarantees it is).
  */
 async function flushTestRedisKeys() {
   const client = getRedisClient();
-  const testPrefix = 'test:';
+
+  // Defensive: if client is not connected, skip flush.
+  // This can happen in singleFork=true mode where setupFiles
+  // runs after globalSetup's initial connection but before
+  // a subsequent test file's setup if there were connectivity issues.
+  if (client.status !== 'ready' && client.status !== 'connect') {
+    console.warn('[test-setup] Redis not connected (status=%s) — skipping flush', client.status);
+    return;
+  }
+
+  const prefix = 'test:';
   let cursor = '0';
 
   do {
-    const [nextCursor, keys] = await client.scan(cursor, 'MATCH', `${testPrefix}*`, 'COUNT', 100);
+    const [nextCursor, keys] = await client.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 100);
     cursor = nextCursor;
-
     if (keys.length > 0) {
       await client.del(...keys);
     }
@@ -28,37 +45,21 @@ async function flushTestRedisKeys() {
 }
 
 /**
- * Per-test setup hook.
- * Runs before each test file.
- * Returns a promise so vitest can await it before running tests.
+ * Per-test-file setup hook.
+ * Runs once per test file, after globalSetup, before the file's tests.
  */
 export async function setupTestEnvironment() {
-  // Seed deterministic randomness for replay-safe tests
-  const seed = process.env.TEST_SEED || Date.now();
-  Math.random.seedRandom?.(seed); // if available
-
-  // Reset test keyspace — MUST await to ensure clean state before tests run
   await flushTestRedisKeys();
 }
 
 /**
- * Per-test teardown hook.
- * Runs after each test file.
+ * Per-test-file teardown hook.
+ * Currently a no-op — Redis is ephemeral in test containers and
+ * setupFiles handles pre-test flush. Add here if you need
+ * post-test verification or cleanup.
  */
 export function teardownTestEnvironment() {
-  // Clear any lingering test state
-  // No-op for Redis since global-setup flushes
+  // no-op
 }
 
-/**
- * Mock helper: isolate substrate calls.
- * Returns a function that restores original behavior.
- */
-export function isolateSubstrate(mock) {
-  const original = { ...mock };
-  return () => {
-    Object.assign(mock, original);
-  };
-}
-
-export default { setupTestEnvironment, teardownTestEnvironment, isolateSubstrate };
+export default { setupTestEnvironment, teardownTestEnvironment };

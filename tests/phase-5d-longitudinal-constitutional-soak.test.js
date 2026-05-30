@@ -104,6 +104,8 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
     async () => {
       const startTime = Date.now();
 
+      try {
+
       // ── Counters ─────────────────────────────────────────────────
       let tickCount = 0;
       let adversarialCount = 0;
@@ -441,51 +443,57 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
         );
       }
 
-      // ── Write the soak report ────────────────────────────────────
-      const report = {
-        phase: '5D',
-        test: '1-hour-longitudinal-constitutional-soak',
-        soakConfig: {
-          SOAK_DURATION_MS,
-          TICK_INTERVAL_MS,
-          ADVERSARIAL_INTERVAL_TICKS,
-          RECON_INTERVAL_MS,
-          CHECKPOINT_INTERVAL_MS,
-          RECYCLE_INTERVAL_MS,
-          LEDGER_LOOKBACK,
-          expectedTicks,
-        },
-        results: {
-          elapsed_ms,
-          elapsed_min,
-          tickCount,
-          legalCount,
-          adversarialCount,
-          reconCycleCount,
-          checkpointCount: checkpoints.length,
-          finalLedgerSize: finalLedger.length,
-          finalCkState,
-          monitorViolationCount: monitorReport.violationCount,
-          violatedCheckpointCount: violatedCheckpoints.length,
-        },
-        monitorReport: {
-          snapshots: monitorReport.snapshots,
-          violations: monitorReport.violations,
-          summary: monitorReport.summary,
-        },
-        reconResults,
-        checkpoints,
-        generatedAt: new Date().toISOString(),
-      };
+      } finally {
+        // ── Write the soak report — always, even on test failure ────
+        try {
+          const report = {
+            phase: '5D',
+            test: '1-hour-longitudinal-constitutional-soak',
+            soakConfig: {
+              SOAK_DURATION_MS,
+              TICK_INTERVAL_MS,
+              ADVERSARIAL_INTERVAL_TICKS,
+              RECON_INTERVAL_MS,
+              CHECKPOINT_INTERVAL_MS,
+              RECYCLE_INTERVAL_MS,
+              LEDGER_LOOKBACK,
+              expectedTicks,
+            },
+            results: {
+              elapsed_ms,
+              elapsed_min,
+              tickCount,
+              legalCount,
+              adversarialCount,
+              reconCycleCount,
+              checkpointCount: checkpoints.length,
+              finalLedgerSize: finalLedger.length,
+              finalCkState,
+              monitorViolationCount: monitorReport.violationCount,
+              violatedCheckpointCount: violatedCheckpoints.length,
+            },
+            monitorReport: {
+              snapshots: monitorReport.snapshots,
+              violations: monitorReport.violations,
+              summary: monitorReport.summary,
+            },
+            reconResults,
+            checkpoints,
+            generatedAt: new Date().toISOString(),
+          };
 
-      await writeSoakReport(report);
+          await writeSoakReport(report);
 
-      console.log(
-        `[phase-5d] Soak complete: ${elapsed_min}min, ${tickCount} ticks, ` +
-        `${adversarialCount} adversarial, ${reconCycleCount} recon cycles, ` +
-        `${monitorReport.violationCount} monitor violations, ` +
-        `${violatedCheckpoints.length} violated checkpoints`
-      );
+          console.log(
+            `[phase-5d] Soak complete: ${elapsed_min}min, ${tickCount} ticks, ` +
+            `${adversarialCount} adversarial, ${reconCycleCount} recon cycles, ` +
+            `${monitorReport.violationCount} monitor violations, ` +
+            `${violatedCheckpoints.length} violated checkpoints`
+          );
+        } catch (e) {
+          console.error('[phase-5d] Failed to write soak report:', e.message);
+        }
+      }
     },
     SOAK_DURATION_MS + 120_000
   );

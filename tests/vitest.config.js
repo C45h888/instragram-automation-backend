@@ -2,13 +2,26 @@
 // Vitest Configuration
 // Constitutional Runtime Test Suite
 // ============================================
-// Purpose: Deterministic governance runtime
-// testing with isolated substrate mocking,
-// fault injection support, and replay-safe
-// execution validation.
+//
+// Unified execution: ALL tests run inside the test-runner container.
+// Container env:  REDIS_URL=redis://test-redis:6379
+//                 POSTGRES_HOST=test-postgres
+//
+// Key design decisions:
+//   pool=forks + singleFork=true  → one forked process per test file.
+//     Prevents cross-test Redis contamination from parallel forks.
+//     Sequential within a single `vitest run` invocation.
+//   globalSetup                    → flushes Redis test:* keys once at suite start
+//   setupFiles                     → per-test-file Redis flush before each file
+//   testTimeout=3_800_000           → 5D soak needs up to 1hr + buffer
+//
 // ============================================
 
 import { defineConfig } from 'vitest/config';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   test: {
@@ -21,85 +34,50 @@ export default defineConfig({
     exclude: ['node_modules/**', 'dist/**', 'coverage/**'],
 
     // ----------------------------------------
-    // Deterministic Execution
+    // Test Timeout
     // ----------------------------------------
-    // Deterministic order for replay-safe tests
+    // 5B: 5min concurrent + 30s buffer = 330s
+    // 5D: 1hr soak + 2min buffer = 3_720s → round to 3_800s
+    testTimeout: 3_800_000,
+
+    // ----------------------------------------
+    // Stack trace — off for cleaner output
+    // ----------------------------------------
     unsafeStackTrace: false,
 
-    // Pool strategy for isolation
+    // ----------------------------------------
+    // Pool isolation
+    // ----------------------------------------
+    // singleFork=true: one process per test file, sequential.
+    // No parallel forks → no cross-test Redis contamination.
     pool: 'forks',
     poolOptions: {
       forks: {
-        singleFork: false,
+        singleFork: true,
       },
     },
 
     // ----------------------------------------
-    // Test Isolation & Cleanup
+    // Setup hooks — Redis cleanup per test file
     // ----------------------------------------
-    // Clean up after each test file
     globalSetup: ['<rootDir>/tests/setup/global-setup.js'],
     setupFiles: ['<rootDir>/tests/setup/test-setup.js'],
 
-    // Environment variables for test context
-    env: {
-      NODE_ENV: 'test',
-      REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
-      SKIP_DB_TUNNEL: 'true',
-    },
+    // ----------------------------------------
+    // Environment — container DNS, not localhost
+    // ----------------------------------------
+    // REDIS_URL and POSTGRES_HOST are injected via docker-compose.yml
+    // env block here is for reference only; vitest does not re-read
+    // process.env at config-evaluation time.
+    //
+    // Inside test-runner container:
+    //   REDIS_URL    = redis://test-redis:6379
+    //   POSTGRES_HOST= test-postgres
+    //   NODE_ENV     = test
 
     // ----------------------------------------
-    // Coverage (when run with --coverage)
+    // Reporter — verbose for CI logs
     // ----------------------------------------
-    coverage: {
-      provider: 'v8',
-      reporter: ['text', 'json', 'html'],
-      exclude: [
-        'node_modules/**',
-        'tests/**',
-        '**/*.test.js',
-        '**/*.spec.js',
-        'dist/**',
-        'coverage/**',
-        '**/coverage/**',
-      ],
-    },
-
-    // ----------------------------------------
-    // Test Timeout & Retry
-    // ----------------------------------------
-    // Phase 5D soak requires 61-minute timeout (1hr soak + 2min teardown)
-    testTimeout: 3660000,
-    hookTimeout: 120000,
-
-    // Retry failed tests once for flakiness detection
-    retry: process.env.CI ? 2 : 0,
-
-    // ----------------------------------------
-    // Reporting
-    // ----------------------------------------
-    reporters: ['default', 'verbose'],
-    outputFile: {
-      json: './tests/output/test-results.json',
-    },
-
-    // ----------------------------------------
-    // API: Expose test container utilities
-    // ----------------------------------------
-    // Custom test APIs exposed via globalThis
-    // for governance runtime simulation
-  },
-
-  // ----------------------------------------
-  // Resolve Configuration
-  // ----------------------------------------
-  resolve: {
-    alias: {
-      '@config': '/config',
-      '@substrates': '/substrates',
-      '@control-plane': '/control-plane',
-      '@services': '/services',
-      '@lib': '/lib',
-    },
+    reporter: ['verbose'],
   },
 });

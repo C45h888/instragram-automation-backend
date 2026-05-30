@@ -120,6 +120,10 @@ class RuntimeSimulator {
       CK.startLoop(this._tickIntervalMs);
     }
 
+    // 7. Signal boot complete — moves CK from BOOTING → HEALTHY
+    //    (production orchestrator does this; test substrate must replicate it)
+    CK.dispatch({ type: 'BOOT_COMPLETE' });
+
     // Allow worker ingestion to catch up to initial boot state
     await sleep(300);
 
@@ -237,83 +241,45 @@ class RuntimeSimulator {
   // ═════════════════════════════════════════════════════════════════════
 
   /**
-   * Trigger a full reconciliation cycle through the CK bridge.
+   * Trigger a full reconciliation cycle through the CK.
    *
-   * Dispatches RECONCILIATION_TICK to the reconciliation FSM, which transitions
-   * to RECONCILING and emits RECONCILIATION_CYCLE_STARTED. The CK bridge
-   * subscriber catches this, calls engine.compare(), verifies hash, and
-   * dispatches RECONCILIATION_RESULTS_RECEIVED back to the FSM.
+   * The CK now directly owns the engine invocation and lifecycle completion.
+   * This method awaits the full cycle synchronously — no polling needed.
    *
-   * Returns the last known reconciliation results after the cycle completes.
-   *
-   * @param {number} [waitMs=5000] — max time to wait for cycle completion
+   * @param {number} [waitMs=5000] — max time to wait (unused, kept for backward compat)
    * @returns {Promise<object>} reconciliation results
    */
   async triggerReconciliationCycle(waitMs = 5000) {
-    // Subscribe to capture results from the bridge
-    this._reconResultsPromise = new Promise((resolve) => {
-      this._reconResultsResolve = resolve;
-    });
-
-    // Listen for the FSM state transition to CONVERGENT or DRIFTED
-    // We poll the reconciliation FSM state after dispatching the tick
+    const startTime = Date.now();
     const reconFsm = ALL_DOMAIN_FSMS.find((f) => f.name === 'reconciliation');
 
-    // Dispatch RECONCILIATION_TICK through CK
-    CK.triggerReconciliation();
+    // CK owns the full cycle: dispatch tick → await engine → dispatch results → dispatch complete
+    await CK.triggerReconciliation();
 
-    // Poll for cycle completion — FSM moves IDLE → RECONCILING → CONVERGENT/DRIFTED → IDLE
-    const deadline = Date.now() + waitMs;
-    let lastState = reconFsm.getState();
+    // Cycle is complete — FSM should be back in IDLE
+    const fsmEndState = reconFsm.getState();
 
-    while (Date.now() < deadline) {
-      await sleep(50);
-      const currentState = reconFsm.getState();
+    // Fetch results from ledger
+    const recentEntries = await lineageLedger.getLineage(50);
+    const reconEntries = recentEntries.filter(
+      (e) => e.domain === 'reconciliation'
+    );
+    const lastResult = reconEntries[reconEntries.length - 1];
 
-      // Cycle complete when FSM returns to IDLE (after CONVERGENT or DRIFTED)
-      if (lastState !== 'IDLE' && currentState === 'IDLE') {
-        // Cycle just completed — fetch results from ledger
-        const recentEntries = await lineageLedger.getLineage(50);
-        const reconEntries = recentEntries.filter(
-          (e) => e.domain === 'reconciliation'
-        );
-        const lastResult = reconEntries[reconEntries.length - 1];
-
-        this._lastReconResults = {
-          fsmEndState: currentState,
-          cycleEntries: reconEntries.slice(-5),
-          lastResult,
-          elapsedMs: Date.now() - (deadline - waitMs),
-        };
-
-        if (this._reconResultsResolve) {
-          this._reconResultsResolve(this._lastReconResults);
-          this._reconResultsResolve = null;
-        }
-
-        return this._lastReconResults;
-      }
-
-      lastState = currentState;
-    }
-
-    // Timeout — cycle may still be in progress
-    const timedOutResults = {
-      fsmEndState: reconFsm.getState(),
-      cycleEntries: [],
-      lastResult: null,
-      elapsedMs: waitMs,
-      timedOut: true,
+    this._lastReconResults = {
+      fsmEndState,
+      cycleEntries: reconEntries.slice(-5),
+      lastResult,
+      elapsedMs: Date.now() - startTime,
+      timedOut: fsmEndState !== 'IDLE',
     };
 
-    this._lastReconResults = timedOutResults;
-
     if (this._reconResultsResolve) {
-      this._reconResultsResolve(timedOutResults);
+      this._reconResultsResolve(this._lastReconResults);
       this._reconResultsResolve = null;
     }
 
-    return timedOutResults;
+    return this._lastReconResults;
   }
 
   // ═════════════════════════════════════════════════════════════════════

@@ -85,10 +85,12 @@ services:
   # Test Orchestration Runner
   # ----------------------------------------
   test-runner:
-    image: node:18-alpine
+    image: node:22-alpine
     container_name: instagram-test-runner
     restart: "no"
     working_dir: /app
+    # entrypoint script handles: dependency wait, Redis flush, then exec args
+    entrypoint: ["sh", "/app/docker-entrypoint.sh"]
     command: ["sleep", "infinity"]
     networks:
       - test-runtime-net
@@ -100,37 +102,20 @@ services:
       POSTGRES_USER: testuser
       POSTGRES_PASSWORD: testpass
       POSTGRES_DB: testgovernance
-      # Deterministic startup: wait for dependencies
-      WAIT_FOR_REDIS: "true"
-      WAIT_FOR_POSTGRES: "true"
+      SKIP_DB_TUNNEL: "true"
     depends_on:
       test-redis:
         condition: service_healthy
       test-postgres:
         condition: service_healthy
     volumes:
-      - .:/app
-      - ./node_modules:/app/node_modules  # Bind-mount host node_modules so vitest is available inside container
+      # Project source (read-only) for runtime code
+      - .:/app:ro
+      # tests/ and output/ are writable — vitest writes JSON reports here
+      - ./tests:/app/tests
+      - ./tests/output:/app/tests/output
     mem_limit: 1g
     cpu_shares: 1024
-
-  # ----------------------------------------
-  # Fault Injection - Network Partitioning
-  # ----------------------------------------
-  # Purpose: Simulate network splits, Redis/PG
-  # failures for chaos testing in governance
-  # boundary validation.
-  network-partitioner:
-    image: alpine:latest
-    container_name: instagram-test-partitioner
-    restart: "no"
-    command: ["sleep", "infinity"]
-    networks:
-      - test-runtime-net
-    cap_add:
-      - NET_ADMIN
-    mem_limit: 64m
-    cpu_shares: 128
 
 networks:
   test-runtime-net:

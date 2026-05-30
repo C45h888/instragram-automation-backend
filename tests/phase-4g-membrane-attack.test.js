@@ -1,8 +1,11 @@
 /**
  * Phase 4G: Membrane Attack Resistance
  *
- * Validates that the constitutional membrane layer rejects or flags
- * cross-domain authority violations — it is not merely observational.
+ * Validates that the constitutional membrane layer rejects cross-domain
+ * authority violations via the CK membrane authority gate. After the Issue 1
+ * fix (membrane authority validation pre-projection in transition-emitter),
+ * adversarial entries are REJECTED by CK before entering the observability log.
+ * A MEMBRANE_BYPASS structural anomaly entry is written instead.
  *
  * Constitutional law:
  *   Cross-domain transitions may never bypass membrane authority.
@@ -13,15 +16,16 @@
  *   - reconciliation domain → overwrite foreign projection
  *   - Foreign authority → directly mutate acquisition domain
  *
- * All attacks must be flagged as adversarial in the ledger — never
- * silently accepted as legitimate state transitions.
+ * Expected behavior after Issue 1 fix:
+ *   The adversarial entry does NOT appear in the ledger.
+ *   A MEMBRANE_BYPASS governance anomaly entry IS recorded.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
 import lineageWorker from '../control-plane/governance/lineage-worker.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
-const { waitForLedgerEntry, waitForLedgerEntryCount } = require('./helpers/sync-barriers');
+const { waitForLedgerEntry, waitForCommit } = require('./helpers/sync-barriers');
 const { assertNoCrossDomainContamination } = require('./helpers/constitutional-invariants');
 
 describe('Phase 4G: Membrane Attack Resistance', () => {
@@ -35,80 +39,104 @@ describe('Phase 4G: Membrane Attack Resistance', () => {
     await observability.stop();
   });
 
-  it('publishing domain cannot silently mutate governance FSM', async () => {
+  /**
+   * CK membrane gate rejects publishing → governance bypass.
+   * Adversarial entry is rejected; MEMBRANE_BYPASS anomaly is recorded.
+   * Deterministic sync: await lineage worker cursor visibility before ledger check.
+   */
+  it('publishing domain cannot silently mutate governance FSM — CK rejects, anomaly recorded', async () => {
     const { injectAdversarialTransition } = require('./event-injector.js');
 
-    injectAdversarialTransition({
+    const { anomalyCursor } = injectAdversarialTransition({
       membrane: 'publishing',
       targetDomain: 'governance',
       entityId: `governance-hijack-${Date.now()}`,
     });
 
-    const hostileEntry = await waitForLedgerEntry(
+    // Stage 1: deterministic commit visibility — wait for worker cursor to advance
+    await waitForCommit(anomalyCursor, 30000);
+
+    // Stage 2: confirm anomaly is in theledger
+    const anomalyEntry = await waitForLedgerEntry(
       (e) =>
         e.domain === 'governance' &&
-        e.raw?.raw?.adversarial === true &&
-        e.raw?.raw?.membrane === 'publishing',
+        e.entity === 'membrane' &&
+        e.nextState === 'MEMBRANE_BYPASS' &&
+        e.raw?.bypassedAuthority === 'publishing-membrane',
       50,
-      8000
+      5000
     );
 
-    // Attack must be recorded and flagged — not silently accepted
-    expect(hostileEntry).toBeDefined();
-    expect(hostileEntry.raw.raw.adversarial).toBe(true);
+    expect(anomalyEntry).toBeDefined();
+    expect(anomalyEntry.raw.reason).toContain('MEMBRANE_BYPASS');
   });
 
-  it('telemetry domain cannot silently mutate execution pipeline', async () => {
+  /**
+   * CK membrane gate rejects telemetry → execution bypass.
+   */
+  it('telemetry domain cannot silently mutate execution pipeline — CK rejects, anomaly recorded', async () => {
     const { injectAdversarialTransition } = require('./event-injector.js');
 
-    injectAdversarialTransition({
+    const { anomalyCursor } = injectAdversarialTransition({
       membrane: 'telemetry',
       targetDomain: 'execution',
       entityId: `exec-hijack-${Date.now()}`,
     });
 
-    const hostileEntry = await waitForLedgerEntry(
+    await waitForCommit(anomalyCursor, 30000);
+
+    const anomalyEntry = await waitForLedgerEntry(
       (e) =>
-        e.domain === 'execution' &&
-        e.raw?.raw?.adversarial === true &&
-        e.raw?.raw?.membrane === 'telemetry',
+        e.domain === 'governance' &&
+        e.entity === 'membrane' &&
+        e.nextState === 'MEMBRANE_BYPASS' &&
+        e.raw?.bypassedAuthority === 'telemetry-worker',
       50,
-      8000
+      5000
     );
 
-    expect(hostileEntry).toBeDefined();
-    expect(hostileEntry.raw.raw.adversarial).toBe(true);
+    expect(anomalyEntry).toBeDefined();
+    expect(anomalyEntry.raw.reason).toContain('MEMBRANE_BYPASS');
   });
 
-  it('reconciliation domain cannot silently overwrite foreign projection', async () => {
+  /**
+   * CK membrane gate rejects reconciliation → projection bypass.
+   */
+  it('reconciliation domain cannot silently overwrite foreign projection — CK rejects, anomaly recorded', async () => {
     const { injectAdversarialTransition } = require('./event-injector.js');
 
-    injectAdversarialTransition({
+    const { anomalyCursor } = injectAdversarialTransition({
       membrane: 'reconciliation',
       targetDomain: 'projection',
       entityId: `proj-overwrite-${Date.now()}`,
     });
 
-    const hostileEntry = await waitForLedgerEntry(
+    await waitForCommit(anomalyCursor, 30000);
+
+    const anomalyEntry = await waitForLedgerEntry(
       (e) =>
-        e.domain === 'projection' &&
-        e.raw?.raw?.adversarial === true &&
-        e.raw?.raw?.membrane === 'reconciliation',
+        e.domain === 'governance' &&
+        e.entity === 'membrane' &&
+        e.nextState === 'MEMBRANE_BYPASS' &&
+        e.raw?.bypassedAuthority === 'reconciliation-fsm',
       50,
-      8000
+      5000
     );
 
-    expect(hostileEntry).toBeDefined();
-    expect(hostileEntry.raw.raw.adversarial).toBe(true);
+    expect(anomalyEntry).toBeDefined();
+    expect(anomalyEntry.raw.reason).toContain('MEMBRANE_BYPASS');
   });
 
-  it('foreign authority attempting cross-domain mutation is flagged', async () => {
-    const crossDomainId = `cross-domain-attack-${Date.now()}`;
+  /**
+   * Foreign authority attempting cross-domain mutation — CK rejects.
+   */
+  it('foreign authority attempting cross-domain mutation is rejected by CK', async () => {
+    const beforeCursor = observability.query.getLogSize();
 
     observability.transition({
       domain: 'acquisition',
       entity: 'fsm',
-      entityId: crossDomainId,
+      entityId: `cross-domain-attack-${Date.now()}`,
       previousState: 'IDLE',
       nextState: 'COMPROMISED',
       authority: 'foreign-domain-attacker',
@@ -119,16 +147,21 @@ describe('Phase 4G: Membrane Attack Resistance', () => {
       },
     });
 
-    const attackEntry = await waitForLedgerEntry(
+    const anomalyCursor = beforeCursor + 1;
+
+    await waitForCommit(anomalyCursor, 30000);
+
+    const anomalyEntry = await waitForLedgerEntry(
       (e) =>
-        e.entityId === crossDomainId &&
-        e.raw?.raw?.unauthorizedCrossDomain === true,
+        e.domain === 'governance' &&
+        e.entity === 'membrane' &&
+        e.nextState === 'MEMBRANE_BYPASS' &&
+        e.raw?.reason?.includes('foreign'),
       50,
-      8000
+      5000
     );
 
-    // Entry must appear flagged — not processed as legitimate authority
-    expect(attackEntry).toBeDefined();
-    expect(attackEntry.raw.raw.unauthorizedCrossDomain).toBe(true);
+    expect(anomalyEntry).toBeDefined();
+    expect(anomalyEntry.raw.reason).toContain('foreign');
   });
 });

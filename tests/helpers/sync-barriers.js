@@ -160,6 +160,47 @@ async function waitForLedgerEntry(predicate, lookback = 200, timeoutMs = 10000) 
   );
 }
 
+/**
+ * Wait for the observability transition log to advance to a specific cursor.
+ * Stores the current size, then polls until getLogSize() exceeds it.
+ *
+ * @param {number} [timeoutMs=30000] — constitutional deadlock protection
+ * @returns {Promise<number>} the new cursor position after advancement
+ * @throws {Error} on timeout
+ */
+async function waitForLogAdvance(timeoutMs = 30000) {
+  const observability = require('../../control-plane/observability');
+  const before = observability.query.getLogSize();
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const current = observability.query.getLogSize();
+    if (current > before) return current;
+    await new Promise(r => setTimeout(r, DEFAULT_POLL_MS));
+  }
+  const current = observability.query.getLogSize();
+  throw new Error(
+    `[sync-barrier] waitForLogAdvance timed out after ${timeoutMs}ms: ` +
+    `expected > ${before}, got ${current}`
+  );
+}
+
+/**
+ * Wait until the lineage worker's cursor has advanced past the given entryId.
+ * This is the deterministic constitutional visibility primitive — callers wait
+ * for cursor legitimacy, not poll completion or elapsed time.
+ *
+ * Uses lineageWorker.waitForCommit() internally.
+ *
+ * @param {string|number} entryId — ledger entry ID to await commit for
+ * @param {number} [timeoutMs=30000] — constitutional deadlock protection timeout
+ * @returns {Promise<string>} the committed entryId
+ * @throws {Error} on timeout or constitutional failure
+ */
+async function waitForCommit(entryId, timeoutMs = 30000) {
+  const lineageWorker = require('../../control-plane/governance/lineage-worker');
+  return lineageWorker.waitForCommit(entryId, timeoutMs);
+}
+
 module.exports = {
   waitForLedgerEntryCount,
   waitForCursorAdvance,
@@ -167,6 +208,8 @@ module.exports = {
   waitForProjectionFlush,
   waitForLogSize,
   waitForLedgerEntry,
+  waitForLogAdvance,
+  waitForCommit,
   DEFAULT_POLL_MS,
   DEFAULT_TIMEOUT_MS,
 };

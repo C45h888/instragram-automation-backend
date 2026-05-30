@@ -25,7 +25,7 @@ import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
 import lineageWorker from '../control-plane/governance/lineage-worker.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForCursorAdvance } = require('./helpers/sync-barriers');
-const { assertNoCrossDomainContamination, assertCausalChainIntegrity } = require('./helpers/constitutional-invariants');
+const { assertNoCrossDomainContamination, assertCausalChainIntegrity, assertProjectionSignalContract } = require('./helpers/constitutional-invariants');
 
 const PROJECTION_AUTHORITIES = [
   'runtime-projection-worker',
@@ -270,5 +270,31 @@ describe('Phase 4J: Telemetry Isolation Under Pressure', () => {
     // The broken entry is in the ledger but causal integrity check fails on it
     const ledger = await lineageLedger.getLineage(500);
     expect(() => assertCausalChainIntegrity(ledger)).toThrow();
+  });
+
+  /**
+   * Validate the signal ownership partition under sustained high-frequency polling.
+   * After 100 waves of injection, the lineage worker Layer B projection snapshot
+   * must contain only ledger-derivable signals — no observer-relative signals
+   * (failureRate, governancePressure, interpretationConfidence, etc.) may appear.
+   * The CK signal ownership contract must hold even under heavy sustained load.
+   */
+  it('lineage worker Layer B projection snapshot contains only ledger-derivable signals under sustained polling', async () => {
+    const { injectMixedDomainWave } = require('./event-injector.js');
+    const waveId = `phase4j-signal-contract-${Date.now()}`;
+
+    // 100 waves over ~2 seconds — sustained pressure to stress signal accumulation
+    for (let i = 0; i < 100; i++) {
+      await injectMixedDomainWave({ waveId, seq: i, includeFault: i % 10 === 0 });
+    }
+
+    // Wait for lineage worker to consume a meaningful portion of the workload
+    await waitForLedgerEntryCount(50, 20000);
+
+    const projections = lineageWorker.getProjections();
+
+    // Signal ownership partition must hold — no observer-relative signals
+    // in the lineage worker Layer B projection snapshot
+    assertProjectionSignalContract(projections);
   });
 });
