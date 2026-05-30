@@ -143,9 +143,17 @@ const _stateHistory = new Map(); // "domain:entity:entityId" → [{ state, ts }]
  * @returns {{ valid: boolean, reason?: string }}
  */
 function _validateTransition(transition) {
+  // PROJECTION_INTENT entries are NOT ingested into canonical lineage.
+  // They are consumed by the Telemetry Coordination FSM which validates,
+  // orders, and re-emits them as SEMANTIC_PROJECTION_TRANSITION.
+  // Only FSM-validated transitions may enter lineage.
+  if (transition.nextState === 'PROJECTION_INTENT') {
+    return { valid: false, reason: 'PROJECTION_INTENT — routed to coordination FSM, not lineage' };
+  }
+
   // traceId/correlationId are causal-chain fields — required only for FSM state transitions.
-  // Projection workers emit SEMANTIC_PROJECTION_TRANSITION entries with worker-specific
-  // domains (runtime, health, integrity, etc.) and do not participate in FSM causal chains.
+  // Projection workers used to emit SEMANTIC_PROJECTION_TRANSITION; now only the
+  // Telemetry Coordination FSM emits validated transitions with this type.
   const isProjectionEntry =
     transition.domain === 'projection' ||
     (transition.raw && transition.raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION');

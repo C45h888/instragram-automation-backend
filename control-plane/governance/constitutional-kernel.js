@@ -326,6 +326,11 @@ const DOMAIN_EVENT_MAP = {
   // Reconciliation domain
   RECONCILIATION_TICK: 'reconciliation',
   RECONCILIATION_RESULTS_RECEIVED: 'reconciliation',
+
+  // Telemetry Coordination domain — deterministic semantic ingress plane
+  PROCESS_INTENTS: 'telemetry-coordination',
+  HALT_TELEMETRY_COORDINATION: 'telemetry-coordination',
+  RESUME_TELEMETRY_COORDINATION: 'telemetry-coordination',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1054,6 +1059,21 @@ async function triggerReconciliation() {
   }
 }
 
+/**
+ * Trigger a deterministic telemetry coordination cycle.
+ *
+ * Called by the orchestrator on a 30s cadence (matching projection worker
+ * poll interval). Dispatches PROCESS_INTENTS to the Telemetry Coordination
+ * FSM which reads, validates, orders, and serializes projection intents
+ * into canonical SEMANTIC_PROJECTION_TRANSITION entries.
+ *
+ * The CK remains the sole authority that can trigger coordination.
+ * The FSM coordinates only — it does not self-trigger.
+ */
+function triggerCoordinationCycle() {
+  dispatch({ type: 'PROCESS_INTENTS' });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 11b. Constitutional Death Detection — multi-criterion
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1371,6 +1391,7 @@ module.exports = {
   resetAuthStrikes,
   clearCircuitBreaker,
   triggerReconciliation,
+  triggerCoordinationCycle,
   validateMembraneTransition: _validateMembraneAuthority,
   validateProjectionSnapshot,
   recordMembraneBypassAnomaly,

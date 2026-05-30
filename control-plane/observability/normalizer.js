@@ -348,10 +348,19 @@ addRule('scheduling', 'fsm', null, null, (raw) => ({
 }));
 
 // Bounded Telemetry Projection Layer — SEMANTIC_PROJECTION_TRANSITION entries
-// emitted by projection workers in telemetry-workers/ (per Development Contract)
+// emitted by the Telemetry Coordination FSM (sole serializer) after validation.
+// Projection workers no longer emit SEMANTIC_PROJECTION_TRANSITION directly.
 addRule('projection', 'semantic_projection', null, null, (raw) => ({
   entityId: raw.projectionType || null,
   raw: { ...raw, entryType: 'SEMANTIC_PROJECTION_TRANSITION' },
+}));
+
+// PROJECTION_INTENT entries — emitted by projection workers as ingress requests.
+// These are NOT canonical lineage. Only the Telemetry Coordination FSM may
+// authorize their transformation into SEMANTIC_PROJECTION_TRANSITION.
+addRule('telemetry', 'projection_intent', null, 'PROJECTION_INTENT', (raw) => ({
+  entityId: raw.projectionType || null,
+  raw: { ...raw, entryType: 'PROJECTION_INTENT' },
 }));
 
 // Engagement Telemetry Adapter — raw bounded telemetry windows

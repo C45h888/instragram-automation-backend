@@ -35,6 +35,7 @@ const schedulingFsm = require('./governance/domains/scheduling-fsm');
 const dedupFsm = require('./governance/domains/dedup-fsm');
 const engagementFsm = require('./governance/domains/engagement-fsm');
 const reconciliationFsm = require('./governance/domains/reconciliation-fsm');
+const telemetryCoordinationFsm = require('./governance/domains/telemetry-coordination-fsm');
 
 // ── 6 Membrane orchestrators ─────────────────────────────────────────────────
 const cadenceOrchestrator     = require('./orchestration/cadence-orchestrator');
@@ -46,6 +47,7 @@ const degradationOrchestrator = require('./orchestration/degradation-orchestrato
 
 const REFRESH_INTERVAL_MS = 90 * 1000; // 90s cadence
 const RECONCILIATION_INTERVAL_MS = 60 * 1000; // 60s reconciliation cadence — separate from maintenance
+const COORDINATION_INTERVAL_MS = 30 * 1000; // 30s telemetry coordination cadence — matches worker poll interval
 const DEBOUNCE_MS = 500;
 const GOVERNANCE_TICK_MS = 10_000; // 10s watchdog tick
 
@@ -61,6 +63,7 @@ function _wire() {
   constitutional.registerDomain(dedupFsm);
   constitutional.registerDomain(engagementFsm);
   constitutional.registerDomain(reconciliationFsm);
+  constitutional.registerDomain(telemetryCoordinationFsm);
 
   // Wire execution bridge's governance reference for observation emission
   executionBridge.setGovernance(constitutional);
@@ -132,6 +135,12 @@ async function startAllWorkers() {
     constitutional.triggerReconciliation();
   });
   console.log(`[orchestrator] Reconciliation loop started — tick every ${RECONCILIATION_INTERVAL_MS / 1000}s`);
+
+  // ── Telemetry coordination tick — deterministic semantic ingress serialization ──
+  cadence.every(COORDINATION_INTERVAL_MS, () => {
+    constitutional.triggerCoordinationCycle();
+  });
+  console.log(`[orchestrator] Telemetry coordination loop started — tick every ${COORDINATION_INTERVAL_MS / 1000}s`);
 
   const st = await constitutional.status();
   console.log(`[orchestrator] Constitutional kernel running — ${accounts.length} account(s) — global: ${st.state} — domains: ${Object.keys(st.domains).join(', ')}`);

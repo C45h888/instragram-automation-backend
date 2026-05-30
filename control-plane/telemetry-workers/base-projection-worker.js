@@ -220,8 +220,14 @@ class BaseProjectionWorker {
   }
 
   /**
-   * Emit a SEMANTIC_PROJECTION_TRANSITION into the observability plane.
-   * This is the ONLY emission path.
+   * Emit a PROJECTION_INTENT into the observability plane.
+   *
+   * Projection workers NO LONGER emit SEMANTIC_PROJECTION_TRANSITION directly.
+   * Instead, they emit PROJECTION_INTENT — an ingress request that must be
+   * validated, ordered, and serialized by the Telemetry Coordination FSM
+   * before entering canonical lineage.
+   *
+   * The FSM is the sole serializer. This worker declares intent only.
    *
    * @param {object} projection — the projection output contract
    */
@@ -230,19 +236,27 @@ class BaseProjectionWorker {
       // eslint-disable-next-line global-require
       const observability = require('../observability/emitters/transition-emitter');
       observability.transition({
-        domain: this._domain,
-        entity: 'semantic_projection',
+        domain: 'telemetry',
+        entity: 'projection_intent',
         entityId: this._projectType,
-        previousState: this._lastProjectionTs ? `${this._projectType}:active` : null,
-        nextState: `${this._projectType}:projected`,
+        previousState: this._lastProjectionTs ? `${this._projectType}:intent` : null,
+        nextState: 'PROJECTION_INTENT',
         authority: this.workerName,
         raw: {
-          entryType: 'SEMANTIC_PROJECTION_TRANSITION',
-          ...projection,
+          intentType: 'PROJECTION_INTENT',
+          projectionNamespace: this._domain,
+          projectionType: this._projectType,
+          projectionVersion: this._projectionVersion,
+          projectionPayload: projection.projectionPayload,
+          confidence: projection.confidence,
+          integrityScore: projection.integrityScore,
+          sourceTelemetryWindow: projection.sourceTelemetryWindow,
+          traceId: projection.traceId,
+          correlationId: projection.correlationId,
         },
       });
     } catch (err) {
-      console.warn(`[${this.workerName}] Projection emit error:`, err.message);
+      console.warn(`[${this.workerName}] Projection intent emit error:`, err.message);
     }
   }
 
