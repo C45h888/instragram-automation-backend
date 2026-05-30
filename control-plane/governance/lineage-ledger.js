@@ -56,11 +56,24 @@ function _getRedis() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Redis key for worker-produced canonical ledger
+// Redis keys for worker-produced canonical ledger
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Single canonical ledger — all entries written by lineage worker via recordWorkerEntry()
 const REDIS_KEY_WORKER = 'lineage:ledger:entries';
+
+// Domain-partitioned keys — materialized projections of the canonical ledger.
+// Each key is a chronological Redis list for a single domain. The lineage worker
+// writes to BOTH the global key AND the domain-specific key in the same tick.
+// The global list remains the canonical source of truth; domain keys are read-
+// optimized projections that preserve bounded authority isolation.
+const DOMAIN_KEYS = {
+  acquisition: 'lineage:ledger:domain:acquisition',
+  publishing: 'lineage:ledger:domain:publishing',
+  scheduling: 'lineage:ledger:domain:scheduling',
+  dedup: 'lineage:ledger:domain:dedup',
+  engagement: 'lineage:ledger:domain:engagement',
+};
 
 // Worker operational keys
 const WORKER_KEYS = {
@@ -253,6 +266,45 @@ async function getDomainLineage(domainName, n) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TEST ONLY — REMOVE AFTER GAP TESTS COMPLETE
+// Direct ledger write for test injection (bypasses lineage worker)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function injectTestEntry(entry) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready') return;
+  const timestamp = entry._timestampOverride || Date.now();
+  const ledgerEntry = {
+    ledgerId: entry.ledgerId || `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    traceId: entry.traceId || `trace-${Date.now()}`,
+    domain: entry.domain,
+    entity: entry.entity,
+    entityId: entry.entityId,
+    previousState: entry.previousState || null,
+    nextState: entry.nextState,
+    authority: entry.authority || 'test-injector',
+    raw: { ...entry.raw, entryType: 'TEST_INJECTED' },
+    timestamp,
+    ts: timestamp,
+    parentTransitionId: entry.parentTransitionId || null,
+    correlationId: entry.correlationId || null,
+  };
+  await redis.rpush(REDIS_KEY_WORKER, JSON.stringify(ledgerEntry));
+  return ledgerEntry;
+}
+
+// TEST ONLY — REMOVE AFTER GAP TESTS COMPLETE
+async function clearDomainLineage(domainName) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready') return;
+  const all = await getLineage();
+  const toDelete = all.filter(e => e.domain === domainName);
+  for (const entry of toDelete) {
+    await redis.lrem(REDIS_KEY_WORKER, 1, JSON.stringify(entry));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Rehydration — load persisted lineage from Redis on boot
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -409,6 +461,8 @@ module.exports = {
   createEpoch,
   computeHash,
   getDomainLineage,
+  injectTestEntry,
+  clearDomainLineage,
   REDIS_KEY_WORKER,
   WORKER_KEYS,
   recordWorkerEntry,

@@ -495,6 +495,49 @@ function injectConflictingTransition({ domain = 'governance', entity = 'fsm', en
   return { entityId, previousState, nextStateA, nextStateB, timestamp: now };
 }
 
+// ============================================
+// TEST ONLY — REMOVE AFTER GAP TESTS COMPLETE
+// ============================================
+
+/**
+ * Inject a raw lineage entry directly into the ledger (bypasses worker polling).
+ * Used for GAP-2 and GAP-3 tests that need controlled lineage state.
+ *
+ * @param {object} opts
+ * @param {string} opts.domain - Domain name
+ * @param {string} opts.entity - Entity name
+ * @param {string} opts.entityId - Entity ID
+ * @param {string} opts.nextState - Next state
+ * @param {string} [opts.authority='test-injector'] - Authority
+ * @param {object} [opts.raw={}] - Raw data
+ * @param {number} [opts._timestampOverride] - Override timestamp (ms) for GAP-3 collision timing
+ * @returns {object} The injected entry
+ */
+function injectRawLineageEntry({ domain, entity, entityId, nextState, authority = 'test-injector', raw = {}, _timestampOverride }) {
+  const lineageLedger = require('../control-plane/governance/lineage-ledger.js');
+  const timestamp = _timestampOverride || Date.now();
+  const entry = {
+    ledgerId: `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    traceId: `trace-${Date.now()}`,
+    domain,
+    entity,
+    entityId,
+    previousState: null,
+    nextState,
+    authority,
+    raw: { ...raw, entryType: 'TEST_INJECTED' },
+    timestamp,
+    ts: timestamp,
+    parentTransitionId: null,
+    correlationId: null,
+  };
+  // Use the test-only injectTestEntry from lineage-ledger
+  if (typeof lineageLedger.injectTestEntry === 'function') {
+    lineageLedger.injectTestEntry(entry);
+  }
+  return entry;
+}
+
 module.exports = {
   injectAcquisitionIntent,
   injectLineageEvent,
@@ -507,5 +550,6 @@ module.exports = {
   injectDuplicateCausalChain,
   injectBrokenCausalChain,
   injectConflictingTransition,
+  injectRawLineageEntry,
   mockSubstrates,
 };

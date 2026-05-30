@@ -560,6 +560,7 @@ function runGeneralGuards(currentState, targetState) {
 let _currentState = 'BOOTING';
 let _stateEnteredAt = Date.now();
 let _loopInterval = null;
+let _reconInProgress = false; // Guard: prevent concurrent reconciliation cycles
 
 let _accountIds = [];
 
@@ -572,6 +573,13 @@ let _rehydratedDomainStates = null;
 // Action subscription
 const _actionSubscribers = new Map(); // actionType → Set<fn>
 let _legacyActionSubscriber = null;
+
+// Reconciliation cycle reentrancy guard + completion promise
+// triggerReconciliation() sets _reconInProgress=true and a new completion promise.
+// The cycle stub (RECONCILIATION_CYCLE_COMPLETE) resolves the promise, unblocking
+// triggerReconciliation() callers that await the result.
+let _reconPromiseResolve = null;
+let _reconPromiseReject = null;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 5. Action dispatcher
@@ -966,97 +974,58 @@ function _buildSubstrateQueries() {
 /**
  * Trigger a complete reconciliation cycle.
  *
- * Owns the full lifecycle:
- *   1. Dispatch RECONCILIATION_TICK → FSM transitions IDLE → RECONCILING
- *      (FSM validates via ctx.validate, emits CYCLE_STARTED action)
- *   2. Death detection: if canonical lineage is compromised AND checkpoint exists,
- *      trigger constitutional death → reboot from checkpoint → return
- *   3. Call the dumb engine.compare() directly (CK-owned async mechanical work)
- *   4. Dispatch RECONCILIATION_RESULTS_RECEIVED → FSM → CONVERGENT/DRIFTED
- *   5. Dispatch RECONCILIATION_CYCLE_COMPLETE → FSM → IDLE
- *   6. Stability checkpoint: if all gates pass, snapshot to filesystem
+ * Lifecycle ownership (now split between trigger and bridge subscriber):
+ *   triggerReconciliation():
+ *     1. Death detection — abort before dispatch if lineage is already dead
+ *     2. Set up completion promise — resolved by bridge subscriber when cycle ends
+ *     3. Dispatch RECONCILIATION_TICK → FSM transitions IDLE → RECONCILING
+ *        (FSM validates via ctx.validate, emits CYCLE_STARTED action)
+ *     4. Return the promise — callers await this
+ *
+ *   Bridge subscriber (Section 11 wiring at module init):
+ *     5. Run the async engine comparison (mechanical work)
+ *     6. HSM verifies constitutional hash independently
+ *     7. Dispatch RECONCILIATION_RESULTS_RECEIVED → FSM → CONVERGENT/DRIFTED
+ *     8. Dispatch RECONCILIATION_CYCLE_COMPLETE → FSM → IDLE
+ *     9. Resolve the completion promise
+ *    10. Stability checkpoint if all gates pass
  *
  * Constitutional invariant:
  *   The cycle ALWAYS completes. Even on engine failure, a CYCLE_COMPLETE
  *   is dispatched so the FSM returns to IDLE and subsequent cycles can proceed.
  *
- * @returns {Promise<void>}
+ * @returns {Promise<{ observations: Array, worstSeverity: number, hash: string, hashMismatch: boolean, elapsedMs: number }>|null}
  */
 async function triggerReconciliation() {
-  // Phase 1: Initiate the cycle — FSM transitions IDLE → RECONCILING
-  dispatch({ type: 'RECONCILIATION_TICK' });
+  // ── Reentrancy guard — prevent concurrent cycles ───────────────────────
+  if (_reconInProgress) {
+    console.warn('[constitutional-kernel] Reconciliation cycle already in progress — rejecting concurrent trigger');
+    return null;
+  }
+  _reconInProgress = true;
 
-  // ── Death detection (multi-criterion) ────────────────────────────
+  // ── Death detection BEFORE starting — abort if lineage is already dead ──
   const ledgerSize = await lineageLedger.getSize();
   const ckpt = checkpointer.getCheckpoint();
   if (_detectConstitutionalDeath(ledgerSize, ckpt)) {
     await _triggerConstitutionalDeath(ckpt);
-    return; // reboot handles everything — cycle aborted
+    _reconInProgress = false;
+    return null;
   }
 
-  // Phase 2: Run the engine comparison (CK-owned async mechanical work)
-  let observations = [];
-  let worstSeverity = 0;
-  let hash = '';
-  let hashMismatch = false;
+  // ── Set up completion promise — bridge subscriber resolves it on cycle end ──
+  const result = await new Promise((resolve) => {
+    _reconPromiseResolve = resolve;
+    _reconPromiseReject = null;
 
-  try {
-    const engine = require('./reconciliation-engine');
-    const substrates = _buildSubstrateQueries();
-    const results = await engine.compare({ fsms: _domains, substrates, lineageLedger });
-
-    observations = results.observations;
-    worstSeverity = results.worstSeverity;
-    hash = results.hash;
-
-    // HSM independently verifies constitutional hash
-    const currentHash = await lineageLedger.computeHash();
-    hashMismatch = results.hash !== currentHash;
-    if (hashMismatch) {
-      console.error('[constitutional-kernel] Constitutional HASH MISMATCH during reconciliation');
-      _emitGovernanceTransition(_currentState, _currentState, {
-        intent: 'RECONCILIATION_HASH_MISMATCH',
-        reason: 'Constitutional identity divergence detected during reconciliation cycle',
-      });
-    }
-  } catch (err) {
-    console.error('[constitutional-kernel] Reconciliation engine error:', err.message);
-  }
-
-  // Phase 3: Route results through FSM — transitions to CONVERGENT or DRIFTED
-  dispatch({
-    type: 'RECONCILIATION_RESULTS_RECEIVED',
-    observations,
-    worstSeverity,
-    hash,
-    hashMismatch,
+    // Phase 1: Initiate the cycle — FSM transitions IDLE → RECONCILING
+    // and emits RECONCILIATION_CYCLE_STARTED action, which the bridge
+    // subscriber picks up to run the async engine work.
+    dispatch({ type: 'RECONCILIATION_TICK' });
   });
 
-  // Phase 4: Always complete the cycle — FSM returns to IDLE
-  dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
-
-  // ── Stability checkpoint ──────────────────────────────────────────
-  if (_canCheckpoint()) {
-    try {
-      const entries = await lineageLedger.getLineage(200);
-      const currentHash = await lineageLedger.computeHash();
-      const reconFsm = _domains.get('reconciliation');
-      const domainStates = {};
-      for (const [name, fsm] of _domains) {
-        domainStates[name] = fsm && typeof fsm.getState === 'function' ? fsm.getState() : 'unknown';
-      }
-      checkpointer.createSnapshot({
-        entries,
-        hash: currentHash,
-        entryCount: await lineageLedger.getSize(),
-        domainStates,
-        epochCount: reconFsm && typeof reconFsm.getEpochCount === 'function'
-          ? reconFsm.getEpochCount() : 0,
-      });
-    } catch (e) {
-      console.error('[constitutional-kernel] Checkpoint creation failed:', e.message);
-    }
-  }
+  _reconInProgress = false;
+  return result;
 }
 
 /**
@@ -1370,6 +1339,97 @@ function clearCircuitBreaker(accountId) {
 // has started. This ensures CK reads from a ledger populated by the worker
 // rather than rehydrating from an empty/potentially-stale Redis key.
 // Boot order: orchestrator → observability.init() → worker.start() → CK.rehydrate()
+
+// ── Section 11 reconciliation bridge subscriber wiring ──────────────────────
+// When the reconciliation FSM transitions to RECONCILING, it emits
+// RECONCILIATION_CYCLE_STARTED. This subscriber catches that action,
+// calls the dumb reconciliation engine, verifies constitutional hash integrity,
+// and dispatches results back to the FSM via RECONCILIATION_RESULTS_RECEIVED.
+// This is the async mechanical work that the FSM cannot perform itself.
+//
+// The cycle ALWAYS completes — even on engine failure, RECONCILIATION_RESULTS_RECEIVED
+// and RECONCILIATION_CYCLE_COMPLETE are dispatched so the FSM returns to IDLE
+// and subsequent cycles can proceed.
+subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
+  // Phase 1 already done by FSM (RECONCILING state set, cycle slate reset).
+  // Phase 2: Run the async engine comparison.
+
+  let observations = [];
+  let worstSeverity = 0;
+  let hash = '';
+  let hashMismatch = false;
+
+  try {
+    const engine = require('./reconciliation-engine');
+    const substrates = _buildSubstrateQueries();
+    const results = await engine.compare({ fsms: _domains, substrates, lineageLedger });
+
+    observations = results.observations || [];
+    worstSeverity = results.worstSeverity || 0;
+    hash = results.hash || '';
+
+    // HSM independently verifies constitutional hash
+    const currentHash = await lineageLedger.computeHash();
+    hashMismatch = results.hash !== currentHash;
+    if (hashMismatch) {
+      console.error('[constitutional-kernel] Constitutional HASH MISMATCH during reconciliation');
+      _emitGovernanceTransition(_currentState, _currentState, {
+        intent: 'RECONCILIATION_HASH_MISMATCH',
+        reason: 'Constitutional identity divergence detected during reconciliation cycle',
+      });
+    }
+  } catch (err) {
+    console.error('[constitutional-kernel] Reconciliation engine error:', err.message);
+  }
+
+  // Phase 3: Route results through FSM — FSM transitions RECONCILING → CONVERGENT or DRIFTED
+  dispatch({
+    type: 'RECONCILIATION_RESULTS_RECEIVED',
+    observations,
+    worstSeverity,
+    hash,
+    hashMismatch,
+  });
+
+  // Phase 4: Always complete the cycle — FSM returns to IDLE
+  dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
+
+  // Resolve the promise so triggerReconciliation() callers unblock
+  if (_reconPromiseResolve) {
+    _reconPromiseResolve({
+      observations,
+      worstSeverity,
+      hash,
+      hashMismatch,
+      elapsedMs: Date.now() - _stateEnteredAt,
+    });
+    _reconPromiseResolve = null;
+    _reconPromiseReject = null;
+  }
+
+  // ── Stability checkpoint ──────────────────────────────────────────────────
+  if (_canCheckpoint()) {
+    try {
+      const entries = await lineageLedger.getLineage(200);
+      const currentHash = await lineageLedger.computeHash();
+      const reconFsm = _domains.get('reconciliation');
+      const domainStates = {};
+      for (const [name, fsm] of _domains) {
+        domainStates[name] = fsm && typeof fsm.getState === 'function' ? fsm.getState() : 'unknown';
+      }
+      checkpointer.createSnapshot({
+        entries,
+        hash: currentHash,
+        entryCount: await lineageLedger.getSize(),
+        domainStates,
+        epochCount: reconFsm && typeof reconFsm.getEpochCount === 'function'
+          ? reconFsm.getEpochCount() : 0,
+      });
+    } catch (e) {
+      console.error('[constitutional-kernel] Checkpoint creation failed:', e.message);
+    }
+  }
+});
 
 module.exports = {
   dispatch,

@@ -6,11 +6,17 @@
  *   observability → CK domain registration → telemetry workers →
  *   lineage worker → CK rehydrate → CK startLoop
  *
- * Provides controlled entry points for:
- *   - Direct reconciliation engine comparison (gap testing)
- *   - Full reconciliation cycle through CK bridge (integration testing)
- *   - Chaos injection (adversarial lineage, worker massacre, Redis restart)
- *   - Worker lifecycle management (kill/restart)
+ * Boot order (matches production orchestrator exactly):
+ *   1. observability.init()
+ *   2. Register all 7 domain FSMs with CK
+ *   3. Start engagement telemetry adapter (raw bounded telemetry pre-processor)
+ *   4. Start telemetry projection workers (5 workers)
+ *   5. Start lineage worker (consumes observability → writes ledger)
+ *   6. metricsSubstrate.init()
+ *   7. CK.rehydrate()
+ *   8. lifecycle.refresh() + LIFECYCLE_REFRESHED dispatch
+ *   9. BOOT_COMPLETE dispatch (CK: BOOTING → HEALTHY)
+ *   10. CK.startLoop()
  *
  * Architectural invariant:
  *   This simulator is a TEST SUBSTRATE. It never mutates constitutional state,
@@ -31,6 +37,9 @@ const telemetryWorkers = require('../../control-plane/telemetry-workers/index.js
 const lineageWorker = require('../../control-plane/governance/lineage-worker.js');
 const lineageLedger = require('../../control-plane/governance/lineage-ledger.js');
 const reconciliationEngine = require('../../control-plane/governance/reconciliation-engine.js');
+const metricsSubstrate = require('../../substrates/metrics-substrate.js');
+const lifecycle = require('../../control-plane/runtime/lifecycle.js');
+const engagementTelemetryAdapter = require('../../control-plane/governance/interpreters/engagement-telemetry-adapter.js');
 
 const acquisitionFsm = require('../../control-plane/governance/domains/acquisition-fsm.js');
 const publishingFsm = require('../../control-plane/governance/domains/publishing-fsm.js');
@@ -38,6 +47,7 @@ const schedulingFsm = require('../../control-plane/governance/domains/scheduling
 const dedupFsm = require('../../control-plane/governance/domains/dedup-fsm.js');
 const engagementFsm = require('../../control-plane/governance/domains/engagement-fsm.js');
 const reconciliationFsm = require('../../control-plane/governance/domains/reconciliation-fsm.js');
+const telemetryCoordinationFsm = require('../../control-plane/governance/domains/telemetry-coordination-fsm.js');
 
 const ALL_DOMAIN_FSMS = [
   acquisitionFsm,
@@ -46,6 +56,7 @@ const ALL_DOMAIN_FSMS = [
   dedupFsm,
   engagementFsm,
   reconciliationFsm,
+  telemetryCoordinationFsm,  // ← 7th domain (was missing)
 ];
 
 const DOMAIN_NAMES = ALL_DOMAIN_FSMS.map((f) => f.name);
@@ -74,21 +85,27 @@ class RuntimeSimulator {
     this._autoTick = autoTick;
     this._booted = false;
     this._lastReconResults = null;
-    this._reconResultsPromise = null;
-    this._reconResultsResolve = null;
     this._bootStartTime = null;
   }
 
-  // ═════════════════════════════════════════════════════════════════════
-  // Bootstrap / Teardown
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
+  // Bootstrap — matches production orchestrator boot order exactly
+  // ═════════════════════════════════════════════════════════════════════════
 
   /**
    * Boot the complete constitutional runtime stack.
    *
-   * Order matters: observability first (emission plane), then FSMs register
-   * into CK (authority), then workers start consuming, then CK rehydrates
-   * from the worker-populated ledger.
+   * Order matches production orchestrator.js startAllWorkers():
+   *   observability.init()
+   *   → register all 7 domain FSMs
+   *   → engagementTelemetryAdapter.start()
+   *   → telemetryWorkers.startAll()
+   *   → lineageWorker.start()
+   *   → metricsSubstrate.init()
+   *   → CK.rehydrate()
+   *   → lifecycle.refresh() + LIFECYCLE_REFRESHED dispatch
+   *   → BOOT_COMPLETE dispatch
+   *   → CK.startLoop()
    */
   async boot() {
     if (this._booted) {
@@ -101,34 +118,55 @@ class RuntimeSimulator {
     // 1. Initialise the observability plane
     await observability.init();
 
-    // 2. Register all 6 domain FSMs with the constitutional kernel
+    // 2. Register all 7 domain FSMs with the constitutional kernel
     for (const fsm of ALL_DOMAIN_FSMS) {
       CK.registerDomain(fsm);
     }
 
-    // 3. Start telemetry workers (5 projection workers)
+    // 3. Start engagement telemetry adapter — raw bounded telemetry pre-processor.
+    //    Emits RAW_METRICS_WINDOW, RAW_QUOTA_WINDOW, RAW_RATE_LIMIT_WINDOW to observability.
+    //    Must start before telemetry workers so workers can consume its emissions.
+    await engagementTelemetryAdapter.start();
+
+    // 4. Start telemetry projection workers (5 workers: runtime, integrity,
+    //    authority, health, systemic). Must start BEFORE lineage worker so
+    //    projections are available when lineage-worker starts consuming.
     await telemetryWorkers.startAll(this._telemetryPollMs);
 
-    // 4. Start lineage worker (consumes from observability → writes ledger)
+    // 5. Start lineage worker — consumes from observability plane → writes ledger.
+    //    MUST start after telemetry workers.
     await lineageWorker.start(this._lineagePollMs);
 
-    // 5. Rehydrate CK from the lineage ledger (worker has started populating it)
+    // 6. Initialise metrics substrate
+    await metricsSubstrate.init();
+
+    // 7. Rehydrate CK from the lineage ledger (worker has started populating it)
     await CK.rehydrate();
 
-    // 6. Optionally start the CK watchdog loop
+    // 8. Refresh lifecycle and dispatch account state — matches production order
+    await lifecycle.refresh();
+    const accounts = await require('../../substrates/persistence.js').getActiveAccounts();
+    CK.dispatch({
+      type: 'LIFECYCLE_REFRESHED',
+      accountIds: accounts.map((a) => a.id),
+    });
+
+    // 9. Signal boot complete — moves CK from BOOTING → HEALTHY
+    //    (production orchestrator does this; test substrate must replicate it)
+    CK.dispatch({ type: 'BOOT_COMPLETE' });
+
+    // 10. Start the CK watchdog loop
     if (this._autoTick) {
       CK.startLoop(this._tickIntervalMs);
     }
-
-    // 7. Signal boot complete — moves CK from BOOTING → HEALTHY
-    //    (production orchestrator does this; test substrate must replicate it)
-    CK.dispatch({ type: 'BOOT_COMPLETE' });
 
     // Allow worker ingestion to catch up to initial boot state
     await sleep(300);
 
     this._booted = true;
-    console.log(`[runtime-simulator] Boot complete — ${DOMAIN_NAMES.length} domains registered, workers started`);
+    console.log(
+      `[runtime-simulator] Boot complete — ${DOMAIN_NAMES.length} domains registered, workers started`
+    );
   }
 
   /**
@@ -144,15 +182,16 @@ class RuntimeSimulator {
 
     await lineageWorker.stop();
     await telemetryWorkers.stopAll();
+    await engagementTelemetryAdapter.stop();
     await observability.stop();
 
     this._booted = false;
     console.log('[runtime-simulator] Shutdown complete');
   }
 
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
   // Reconciliation Engine — Direct Comparison (Gap Testing)
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
 
   /**
    * Run a direct reconciliation engine comparison.
@@ -220,10 +259,8 @@ class RuntimeSimulator {
         }
       },
       metricsSignals: () => {
-        const metricsSubstrate = require('../../substrates/metrics-substrate');
-        return metricsSubstrate.getHealthSignals
-          ? metricsSubstrate.getHealthSignals()
-          : {};
+        const metricsSub = require('../../substrates/metrics-substrate');
+        return metricsSub.getHealthSignals ? metricsSub.getHealthSignals() : {};
       },
       cadenceLastTick: () => {
         return cadence.lastTick ? cadence.lastTick() : null;
@@ -236,24 +273,28 @@ class RuntimeSimulator {
     };
   }
 
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
   // Reconciliation Cycle — Through CK Bridge (Integration Testing)
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
 
   /**
    * Trigger a full reconciliation cycle through the CK.
    *
-   * The CK now directly owns the engine invocation and lifecycle completion.
-   * This method awaits the full cycle synchronously — no polling needed.
+   * The CK owns the full cycle: dispatch tick → FSM emits CYCLE_STARTED action →
+   * CK action subscriber fires async engine → CK dispatches results → FSM cycles
+   * back to IDLE. This method awaits the full cycle via the promise that
+   * the CK's action subscriber resolves when the cycle completes.
    *
-   * @param {number} [waitMs=5000] — max time to wait (unused, kept for backward compat)
+   * @param {number} [waitMs=5000] — unused, kept for backward compat
    * @returns {Promise<object>} reconciliation results
    */
   async triggerReconciliationCycle(waitMs = 5000) {
     const startTime = Date.now();
     const reconFsm = ALL_DOMAIN_FSMS.find((f) => f.name === 'reconciliation');
 
-    // CK owns the full cycle: dispatch tick → await engine → dispatch results → dispatch complete
+    // CK.triggerReconciliation() is now truly async (fire-and-forget to the
+    // subscriber, which resolves a promise when the full cycle completes).
+    // await ensures we wait for FSM to return to IDLE before reading results.
     await CK.triggerReconciliation();
 
     // Cycle is complete — FSM should be back in IDLE
@@ -261,9 +302,7 @@ class RuntimeSimulator {
 
     // Fetch results from ledger
     const recentEntries = await lineageLedger.getLineage(50);
-    const reconEntries = recentEntries.filter(
-      (e) => e.domain === 'reconciliation'
-    );
+    const reconEntries = recentEntries.filter((e) => e.domain === 'reconciliation');
     const lastResult = reconEntries[reconEntries.length - 1];
 
     this._lastReconResults = {
@@ -274,17 +313,12 @@ class RuntimeSimulator {
       timedOut: fsmEndState !== 'IDLE',
     };
 
-    if (this._reconResultsResolve) {
-      this._reconResultsResolve(this._lastReconResults);
-      this._reconResultsResolve = null;
-    }
-
     return this._lastReconResults;
   }
 
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
   // Chaos Injection
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
 
   /**
    * Kill all telemetry workers (simulate worker crash).
@@ -340,7 +374,9 @@ class RuntimeSimulator {
       observability.transition({
         domain: entry.domain || 'governance',
         entity: entry.entity || 'fsm',
-        entityId: entry.entityId || `chaos-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        entityId:
+          entry.entityId ||
+          `chaos-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         previousState: entry.previousState || 'IDLE',
         nextState: entry.nextState || 'CHAOS_INJECTED',
         authority: entry.authority || 'chaos-injector',
@@ -349,9 +385,9 @@ class RuntimeSimulator {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
   // State Queries
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════════════
 
   /**
    * Get the current CK global state.
@@ -418,6 +454,49 @@ class RuntimeSimulator {
    */
   get isBooted() {
     return this._booted;
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // TEST ONLY — FSM getters for controlled test state injection
+  // ═════════════════════════════════════════════════════════════════════════
+
+  getDedupFsm() {
+    return dedupFsm;
+  }
+
+  getEngagementFsm() {
+    return engagementFsm;
+  }
+
+  getSchedulingFsm() {
+    return schedulingFsm;
+  }
+
+  getAcquisitionFsm() {
+    return acquisitionFsm;
+  }
+
+  getPublishingFsm() {
+    return publishingFsm;
+  }
+
+  /**
+   * Wait for the lineage worker to ingest entries from the observability log.
+   * Polls until ledger size increases from the baseline.
+   *
+   * @param {number} [pollMs=500] - Poll interval in ms
+   * @param {number} [timeoutMs=3000] - Timeout in ms
+   */
+  async waitForWorkerIngestion(pollMs = 500, timeoutMs = 3000) {
+    const start = await lineageLedger.getSize();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const current = await lineageLedger.getSize();
+      if (current > start) return; // require NEW entries — not just same-as-start
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+    // Graceful timeout — ledger may already be at steady state; do not throw
+    console.warn(`[runtime-simulator] waitForWorkerIngestion timed out: ledger size unchanged at ${start}`);
   }
 }
 
