@@ -1,7 +1,7 @@
 // control-plane/governance/constitutional-kernel.js
 // Constitutional Kernel: arbiter of runtime legitimacy and invariant law.
 //
-// Owns: global lifecycle (BOOTING/HEALTHY/DEGRADED/RECOVERY/HALTED),
+// Owns: global lifecycle (BOOTING/HEALTHY/DEGRADED/RECOVERY/HALTED/DEAD),
 //        general guards, domain registration and coordination,
 //        cross-domain transition validation, watchdog staleness detection,
 //        action subscription fabric, unified lineage ledger (canonical truth).
@@ -30,6 +30,7 @@
 // (ctx.recordLineage) — they never directly access the lineage ledger.
 
 const lineageLedger = require('./lineage-ledger');
+const checkpointer = require('./lineage-checkpointer');
 
 // Lazy import to avoid circular dependency at module load time
 let _observabilityTransition = null;
@@ -347,6 +348,9 @@ const STATE_REGISTRY = {
   HALTED: {
     description: 'Runtime has halted — manual intervention required',
   },
+  DEAD: {
+    description: 'Runtime is dead — catastrophic lineage loss detected, reboot from checkpoint in progress',
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -359,6 +363,7 @@ const STATE_TTL_MS = {
   DEGRADED: 120_000,
   RECOVERY: 60_000,
   HALTED: Infinity,
+  DEAD: 10_000, // 10s max — watchdog forces reboot if death sequence stalls
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -508,6 +513,16 @@ const GLOBAL_TRANSITION_MAP = {
 function runGeneralGuards(currentState, targetState) {
   const results = [];
 
+  // Guard: DEAD blocks all transitions — only internal reboot may bypass
+  if (currentState === 'DEAD') {
+    results.push({
+      name: 'dead_lockdown',
+      passed: false,
+      reason: `Runtime is DEAD — all transitions blocked pending checkpoint reboot`,
+    });
+    return results;
+  }
+
   // Guard: HALTED can only transition to BOOTING (manual restart)
   if (currentState === 'HALTED' && targetState !== 'BOOTING') {
     results.push({
@@ -633,6 +648,11 @@ function _emitActions(actions) {
  * @returns {{ allowed: boolean, reason?: string }}
  */
 function validateDomainTransition(domainName, from, to, event) {
+  // DEAD lockdown — all domain transitions blocked during checkpoint reboot
+  if (_currentState === 'DEAD') {
+    return { allowed: false, reason: 'Runtime is DEAD — all domain transitions blocked pending checkpoint reboot' };
+  }
+
   // HALTED lockdown — no domain transitions allowed
   if (_currentState === 'HALTED') {
     return { allowed: false, reason: 'Global runtime is HALTED — all domain transitions blocked' };
@@ -944,23 +964,30 @@ function _buildSubstrateQueries() {
  * Owns the full lifecycle:
  *   1. Dispatch RECONCILIATION_TICK → FSM transitions IDLE → RECONCILING
  *      (FSM validates via ctx.validate, emits CYCLE_STARTED action)
- *   2. Call the dumb engine.compare() directly (CK-owned async mechanical work)
- *   3. Dispatch RECONCILIATION_RESULTS_RECEIVED → FSM → CONVERGENT/DRIFTED
- *      (FSM validates via ctx.validate, evaluates counters)
- *   4. Dispatch RECONCILIATION_CYCLE_COMPLETE → FSM → IDLE
- *      (FSM validates via ctx.validate, signals HSM if thresholds exceeded)
+ *   2. Death detection: if canonical lineage is compromised AND checkpoint exists,
+ *      trigger constitutional death → reboot from checkpoint → return
+ *   3. Call the dumb engine.compare() directly (CK-owned async mechanical work)
+ *   4. Dispatch RECONCILIATION_RESULTS_RECEIVED → FSM → CONVERGENT/DRIFTED
+ *   5. Dispatch RECONCILIATION_CYCLE_COMPLETE → FSM → IDLE
+ *   6. Stability checkpoint: if all gates pass, snapshot to filesystem
  *
  * Constitutional invariant:
  *   The cycle ALWAYS completes. Even on engine failure, a CYCLE_COMPLETE
  *   is dispatched so the FSM returns to IDLE and subsequent cycles can proceed.
- *   The FSM governs lifecycle interpretation; the CK performs mechanical work.
- *   No fire-and-forget subscriber — the CK directly awaits the engine.
  *
  * @returns {Promise<void>}
  */
 async function triggerReconciliation() {
   // Phase 1: Initiate the cycle — FSM transitions IDLE → RECONCILING
   dispatch({ type: 'RECONCILIATION_TICK' });
+
+  // ── Death detection (multi-criterion) ────────────────────────────
+  const ledgerSize = await lineageLedger.getSize();
+  const ckpt = checkpointer.getCheckpoint();
+  if (_detectConstitutionalDeath(ledgerSize, ckpt)) {
+    await _triggerConstitutionalDeath(ckpt);
+    return; // reboot handles everything — cycle aborted
+  }
 
   // Phase 2: Run the engine comparison (CK-owned async mechanical work)
   let observations = [];
@@ -989,11 +1016,9 @@ async function triggerReconciliation() {
     }
   } catch (err) {
     console.error('[constitutional-kernel] Reconciliation engine error:', err.message);
-    // Cycle still completes — engine failure is a signal, not a blockage
   }
 
   // Phase 3: Route results through FSM — transitions to CONVERGENT or DRIFTED
-  // FSM validates via ctx.validate, evaluates counters, signals HSM if needed
   dispatch({
     type: 'RECONCILIATION_RESULTS_RECEIVED',
     observations,
@@ -1003,9 +1028,213 @@ async function triggerReconciliation() {
   });
 
   // Phase 4: Always complete the cycle — FSM returns to IDLE
-  // FSM validates via ctx.validate(CONVERGENT/DRIFTED, IDLE)
-  // FSM buildActions: evaluates escalation thresholds, signals HSM via ctx.dispatchGlobal
   dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
+
+  // ── Stability checkpoint ──────────────────────────────────────────
+  if (_canCheckpoint()) {
+    try {
+      const entries = await lineageLedger.getLineage(200);
+      const currentHash = await lineageLedger.computeHash();
+      const reconFsm = _domains.get('reconciliation');
+      const domainStates = {};
+      for (const [name, fsm] of _domains) {
+        domainStates[name] = fsm && typeof fsm.getState === 'function' ? fsm.getState() : 'unknown';
+      }
+      checkpointer.createSnapshot({
+        entries,
+        hash: currentHash,
+        entryCount: await lineageLedger.getSize(),
+        domainStates,
+        epochCount: reconFsm && typeof reconFsm.getEpochCount === 'function'
+          ? reconFsm.getEpochCount() : 0,
+      });
+    } catch (e) {
+      console.error('[constitutional-kernel] Checkpoint creation failed:', e.message);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 11b. Constitutional Death Detection — multi-criterion
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Detect whether the canonical lineage has been constitutionally invalidated.
+ *
+ * Criteria (any one triggers death):
+ *   C1: Total extinction — ledger has 0 entries, CK is not BOOTING
+ *   C2: Partial truncation — ledger has >0 but <50% of checkpoint entry count
+ *   C3: Epoch regression — reconciliation epoch went backwards
+ *   C4: Hash discontinuity — deferred (requires hash chain in ledger entries)
+ *
+ * All criteria require: a checkpoint exists AND CK is not BOOTING.
+ *
+ * @param {number} ledgerSize — current lineage ledger entry count
+ * @param {object|null} ckpt — checkpoint from checkpointer.getCheckpoint()
+ * @returns {boolean} true if constitutional death should be triggered
+ */
+function _detectConstitutionalDeath(ledgerSize, ckpt) {
+  if (!ckpt) return false;
+  if (_currentState === 'BOOTING') return false;
+
+  // C1: Total extinction
+  if (ledgerSize === 0) {
+    console.error('[CK] Death criterion C1: total lineage extinction');
+    return true;
+  }
+
+  // C2: Partial truncation — >50% of entries silently dropped
+  if (ledgerSize > 0 && ckpt.entryCount > 0 && ledgerSize < ckpt.entryCount * 0.5) {
+    console.error(
+      `[CK] Death criterion C2: partial truncation — ` +
+      `${ledgerSize} entries vs checkpoint ${ckpt.entryCount}`
+    );
+    return true;
+  }
+
+  // C3: Epoch regression — reconciliation epoch went backwards
+  const reconFsm = _domains.get('reconciliation');
+  if (reconFsm && typeof reconFsm.getEpochCount === 'function') {
+    const currentEpoch = reconFsm.getEpochCount();
+    if (currentEpoch > 0 && ckpt.epochCount > currentEpoch) {
+      console.error(
+        `[CK] Death criterion C3: epoch regression — ` +
+        `current ${currentEpoch} < checkpoint ${ckpt.epochCount}`
+      );
+      return true;
+    }
+  }
+
+  // C4: Hash discontinuity — deferred
+  return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 11c. Stability Gate Evaluation — when to checkpoint
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Evaluate whether the runtime is in a constitutionally stable state
+ * suitable for creating a checkpoint snapshot.
+ *
+ * Gates:
+ *   G1: Governance must be HEALTHY
+ *   G2: Reconciliation FSM must be IDLE
+ *   G3: No active drift (consecutiveDrifted === 0)
+ *   G4: No escalation signaled
+ *   G5: Ingestion lag bounded (< 5 entry gap between log and ledger)
+ *
+ * @returns {boolean}
+ */
+function _canCheckpoint() {
+  // G1: Governance must be HEALTHY
+  if (_currentState !== 'HEALTHY') return false;
+
+  // G2: Reconciliation FSM must be IDLE
+  const reconFsm = _domains.get('reconciliation');
+  if (!reconFsm || reconFsm.getState() !== 'IDLE') return false;
+
+  // G3: No active drift
+  const health = reconFsm.getHealth ? reconFsm.getHealth() : {};
+  if (health.signals && health.signals.consecutiveDrifted > 0) return false;
+
+  // G4: No escalation signaled
+  if (health.signals && health.signals.escalationSignaled) return false;
+
+  // G5: Ingestion lag bounded
+  try {
+    const lw = require('./lineage-worker');
+    const obs = require('../observability');
+    const logSize = obs.query ? obs.query.getLogSize() : 0;
+    const lwSize = lw.getLedgerSize ? lw.getLedgerSize() : 0;
+    if (Math.abs(logSize - lwSize) > 5) return false;
+  } catch (_) {
+    return false;
+  }
+
+  return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 11d. Constitutional Death Sequence — checkpoint reboot
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Execute the constitutional death and reboot sequence.
+ *
+ *   1. Enter DEAD — blocks all dispatch and domain transitions
+ *   2. Stop all workers
+ *   3. Clear stale in-memory state
+ *   4. Restore lineage from checkpoint file → Redis
+ *   5. Rehydrate CK from restored lineage
+ *   6. Re-register domains with rehydrated states
+ *   7. Restart workers
+ *   8. Dispatch BOOT_COMPLETE → HEALTHY
+ *   9. Clear checkpoint (consumed)
+ *
+ * @param {object} ckpt — checkpoint from checkpointer.getCheckpoint()
+ * @returns {Promise<void>}
+ */
+async function _triggerConstitutionalDeath(ckpt) {
+  console.error('[CK] CONSTITUTIONAL DEATH — canonical lineage invalidated, rebooting from checkpoint');
+
+  // 1. Enter DEAD
+  const priorState = _currentState;
+  _currentState = 'DEAD';
+  _stateEnteredAt = Date.now();
+  _emitGovernanceTransition(priorState, 'DEAD', {
+    intent: 'CONSTITUTIONAL_DEATH',
+    reason: 'Canonical lineage ledger invalidated — rebooting from checkpoint',
+  });
+
+  // 2. Stop all workers
+  try { await require('./lineage-worker').stop(); } catch (e) { console.warn('[CK] Lineage worker stop error:', e.message); }
+  try { await require('../telemetry-workers').stopAll(); } catch (e) { console.warn('[CK] Telemetry workers stop error:', e.message); }
+
+  // 3. Clear stale in-memory domain states
+  _rehydratedDomainStates = null;
+
+  // 4. Restore lineage from checkpoint file → Redis
+  try {
+    for (const entry of (ckpt.entries || [])) {
+      await lineageLedger.recordWorkerEntry(entry);
+    }
+    console.log(`[CK] Checkpoint restored: ${ckpt.entries.length} entries written to Redis`);
+  } catch (e) {
+    console.error('[CK] Checkpoint restore FAILED:', e.message);
+    dispatch({ type: 'FATAL_ERROR', reason: `Checkpoint restore failed: ${e.message}` });
+    return; // do not continue — runtime enters HALTED via FATAL_ERROR
+  }
+
+  // 5. Rehydrate CK from restored lineage
+  try {
+    await rehydrate();
+  } catch (e) {
+    console.error('[CK] Rehydration after checkpoint restore FAILED:', e.message);
+    dispatch({ type: 'FATAL_ERROR', reason: `Post-checkpoint rehydration failed: ${e.message}` });
+    return;
+  }
+
+  // 6. Re-register domains with rehydrated states
+  for (const [name, fsm] of _domains) {
+    const state = _rehydratedDomainStates ? _rehydratedDomainStates[name] : null;
+    if (state && typeof fsm.init === 'function') {
+      fsm.init(state);
+      console.log(`[CK] Domain '${name}' re-initialized with checkpoint state: ${state}`);
+    }
+  }
+
+  // 7. Restart workers
+  try { await require('../telemetry-workers').startAll(); } catch (e) { console.warn('[CK] Telemetry workers restart error:', e.message); }
+  try { await require('./lineage-worker').start(400); } catch (e) { console.warn('[CK] Lineage worker restart error:', e.message); }
+
+  // 8. Dispatch BOOT_COMPLETE → HEALTHY
+  dispatch({ type: 'BOOT_COMPLETE' });
+
+  // 9. Clear checkpoint — consumed, new one will be created later
+  checkpointer.clearCheckpoint();
+
+  console.log('[CK] Constitutional death reboot complete — running from checkpoint');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

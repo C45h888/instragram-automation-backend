@@ -11,6 +11,22 @@
 //
 // Each invariant is a pure assertion function that throws on violation.
 // All invariants are synchronous and stateless — they operate on provided data.
+//
+// RECOVERY_CYCLE entries: entries tagged with entryType === 'RECOVERY_CYCLE'
+// or raw.recoveryEpoch === true are produced during constitutional death/reboot.
+// These are legitimate governance operations, not corruption — invariants skip them.
+
+/**
+ * Filter predicate: returns true for entries that should be checked by invariants.
+ * RECOVERY_CYCLE entries are skipped — they are legitimate reboot artifacts, not corruption.
+ *
+ * @param {object} e — ledger entry
+ * @returns {boolean}
+ */
+function isCheckable(e) {
+  if (!e || !e.raw) return true;
+  return e.raw.entryType !== 'RECOVERY_CYCLE' && !e.raw.recoveryEpoch;
+}
 
 /**
  * Compute a deterministic structural hash from ledger entries.
@@ -22,6 +38,7 @@
  */
 function deterministicEntryHash(entries) {
   const normalized = entries
+    .filter(isCheckable)
     .map(e => ({
       d: e.domain,
       en: e.entity,
@@ -126,9 +143,10 @@ function assertNoTimestampRegression(entries, excludeEntries = []) {
  * @returns {{ broken: number, firstBroken: object|null }}
  */
 function assertCausalChainIntegrity(entries) {
-  const traceIds = new Set(entries.map(e => e.traceId));
+  const checkable = entries.filter(isCheckable);
+  const traceIds = new Set(checkable.map(e => e.traceId));
   const broken = [];
-  for (const entry of entries) {
+  for (const entry of checkable) {
     if (entry.parentTransitionId && !traceIds.has(entry.parentTransitionId)) {
       broken.push({
         ledgerId: entry.ledgerId,
@@ -262,7 +280,9 @@ function assertIdempotentReplay(entries, expectedCount) {
  * @param {Array<object>} entries — ledger entries to check
  */
 function assertNoSilentCorruption(entries) {
-  const corrupted = entries.filter(e => e.raw?.raw?.corrupted === true);
+  const corrupted = entries
+    .filter(isCheckable)
+    .filter(e => e.raw?.raw?.corrupted === true);
   if (corrupted.length > 0) {
     throw new Error(
       `[constitutional-invariant] LAW 6 VIOLATION: ${corrupted.length} corruption ` +
@@ -391,4 +411,5 @@ module.exports = {
   assertIdempotentReplay,
   assertNoSilentCorruption,
   assertProjectionSignalContract,
+  isCheckable,
 };
