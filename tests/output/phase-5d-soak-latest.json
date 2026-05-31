@@ -1,0 +1,50 @@
+{
+
+  "phase": "5D",
+  "test": "1-hour-longitudinal-constitutional-soak",
+  "soakConfig": {
+    "SOAK_DURATION_MS": 3600000,
+    "TICK_INTERVAL_MS": 500,
+    "ADVERSARIAL_INTERVAL_TICKS": 30,
+    "RECON_INTERVAL_MS": 60000,
+    "CHECKPOINT_INTERVAL_MS": 300000,
+    "RECYCLE_INTERVAL_MS": 600000,
+    "LEDGER_LOOKBACK": 500,
+    "expectedTicks": 7200
+  },
+  "results": {
+    "elapsed_ms": 3606470,
+    "elapsed_min": 60,
+    "tickCount": 5546,
+    "legalCount": null,
+    "adversarialCount": null,
+    "reconCycleCount": null,
+    "checkpointCount": null,
+    "finalLedgerSize": null,
+    "finalCkState": null,
+    "monitorViolationCount": null,
+    "violatedCheckpointCount": null,
+    "assertionFailure": "expected 5546 to be greater than or equal to 6120",
+    "assertionLine": 388,
+    "note": "Test failed at stopMonitor() — writeSoakReport() never reached. Intermediate soak data not captured."
+  },
+  "monitorReport": {
+    "snapshots": [],
+    "violations": [],
+    "summary": {
+      "totalSnapshots": null,
+      "totalViolations": null,
+      "lastLedgerSize": null,
+      "maxLedgerSize": null
+    }
+  },
+  "reconResults": [],
+  "checkpoints": [],
+  "generatedAt": "2026-05-31T17:37:03.000Z",
+  "testStartAt": "2026-05-31T11:30:57.000Z",
+  "testDuration_s": 3606.44,
+  "failureMode": "TICK_RATE_DEGRADATION",
+  "tickRateActual_pct": 77.03,
+  "tickRateRequired_pct": 85.0,
+  "rootCause": "5546 ticks in 3600s = 1.54 ticks/s actual vs 2.0 ticks/s expected. Ticker fell behind due to blocking async events (recon/ck operations) not properly scheduled concurrently."
+}

@@ -402,6 +402,7 @@ describe('Phase 5A: Reconciliation Engine Gap Tests', () => {
     it('FSM has active breaker + lineage OPEN + substrate confirms → no ORPHANED_CIRCUIT_BREAKER', async () => {
       const engagementFsm = sim.getEngagementFsm();
       const eventInjector = require('./event-injector.js');
+      const lineageLedger = require('../control-plane/governance/lineage-ledger.js');
 
       if (typeof lineageLedger?.clearDomainLineage === 'function') {
         await lineageLedger.clearDomainLineage('engagement');

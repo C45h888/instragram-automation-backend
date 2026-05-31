@@ -24,8 +24,9 @@
 #   ./tests/run-all-tests.sh --phase-3      Phase 3 only
 #   ./tests/run-all-tests.sh --phase-4      Phase 4 only (includes 4N soak)
 #   ./tests/run-all-tests.sh --phase-5      Phase 5 only (includes 5D soak)
+#   ./tests/run-all-tests.sh --phase-6      Phase 6 only (includes 45-min soak)
 #   ./tests/run-all-tests.sh --phases-1-3   Fast phases only (1–3)
-#   ./tests/run-all-tests.sh --skip-soaks   All phases but skip 4N and 5D
+#   ./tests/run-all-tests.sh --skip-soaks   All phases but skip 4N, 5D, and 6 soak
 #   ./tests/run-all-tests.sh --keep-up      Leave stack running after tests
 #
 # Examples:
@@ -49,12 +50,13 @@ RUN_P2=false
 RUN_P3=false
 RUN_P4=false
 RUN_P5=false
+RUN_P6=false
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
     --all)
-      RUN_P1=true; RUN_P2=true; RUN_P3=true; RUN_P4=true; RUN_P5=true; shift ;;
+      RUN_P1=true; RUN_P2=true; RUN_P3=true; RUN_P4=true; RUN_P5=true; RUN_P6=true; shift ;;
     --phases-1-3)
       RUN_P1=true; RUN_P2=true; RUN_P3=true; shift ;;
     --phase-1) RUN_P1=true; shift ;;
@@ -62,19 +64,20 @@ while [[ $# -gt 0 ]]; do
     --phase-3) RUN_P3=true; shift ;;
     --phase-4) RUN_P4=true; shift ;;
     --phase-5) RUN_P5=true; shift ;;
+    --phase-6) RUN_P6=true; shift ;;
     --skip-soaks) SKIP_SOAKS=true; shift ;;
     --keep-up) KEEP_UP=true; shift ;;
     *)
-      echo "Usage: $0 [--all|--phases-1-3|--phase-1|--phase-2|--phase-3|--phase-4|--phase-5] [--skip-soaks] [--keep-up]"
+      echo "Usage: $0 [--all|--phases-1-3|--phase-1|--phase-2|--phase-3|--phase-4|--phase-5|--phase-6] [--skip-soaks] [--keep-up]"
       exit 1 ;;
   esac
 done
 
 # ── If nothing selected, print usage ─────────────────────────────────────────
 if [ "$RUN_P1" = false ] && [ "$RUN_P2" = false ] && [ "$RUN_P3" = false ] && \
-   [ "$RUN_P4" = false ] && [ "$RUN_P5" = false ]; then
+   [ "$RUN_P4" = false ] && [ "$RUN_P5" = false ] && [ "$RUN_P6" = false ]; then
   echo "No phases selected. Use --all, --phases-1-3, or --phase-N."
-  echo "Usage: $0 [--all|--phases-1-3|--phase-1|--phase-2|--phase-3|--phase-4|--phase-5] [--skip-soaks] [--keep-up]"
+  echo "Usage: $0 [--all|--phases-1-3|--phase-1|--phase-2|--phase-3|--phase-4|--phase-5|--phase-6] [--skip-soaks] [--keep-up]"
   exit 1
 fi
 
@@ -258,6 +261,33 @@ if [ "$RUN_P5" = true ]; then
       "PHASE5D_RECON_MS=60000" \
       "PHASE5D_CHECKPOINT_MS=300000" \
       "PHASE5D_RECYCLE_MS=600000" \
+      || OVERALL_RESULT=1
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 6 — Telemetry Coordination FSM (~55 min with soak)
+# ═══════════════════════════════════════════════════════════════════════════════
+if [ "$RUN_P6" = true ]; then
+  echo ""
+  echo "┌──────────────────────────────────────────────────────────┐"
+  echo "│  PHASE 6 — Telemetry Coordination FSM                    │"
+  echo "└──────────────────────────────────────────────────────────┘"
+
+  # 6 — 45-minute coordination soak (no fast path)
+  if [ "$SKIP_SOAKS" = true ]; then
+    echo ""
+    echo "  [SKIP] Phase 6 — Coordination Soak (--skip-soaks)"
+  else
+    run_test "Phase 6 — Telemetry Coordination FSM (targeted + 45-min soak)" \
+      "tests/phase-6-telemetry-coordination-fsm.test.js" \
+      "PHASE6_SOAK_MS=2700000" \
+      "PHASE6_TICK_MS=500" \
+      "PHASE6_ADV_INTERVAL=25" \
+      "PHASE6_COORD_MS=30000" \
+      "PHASE6_CHECKPOINT_MS=120000" \
+      "PHASE6_RECYCLE_MS=300000" \
+      "PHASE6_LIN_RECYCLE_MS=600000" \
       || OVERALL_RESULT=1
   fi
 fi

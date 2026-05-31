@@ -428,6 +428,10 @@ async function injectTestEntry(entry) {
     correlationId: entry.correlationId || null,
   };
   await redis.rpush(REDIS_KEY_WORKER, JSON.stringify(ledgerEntry));
+  const domainKey = DOMAIN_KEYS[entry.domain];
+  if (domainKey) {
+    await redis.rpush(domainKey, JSON.stringify(ledgerEntry));
+  }
   return ledgerEntry;
 }
 

@@ -104,12 +104,28 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
     async () => {
       const startTime = Date.now();
 
-      try {
+      // Hoist expectedTicks so finally block (no catch scope) can reference it
+      let expectedTicks = 0;
 
-      // ── Counters ─────────────────────────────────────────────────
+      // Hoist variables that finally block reads even when assertions throw
+      let elapsed_ms = 0;
+      let elapsed_min = 0;
+      let finalLedger = [];
+      let finalCkState = 'UNKNOWN';
+      let finalProjections = null;
+      let monitorReport = {};
+      let violatedCheckpoints = [];
+      let checkpoints = [];
+      let reconResults = [];
       let tickCount = 0;
       let adversarialCount = 0;
       let legalCount = 0;
+      let reconCycleCount = 0;
+
+      try {
+
+      // ── Counters ─────────────────────────────────────────────────
+      // (tickCount, adversarialCount, legalCount, reconCycleCount already hoisted above)
 
       // ── Start runtime monitoring probe ────────────────────────────
       const probeStarted = await startMonitor({
@@ -248,8 +264,8 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
       }, TICK_INTERVAL_MS);
 
       // ── Reconciliation cycle timer ────────────────────────────────
-      let reconCycleCount = 0;
-      const reconResults = [];
+      // (reconCycleCount already hoisted above)
+      reconResults = [];
 
       const reconTimer = setInterval(async () => {
         try {
@@ -271,7 +287,7 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
       }, RECON_INTERVAL_MS);
 
       // ── Checkpoint timer — verify all 7 constitutional laws ───────
-      const checkpoints = [];
+      // (checkpoints already hoisted above)
       let lastLogSize = 0;
 
       const checkpointTimer = setInterval(async () => {
@@ -371,20 +387,20 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
 
       // ── Stop monitor and get report ───────────────────────────────
       await stopMonitor();
-      const monitorReport = getReport();
+      monitorReport = getReport();
 
       // ════════════════════════════════════════════════════════════════
       // FINAL VERIFICATION
       // ════════════════════════════════════════════════════════════════
 
-      const elapsed_ms = Date.now() - startTime;
-      const elapsed_min = Math.round(elapsed_ms / 60000);
-      const finalLedger = await sim.getLineage(2000);
-      const finalCkState = sim.getCKState();
-      const finalProjections = sim.getProjections();
+      elapsed_ms = Date.now() - startTime;
+      elapsed_min = Math.round(elapsed_ms / 60000);
+      finalLedger = await sim.getLineage(2000);
+      finalCkState = sim.getCKState();
+      finalProjections = sim.getProjections();
 
       // ── Tick count must be within 10% of expected ─────────────────
-      const expectedTicks = Math.floor(SOAK_DURATION_MS / TICK_INTERVAL_MS);
+      expectedTicks = Math.floor(SOAK_DURATION_MS / TICK_INTERVAL_MS);
       expect(tickCount).toBeGreaterThanOrEqual(expectedTicks * 0.85);
 
       // ── At least 50 reconciliation cycles must have fired ─────────
@@ -433,7 +449,7 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
       expect(flaggedAdversarial.length).toBeGreaterThan(0);
 
       // ── Checkpoints must show no constitutional violations ────────
-      const violatedCheckpoints = checkpoints.filter(
+      violatedCheckpoints = checkpoints.filter(
         (cp) => cp.violations && cp.violations.length > 0
       );
       if (violatedCheckpoints.length > 0) {

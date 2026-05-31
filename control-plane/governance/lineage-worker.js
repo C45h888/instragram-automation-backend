@@ -334,18 +334,17 @@ function _ingestTick() {
  */
 function _persistEntry(entry) {
   try {
-    lineageLedger.recordWorkerEntry(entry);
+    // recordWorkerEntry is async — chain .catch() to avoid unhandled rejection
+    // if Redis is not yet ready (e.g., during initial tick before connection settles).
+    lineageLedger.recordWorkerEntry(entry).catch(err => {
+      console.error('[lineage-worker] Failed to persist ledger entry:', err.message);
+    });
     // Dual-write: domain-partitioned key for bounded authority reads.
     // The domain key is a materialized projection — the global list remains canonical.
     // Failure to write the domain key is non-fatal; reconciliation will detect any gap.
-    try {
-      lineageLedger.recordWorkerDomainEntry(entry.domain, entry);
-    } catch (domainErr) {
-      // Domain key write failure is logged but does not block ingestion.
-      // The global ledger remains authoritative; domain reads will be incomplete
-      // but reconciliation will flag the gap via STALE_MATERIALIZED_STATE.
+    lineageLedger.recordWorkerDomainEntry(entry.domain, entry).catch(domainErr => {
       console.error(`[lineage-worker] Domain key write failed for ${entry.domain}:`, domainErr.message);
-    }
+    });
     return true;
   } catch (err) {
     console.error('[lineage-worker] Failed to persist ledger entry:', err.message);
@@ -644,26 +643,24 @@ function _recordInterpretationAnomaly(type, details) {
  * Fire-and-forget — divergence recording does not block ingestion.
  */
 function _recordDivergenceEntry(anomaly) {
-  try {
-    lineageLedger.recordWorkerEntry({
-      ledgerId: crypto.randomUUID(),
-      timestamp: anomaly.timestamp,
-      ingestedAt: Date.now(),
-      entryType: 'divergence',
-      domain: 'governance',
-      entity: 'divergence',
-      entityId: anomaly.id,
-      previousState: null,
-      nextState: anomaly.type,
-      authority: 'lineage-worker',
-      divergenceCategory: anomaly.category,
-      divergenceDetails: anomaly.details,
-      projectionVersion: PROJECTION_VERSION,
-      lineageVersion: LINEAGE_VERSION,
-    });
-  } catch (err) {
+  lineageLedger.recordWorkerEntry({
+    ledgerId: crypto.randomUUID(),
+    timestamp: anomaly.timestamp,
+    ingestedAt: Date.now(),
+    entryType: 'divergence',
+    domain: 'governance',
+    entity: 'divergence',
+    entityId: anomaly.id,
+    previousState: null,
+    nextState: anomaly.type,
+    authority: 'lineage-worker',
+    divergenceCategory: anomaly.category,
+    divergenceDetails: anomaly.details,
+    projectionVersion: PROJECTION_VERSION,
+    lineageVersion: LINEAGE_VERSION,
+  }).catch(err => {
     console.error('[lineage-worker] Failed to persist divergence entry:', err.message);
-  }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -686,32 +683,30 @@ function _persistHealth() {
   lineageLedger.persistWorkerHealth(health, HEALTH_TTL_S);
 
   // Also record as ledger entry — governance discovers via ledger reading (B1)
-  try {
-    lineageLedger.recordWorkerEntry({
-      ledgerId: crypto.randomUUID(),
-      timestamp: Date.now(),
-      ingestedAt: Date.now(),
-      entryType: 'health',
-      domain: 'governance',
-      entity: 'worker',
-      entityId: 'lineage-worker',
-      previousState: null,
-      nextState: _running ? 'healthy' : 'stopped',
-      authority: 'lineage-worker',
-      health: {
-        uptimeMs: health.uptimeMs,
-        tickCount: _tickCount,
-        entryCount: _entryCount,
-        cursor: _cursor,
-        lastPersistedCursor: _lastPersistedCursor,
-        consecutiveFailures: _consecutiveFailures,
-      },
-      projectionVersion: PROJECTION_VERSION,
-      lineageVersion: LINEAGE_VERSION,
-    });
-  } catch (err) {
+  lineageLedger.recordWorkerEntry({
+    ledgerId: crypto.randomUUID(),
+    timestamp: Date.now(),
+    ingestedAt: Date.now(),
+    entryType: 'health',
+    domain: 'governance',
+    entity: 'worker',
+    entityId: 'lineage-worker',
+    previousState: null,
+    nextState: _running ? 'healthy' : 'stopped',
+    authority: 'lineage-worker',
+    health: {
+      uptimeMs: health.uptimeMs,
+      tickCount: _tickCount,
+      entryCount: _entryCount,
+      cursor: _cursor,
+      lastPersistedCursor: _lastPersistedCursor,
+      consecutiveFailures: _consecutiveFailures,
+    },
+    projectionVersion: PROJECTION_VERSION,
+    lineageVersion: LINEAGE_VERSION,
+  }).catch(err => {
     console.error('[lineage-worker] Failed to persist health entry:', err.message);
-  }
+  });
 }
 
 function _persistProjectionSnapshot() {
@@ -730,25 +725,23 @@ function _persistProjectionSnapshot() {
   lineageLedger.persistWorkerProjection(_projections, HEALTH_TTL_S * 2);
 
   // Also record as ledger entry — governance discovers via ledger reading (B1)
-  try {
-    lineageLedger.recordWorkerEntry({
-      ledgerId: crypto.randomUUID(),
-      timestamp: Date.now(),
-      ingestedAt: Date.now(),
-      entryType: 'projection_snapshot',
-      domain: 'governance',
-      entity: 'projection',
-      entityId: 'lineage-worker',
-      previousState: null,
-      nextState: 'SNAPSHOT',
-      authority: 'lineage-worker',
-      projections: JSON.parse(JSON.stringify(_projections)),
-      projectionVersion: PROJECTION_VERSION,
-      lineageVersion: LINEAGE_VERSION,
-    });
-  } catch (err) {
+  lineageLedger.recordWorkerEntry({
+    ledgerId: crypto.randomUUID(),
+    timestamp: Date.now(),
+    ingestedAt: Date.now(),
+    entryType: 'projection_snapshot',
+    domain: 'governance',
+    entity: 'projection',
+    entityId: 'lineage-worker',
+    previousState: null,
+    nextState: 'SNAPSHOT',
+    authority: 'lineage-worker',
+    projections: JSON.parse(JSON.stringify(_projections)),
+    projectionVersion: PROJECTION_VERSION,
+    lineageVersion: LINEAGE_VERSION,
+  }).catch(err => {
     console.error('[lineage-worker] Failed to persist projection snapshot entry:', err.message);
-  }
+  });
 }
 
 function _persistDivergences() {

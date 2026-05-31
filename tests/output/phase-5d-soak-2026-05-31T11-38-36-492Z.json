@@ -1,0 +1,126 @@
+{
+  "phase": "5D",
+  "test": "1-hour-longitudinal-constitutional-soak",
+  "soakConfig": {
+    "SOAK_DURATION_MS": 30000,
+    "TICK_INTERVAL_MS": 500,
+    "ADVERSARIAL_INTERVAL_TICKS": 30,
+    "RECON_INTERVAL_MS": 10000,
+    "CHECKPOINT_INTERVAL_MS": 10000,
+    "RECYCLE_INTERVAL_MS": 600000,
+    "LEDGER_LOOKBACK": 500,
+    "expectedTicks": 60
+  },
+  "results": {
+    "elapsed_ms": 32504,
+    "elapsed_min": 1,
+    "tickCount": 58,
+    "legalCount": 58,
+    "adversarialCount": 1,
+    "reconCycleCount": 2,
+    "checkpointCount": 2,
+    "finalLedgerSize": 2000,
+    "finalCkState": "HEALTHY",
+    "monitorViolationCount": 2,
+    "violatedCheckpointCount": 0
+  },
+  "monitorReport": {
+    "snapshots": [
+      {
+        "elapsed_ms": 249,
+        "elapsed_s": 0,
+        "logSize": 38,
+        "ledgerSize": 500,
+        "ledgerGrowDelta": 500,
+        "transitionCount": 38,
+        "domainCount": 7,
+        "snapshot_ok": false,
+        "violation_desc": "timestamp_regression:36"
+      },
+      {
+        "elapsed_ms": 30318,
+        "elapsed_s": 30,
+        "logSize": 3019,
+        "ledgerSize": 500,
+        "ledgerGrowDelta": 0,
+        "transitionCount": 3019,
+        "domainCount": 7,
+        "snapshot_ok": false,
+        "violation_desc": "timestamp_regression:7"
+      }
+    ],
+    "violations": [
+      {
+        "elapsed_ms": 249,
+        "reason": "timestamp_regression:36",
+        "ledgerSize": 500,
+        "logSize": 38
+      },
+      {
+        "elapsed_ms": 30318,
+        "reason": "timestamp_regression:7",
+        "ledgerSize": 500,
+        "logSize": 3019
+      }
+    ],
+    "summary": {
+      "totalSnapshots": 2,
+      "totalViolations": 2,
+      "lastLedgerSize": 500,
+      "maxLedgerSize": 500,
+      "firstViolation": {
+        "elapsed_ms": 249,
+        "reason": "timestamp_regression:36",
+        "ledgerSize": 500,
+        "logSize": 38
+      }
+    }
+  },
+  "reconResults": [
+    {
+      "cycle": 1,
+      "elapsed_s": 11,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    },
+    {
+      "cycle": 2,
+      "elapsed_s": 21,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    }
+  ],
+  "checkpoints": [
+    {
+      "elapsed_s": 10,
+      "elapsed_min": 0,
+      "tickCount": 19,
+      "legalCount": 19,
+      "adversarialCount": 0,
+      "reconCycleCount": 0,
+      "logSize": 1038,
+      "ledgerSize": 500,
+      "ckState": "HEALTHY",
+      "cursorAdvanceOk": true,
+      "violations": [
+        "L2_TIMESTAMP_REGRESSION"
+      ]
+    },
+    {
+      "elapsed_s": 20,
+      "elapsed_min": 0,
+      "tickCount": 39,
+      "legalCount": 39,
+      "adversarialCount": 1,
+      "reconCycleCount": 1,
+      "logSize": 2035,
+      "ledgerSize": 500,
+      "ckState": "HEALTHY",
+      "cursorAdvanceOk": true,
+      "violations": [
+        "L2_TIMESTAMP_REGRESSION"
+      ]
+    }
+  ],
+  "generatedAt": "2026-05-31T11:38:36.491Z"
+}

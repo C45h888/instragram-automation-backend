@@ -1,0 +1,113 @@
+{
+  "phase": "5B",
+  "test": "concurrent-ecosystem",
+  "duration_s": 301,
+  "tickCount": 1461,
+  "adversarialCount": 29,
+  "reconCycleCount": 9,
+  "checkpointCount": 4,
+  "timedOutCycles": 0,
+  "ckFinalState": "HEALTHY",
+  "finalLedgerSize": 500,
+  "domainStates": {
+    "acquisition": "IDLE",
+    "publishing": "IDLE",
+    "scheduling": "IDLE",
+    "dedup": "IDLE",
+    "engagement": "IDLE"
+  },
+  "reconResults": [
+    {
+      "cycle": 3,
+      "elapsed_s": 90,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    },
+    {
+      "cycle": 4,
+      "elapsed_s": 120,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    },
+    {
+      "cycle": 5,
+      "elapsed_s": 120,
+      "error": "[constitutional-invariant] LAW 2 VIOLATION: 9 timestamp regression(s) detected.\n  First violation at index 1: 1780226865866 → 1780226865796"
+    },
+    {
+      "cycle": 5,
+      "elapsed_s": 150,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    },
+    {
+      "cycle": 6,
+      "elapsed_s": 180,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    },
+    {
+      "cycle": 7,
+      "elapsed_s": 180,
+      "error": "[constitutional-invariant] LAW 2 VIOLATION: 25 timestamp regression(s) detected.\n  First violation at index 1: 1780226925926 → 1780226925828"
+    },
+    {
+      "cycle": 7,
+      "elapsed_s": 210,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    },
+    {
+      "cycle": 8,
+      "elapsed_s": 240,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    },
+    {
+      "cycle": 9,
+      "elapsed_s": 240,
+      "error": "[constitutional-invariant] LAW 2 VIOLATION: 3 timestamp regression(s) detected.\n  First violation at index 45: 1780226986132 → 1780226986131"
+    },
+    {
+      "cycle": 9,
+      "elapsed_s": 270,
+      "fsmEndState": "IDLE",
+      "timedOut": false
+    }
+  ],
+  "checkpoints": [
+    {
+      "cycle": 2,
+      "elapsed_s": 60,
+      "ledgerSize": 200,
+      "logSize": 5969,
+      "tickCount": 294,
+      "adversarialCount": 5
+    },
+    {
+      "cycle": 4,
+      "elapsed_s": 120,
+      "ledgerSize": 200,
+      "logSize": 10000,
+      "tickCount": 588,
+      "adversarialCount": 11
+    },
+    {
+      "cycle": 6,
+      "elapsed_s": 180,
+      "ledgerSize": 200,
+      "logSize": 10000,
+      "tickCount": 879,
+      "adversarialCount": 17
+    },
+    {
+      "cycle": 8,
+      "elapsed_s": 240,
+      "ledgerSize": 200,
+      "logSize": 10000,
+      "tickCount": 1170,
+      "adversarialCount": 23
+    }
+  ],
+  "generatedAt": "2026-05-31T11:30:47.110Z"
+}

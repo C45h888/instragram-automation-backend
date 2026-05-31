@@ -326,6 +326,7 @@ const DOMAIN_EVENT_MAP = {
   // Reconciliation domain
   RECONCILIATION_TICK: 'reconciliation',
   RECONCILIATION_RESULTS_RECEIVED: 'reconciliation',
+  RECONCILIATION_CYCLE_COMPLETE: 'reconciliation',
 
   // Telemetry Coordination domain — deterministic semantic ingress plane
   PROCESS_INTENTS: 'telemetry-coordination',
