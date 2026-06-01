@@ -64,6 +64,7 @@ function _serializeIntent(intent) {
     nextState: raw.projectionType ? `${raw.projectionType}:projected` : null,
     authority: intent.authority || 'unknown',
     timestamp: intent.timestamp || Date.now(),
+    wallClockTimestamp: intent.wallClockTimestamp || Date.now(),
     traceId,
     correlationId: intent.correlationId || null,
     causationId: intent.traceId || null,

@@ -10,6 +10,8 @@
 // The normalizer is a pure function — no side effects, no state mutation.
 // It is called by the transition emitter on every observability.transition() call.
 
+const monotonicClock = require('../runtime/monotonic-clock');
+
 const { getCurrentContext } = require('./context');
 
 // ── Normalization rules per event type ────────────────────────────────────────
@@ -78,7 +80,8 @@ function normalize(raw, overrideCtx) {
     causationId: ctx.causationId || null,
     parentTransitionId: null,
     authority,
-    timestamp: Date.now(),
+    timestamp: monotonicClock.nextTimestamp(),      // monotonic ticker (constitutional ordering)
+    wallClockTimestamp: Date.now(),                  // wall clock (observability, non-monotonic)
     raw: originalRaw,
   };
 
@@ -119,7 +122,8 @@ function normalizeSignal(topic, data) {
       causationId: ctx.causationId || null,
       parentTransitionId: null,
       authority: 'signal-bus',
-      timestamp: Date.now(),
+      timestamp: monotonicClock.nextTimestamp(),
+      wallClockTimestamp: Date.now(),
       raw: { topic, accountId, table, record },
     };
   }
@@ -137,7 +141,8 @@ function normalizeSignal(topic, data) {
     causationId: ctx.causationId || null,
     parentTransitionId: null,
     authority: 'signal-bus',
-    timestamp: Date.now(),
+    timestamp: monotonicClock.nextTimestamp(),
+    wallClockTimestamp: Date.now(),
     raw: { topic, data },
   };
 }

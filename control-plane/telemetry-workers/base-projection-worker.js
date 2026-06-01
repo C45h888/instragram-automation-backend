@@ -30,6 +30,7 @@
 // Do NOT harden polling as permanent architecture.
 
 const crypto = require('crypto');
+const monotonicClock = require('../runtime/monotonic-clock');
 
 // ── Versioning ───────────────────────────────────────────────────────────────────
 
@@ -160,8 +161,9 @@ class BaseProjectionWorker {
   }
 
   async _tick() {
-    this._lastTick = Date.now();
+    this._lastTick = monotonicClock.nextTimestamp();
     this._tickCount++;
+    const _wallClock = Date.now();
 
     try {
       // Capture lineage cursor range for replay determinism watermarking.
@@ -194,7 +196,8 @@ class BaseProjectionWorker {
         projectionId: crypto.randomUUID(),
         projectionType: this._projectType,
         projectionVersion: this._projectionVersion,
-        timestamp: this._lastTick,
+        timestamp: this._lastTick,           // monotonic ticker (constitutional ordering)
+        wallClockTimestamp: _wallClock,       // Date.now() (observability only)
         traceId: this._generateTraceId(),
         correlationId: this._generateCorrelationId(),
         causationId: null,
