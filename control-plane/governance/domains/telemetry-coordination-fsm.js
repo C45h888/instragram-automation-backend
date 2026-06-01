@@ -440,7 +440,65 @@ let _retryEscalationState = 'IDLE'; // 'IDLE' | 'RETRYING' | 'ESCALATED' | 'DEGR
 
 // ── Rejection log — last N rejected intents for forensic analysis
 const _rejectionLog = []; // capped at 50
-const MAX_REJECTION_LOG = 50;
+const MAX_REJECTION_LOG = 50; 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3b. Reactive mode — onWrite event-driven coordination (Phase 3 trigger)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Reactive state
+let _unsubscribeOnWrite = null;      // onWrite hook unsubscribe fn
+let _coordinationPending = false;    // prevents re-entrant dispatch calls
+let _ckContext = null;               // CK context passed during start()
+
+// ── onWrite callback — reacts to PROJECTION_INTENT entries as they land.
+// Fires synchronously on every _transitionLog.push(). Filters strictly to
+// uncoordinated PROJECTION_INTENT entries. All other entry types are skipped.
+//
+// Coordinated filter: FSM is the SOLE coordinator. Entries with
+// coordinatedBy === 'telemetry-coordination-fsm' are FSM output (SEMANTIC_PROJECTION_TRANSITION).
+// These are consumed by transition-writers, NOT by the FSM's reactive handler.
+function _onTransitionLogWrite(transition) {
+  // Gate 1: only react to PROJECTION_INTENT (uncoordinated intent entries)
+  if (transition.nextState !== 'PROJECTION_INTENT') return;
+
+  // Gate 2: skip entries already coordinated by FSM
+  // PROJECTION_INTENT entries never have coordinatedBy set — they are raw worker output.
+  // This guard is defensive: ensures the reactive trigger never acts on FSM output.
+  if (transition.raw?.coordinatedBy === 'telemetry-coordination-fsm') return;
+
+  // Fire reactive coordination — non-blocking, setImmediate to yield event loop
+  // _triggerReactiveCoordination is idempotent — multiple rapid onWrite events
+  // result in one coordination cycle (batching handled inside PROCESS_INTENTS).
+  _triggerReactiveCoordination();
+}
+
+// ── Trigger coordination cycle from reactive event.
+// Uses setImmediate to yield without sleeping — coordination fires in the
+// next event loop tick, never blocking the onWrite callback that triggered it.
+// Multiple onWrite events arriving before the tick are batched into one cycle.
+function _triggerReactiveCoordination() {
+  // Prevent re-entrant calls — if a coordination is already pending, skip.
+  if (_coordinationPending) return;
+
+  _coordinationPending = true;
+
+  // Yield to event loop — non-blocking. Allows all pending onWrite events
+  // from the current tick to accumulate before the coordination cycle fires.
+  setImmediate(() => {
+    try {
+      if (_ckContext && typeof _ckContext.dispatch === 'function') {
+        // Dispatch a reactive PROCESS_INTENTS — uses same handler as cadence trigger
+        // Idempotent: if no new intents exist, returns COORDINATION_NO_INTENTS with
+        // no state mutation.
+        dispatch({ type: 'PROCESS_INTENTS', source: 'reactive' }, _ckContext);
+      }
+    } catch (err) {
+      console.error('[telemetry-coordination-fsm] Reactive coordination error:', err.message);
+    } finally {
+      _coordinationPending = false;
+    }
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Intent Processing — pure functions, no timing/async dependencies
@@ -849,6 +907,7 @@ function dispatch(event, ctx) {
 /**
  * Initialize the domain FSM with rehydrated state from lineage.
  * Called by the constitutional kernel after rehydrate() completes on boot.
+ * Rehydration is synchronous — state is restored from checkpoint.
  *
  * @param {string} rehydratedState — the domain state to restore (e.g., 'IDLE', 'HALTED')
  */
@@ -869,6 +928,42 @@ function init(rehydratedState) {
   } catch (_) {
     console.warn('[telemetry-coordination-fsm] Failed to register consumer:', _.message);
   }
+}
+
+/**
+ * Start the reactive coordination layer — registers onWrite subscription.
+ * Called by CK after init() completes. Safe to call multiple times (idempotent).
+ *
+ * @param {{ dispatch: Function, validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx
+ *   CK context — provides dispatch, validate, dispatchGlobal for FSM event handling.
+ *   The FSM uses ctx.dispatch for reactive coordination triggers and ctx.validate
+ *   for constitutional transition approval.
+ */
+function start(ctx) {
+  if (_unsubscribeOnWrite) {
+    console.log('[telemetry-coordination-fsm] Already started — skipping');
+    return;
+  }
+
+  _ckContext = ctx || null;
+
+  const observability = require('../../observability');
+  _unsubscribeOnWrite = observability.onWrite(_onTransitionLogWrite);
+
+  console.log('[telemetry-coordination-fsm] Reactive mode active — onWrite subscription registered');
+}
+
+/**
+ * Stop the reactive coordination layer — unsubscribes onWrite.
+ * Called by CK on graceful shutdown.
+ */
+function stop() {
+  if (_unsubscribeOnWrite) {
+    _unsubscribeOnWrite();
+    _unsubscribeOnWrite = null;
+    console.log('[telemetry-coordination-fsm] onWrite subscription stopped');
+  }
+  _coordinationPending = false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -935,6 +1030,8 @@ module.exports = {
   name: 'telemetry-coordination',
   dispatch,
   init,
+  start,
+  stop,
   getState,
   exportState,
   getHealth,

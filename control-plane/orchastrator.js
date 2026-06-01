@@ -26,7 +26,8 @@ const persistence = require('../substrates/persistence');
 const syncSubstrate = require('../substrates/sync-substrate');
 const engagementTelemetryAdapter = require('./governance/interpreters/engagement-telemetry-adapter');
 const telemetryWorkers = require('./telemetry-workers');
-const phase2DumbWriter = require('./telemetry-workers/phase2-dumb-writer');
+const transitionWriters = require('./telemetry-workers/transition-writers');
+
 const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
 
@@ -89,13 +90,19 @@ async function startAllWorkers() {
   await observability.init();
 
   // Start the bounded telemetry projection workers FIRST.
-  // These produce PROJECTION_INTENT entries that Phase 2 workers consume.
+  // These produce PROJECTION_INTENT entries to domain-bounded transition log partitions.
   await telemetryWorkers.startAll();
 
-  // Phase 3: Start Phase 2 dumb writer — trigger-driven, zero timers.
-  // Subscribes to observability onWrite hook, serializes PROJECTION_INTENT,
-  // appends to canonical ledger, notifies CK for async validation.
-  phase2DumbWriter.start();
+  // Start the 5 transition writers — event-driven, bounded by namespace.
+  // Each writer subscribes to observability.onWrite() and filters for:
+  //   coordinatedBy === 'telemetry-coordination-fsm' AND domain === <namespace>
+  // They append FSM-coordinated output to the canonical ledger and notify CK.
+  // Writers read from the domain-bounded transition log partition (not the global log).
+  transitionWriters.startAll();
+
+  // Phase 2: Start Phase 2 dumb writer — REMOVED.
+  // Transition-writers (above) are the sole write path. phase2-dumb-writer deleted.
+  // phase2-dumb-writer references in CK death/reboot handlers are kept for catastrophic recovery.
 
   // Phase 3: Wire namespace projection interpreter to CK.
   // Subscribes to PROJECTION_ACCEPTED actions emitted by FSM after async validation.
@@ -123,6 +130,17 @@ async function startAllWorkers() {
   constitutional.dispatch({ type: 'BOOT_COMPLETE' });
 
   constitutional.startLoop(GOVERNANCE_TICK_MS);
+
+  // Start reactive coordination layer — FSM subscribes to observability onWrite
+  // and triggers PROCESS_INTENTS on every PROJECTION_INTENT entry (event-driven).
+  // ctx shape matches what dispatch() passes to domain FSMs:
+  // { validate, dispatchGlobal, getGlobalState }.
+  const ckCtx = {
+    validate: (from, to, evt) => constitutional.validateDomainTransition('telemetry-coordination', from, to, evt),
+    dispatchGlobal: (evt) => constitutional.dispatch(evt),
+    getGlobalState: () => constitutional.getState(),
+  };
+  telemetryCoordinationFsm.start(ckCtx);
 
   // Start ingress consistency substrate — monitors log vs ledger lag, signals CK
   // Layer 1: observability plane, sits under CK, not a domain FSM
@@ -158,7 +176,9 @@ async function stopAllWorkers() {
   console.log('[orchestrator] Stopping constitutional kernel...');
 
   await telemetryWorkers.stopAll();
-  phase2DumbWriter.stop();
+  transitionWriters.stopAll();       // stop 5 event-driven transition writers
+  telemetryCoordinationFsm.stop();  // stop reactive onWrite subscription
+  // phase2-dumb-writer.stop() — REMOVED. phase2 deleted, CK death handler handles it.
   constitutional.stopLoop();
   syncSubstrate.stop();
   await cadence.stop();

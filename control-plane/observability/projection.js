@@ -170,6 +170,20 @@ function project(transition) {
   // Append to global transition log
   _transitionLog.push(transition);
 
+  // Write to domain-bounded partition keys — mutable telemetry layer.
+  // Each projection worker writes to its bounded namespace partition.
+  // Transition-writers read from these bounded keys (not the global log).
+  // This is fire-and-forget — Redis write errors must not block the write path.
+  (function _writeDomainPartition() {
+    try {
+      const redis = getRedisClient();
+      if (!redis || redis.status !== 'ready') return;
+      const domainKey = `lineage:transitionLog:domain:${domain}`;
+      redis.rpush(domainKey, JSON.stringify(transition)).catch(() => {});
+      redis.rpush('lineage:transitionLog:entries', JSON.stringify(transition)).catch(() => {});
+    } catch (_) {}
+  })();
+
   // Fire write hooks — trigger-driven subscribers (Phase 3: no timers)
   for (const hook of _writeHooks) {
     try { hook(transition); } catch (e) { /* hook errors must not block the write path */ }

@@ -363,7 +363,9 @@ addRule('projection', 'semantic_projection', null, null, (raw) => ({
 // PROJECTION_INTENT entries — emitted by projection workers as ingress requests.
 // These are NOT canonical lineage. Only the Telemetry Coordination FSM may
 // authorize their transformation into SEMANTIC_PROJECTION_TRANSITION.
-addRule('telemetry', 'projection_intent', null, 'PROJECTION_INTENT', (raw) => ({
+// Domain wildcard: workers emit with domain set to their actual namespace
+// (runtime/integrity/authority/health/systemic) — normalizer catches all with '*'.
+addRule('*', 'projection_intent', null, 'PROJECTION_INTENT', (raw) => ({
   entityId: raw.projectionType || null,
   raw: { ...raw, entryType: 'PROJECTION_INTENT' },
 }));

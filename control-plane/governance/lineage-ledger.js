@@ -87,6 +87,22 @@ const WORKER_KEYS = {
 // Anomaly log — constitutionally rejected entries (Phase 3: CK async validation)
 const REDIS_KEY_ANOMALIES = 'lineage:anomalies:rejected';
 
+// ── Transition log keys — mutable telemetry layer (bounded by domain) ────────────
+// Global transition log: all transitions (FSM cursor reads from this)
+const REDIS_KEY_TRANSITION_LOG = 'lineage:transitionLog:entries';
+
+// Domain-bounded transition log partitions: each projection worker writes to its
+// bounded namespace. Transition-writers read from these bounded partitions only.
+// Namespace exists here as a partition/filter key — not a write target.
+// Writers use domain to select their bounded slice, then write to the canonical ledger.
+const TRANSITION_LOG_DOMAIN_KEYS = {
+  runtime: 'lineage:transitionLog:domain:runtime',
+  integrity: 'lineage:transitionLog:domain:integrity',
+  authority: 'lineage:transitionLog:domain:authority',
+  health: 'lineage:transitionLog:domain:health',
+  systemic: 'lineage:transitionLog:domain:systemic',
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Core API — read path
 // All reads from the worker-backed canonical ledger (Redis)
@@ -724,6 +740,8 @@ module.exports = {
   recordAnomaly,
   REDIS_KEY_WORKER,
   REDIS_KEY_ANOMALIES,
+  REDIS_KEY_TRANSITION_LOG,
+  TRANSITION_LOG_DOMAIN_KEYS,
   DOMAIN_KEYS,
   WORKER_KEYS,
   recordWorkerEntry,

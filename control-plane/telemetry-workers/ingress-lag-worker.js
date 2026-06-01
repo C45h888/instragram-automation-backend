@@ -9,7 +9,7 @@
 // What it does:
 //   - Confirms lag is real (double-checks log vs ledger)
 //   - Identifies which component is the lag source
-//   - Determines if phase2-dumb-writer is alive or dead
+//   - Determines if transition-writers are alive or dead
 //   - Returns resolved=false with reason if retry cadence should handle it
 //   - Returns resolved=true if it performed a direct fix
 //
@@ -21,8 +21,8 @@
 function _getObsDeps() {
   const observability = require('../../observability');
   const lineageLedger = require('../governance/lineage-ledger');
-  const phase2DumbWriter = require('./phase2-dumb-writer');
-  return { observability, lineageLedger, phase2DumbWriter };
+  const transitionWriters = require('./transition-writers');
+  return { observability, lineageLedger, transitionWriters };
 }
 
 /**
@@ -32,7 +32,7 @@ function _getObsDeps() {
  * @returns {{ resolved: boolean, entriesFlushed: number, newLag: number, reason: string }}
  */
 async function dispatchResolve({ lag, status, timestamp }) {
-  const { observability, lineageLedger, phase2DumbWriter } = _getObsDeps();
+  const { observability, lineageLedger, transitionWriters } = _getObsDeps();
 
   // Double-check: confirm lag is real (sample fresh)
   const logSize = observability.query ? observability.query.getLogSize() : 0;
@@ -53,22 +53,25 @@ async function dispatchResolve({ lag, status, timestamp }) {
     };
   }
 
-  // Check phase2-dumb-writer health
-  const writerHealth = phase2DumbWriter && typeof phase2DumbWriter.getHealth === 'function'
-    ? phase2DumbWriter.getHealth()
-    : { running: false };
+  // Check transition-writers health — all 5 must be running
+  const writersHealth = transitionWriters.getAllHealth();
+  const allRunning = Object.values(writersHealth).every(w => w.running);
 
-  if (!writerHealth.running) {
-    // Writer is dead — CK must handle this, not a retryable condition
+  if (!allRunning) {
+    // One or more writers dead — CK must handle this, not a retryable condition
+    const deadWriters = Object.entries(writersHealth)
+      .filter(([, w]) => !w.running)
+      .map(([k]) => k)
+      .join(', ');
     return {
       resolved: false,
       entriesFlushed: 0,
       newLag: actualLag,
-      reason: 'writer_dead',
+      reason: `writers_dead:${deadWriters}`,
     };
   }
 
-  // Writer alive but lagging — retry cadence handles it, not this worker
+  // Writers alive but lagging — retry cadence handles it, not this worker
   return {
     resolved: false,
     entriesFlushed: 0,

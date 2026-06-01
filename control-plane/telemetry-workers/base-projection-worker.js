@@ -239,7 +239,7 @@ class BaseProjectionWorker {
       // eslint-disable-next-line global-require
       const observability = require('../observability/emitters/transition-emitter');
       observability.transition({
-        domain: 'telemetry',
+        domain: this._domain,
         entity: 'projection_intent',
         entityId: this._projectType,
         previousState: this._lastProjectionTs ? `${this._projectType}:intent` : null,
