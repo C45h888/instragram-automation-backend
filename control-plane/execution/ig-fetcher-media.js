@@ -7,7 +7,7 @@
 // Pure transport. No DB writes. No persistence. No loops. No spawning.
 // Called by orchestrator under HSM governance.
 
-const transport = require('../../substrates/transport/instagram');
+const transport = require('../../substrates/content/transport');
 
 /**
  * Fetches the business account's own media posts.
@@ -17,7 +17,7 @@ const transport = require('../../substrates/transport/instagram');
  * @returns {Promise<{success: boolean, posts: Array, count: number, _usagePct?: number, error?: string}>}
  */
 async function fetchBusinessPosts(accountId, limit) {
-  return transport.fetchBusinessPosts(accountId, limit);
+  return transport.fetchPosts(accountId, limit);
 }
 
 module.exports = { fetchBusinessPosts };

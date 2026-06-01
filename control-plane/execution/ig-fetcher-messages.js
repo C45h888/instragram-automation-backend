@@ -7,7 +7,7 @@
 // Pure transport. No DB writes. No persistence. No loops. No spawning.
 // Called by orchestrator under HSM governance.
 
-const transport = require('../../substrates/transport/instagram');
+const transport = require('../../substrates/engagement/transport');
 
 /**
  * Fetches DM conversations.

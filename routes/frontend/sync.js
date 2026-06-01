@@ -8,8 +8,8 @@ const router = express.Router();
 const { logAudit: logAuditService } = require('../../config/supabase');
 const persistence = require('../../substrates/persistence');
 const { mapRawPostToUgcContent } = require('../../substrates/normalization');
-const igFetcherUgc = require('../../control-plane/execution/ig-fetcher-ugc');
-const igFetcherMedia = require('../../control-plane/execution/ig-fetcher-media');
+const ugcTransport = require('../../substrates/ugc/transport');
+const contentTransport = require('../../substrates/content/transport');
 
 const logAudit = logAuditService;
 
@@ -31,7 +31,7 @@ router.post('/sync/ugc', async (req, res) => {
     }
 
     const creds = await persistence.resolveAccountCredentials(businessAccountId);
-    const result = await igFetcherUgc.fetchTaggedMedia(businessAccountId, 50, creds);
+    const result = await ugcTransport.fetchTaggedMedia(businessAccountId, 50, creds);
 
     if (!result.success) {
       return res.status(result.retryable === false ? 401 : 500).json({
@@ -76,7 +76,7 @@ router.post('/sync/posts', async (req, res) => {
       return res.status(400).json({ success: false, error: 'businessAccountId is required' });
     }
 
-    const result = await igFetcherMedia.fetchBusinessPosts(businessAccountId, 50);
+    const result = await contentTransport.fetchPosts(businessAccountId, 50);
 
     if (!result.success) {
       return res.status(result.retryable === false ? 401 : 500).json({

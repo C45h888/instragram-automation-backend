@@ -7,7 +7,7 @@
 // Pure transport. No DB writes. No persistence. No loops. No spawning.
 // Called by orchestrator under HSM governance.
 
-const transport = require('../../substrates/transport/instagram');
+const transport = require('../../substrates/engagement/transport');
 const { runConcurrent } = require('../../services/sync/helpers');
 
 const COMMENT_MAX_POSTS = 5;
