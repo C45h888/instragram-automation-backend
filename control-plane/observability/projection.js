@@ -330,11 +330,39 @@ function getEntriesSince(includeIndex) {
   const totalSize = _transitionLog.length;
   const start = Math.max(0, Math.min(includeIndex, totalSize));
   const entries = _transitionLog.slice(start);
-  // Return actual next cursor for the caller, not the log tail.
-  // This lets callers detect when they consumed a partial window
-  // (e.g., log truncated while they were reading).
   const nextCursor = start + entries.length;
   return { entries, nextCursor, totalSize };
+}
+
+/**
+ * Return entries from a domain-bounded Redis partition starting at cursor position.
+ * Per-namespace cursor reads for FSM coordination — each namespace's cursor tracks
+ * its own bounded partition independently.
+ *
+ * @param {string} domain — namespace: runtime | integrity | authority | health | systemic
+ * @param {number} cursor — 0-based index into the Redis bounded partition
+ * @returns {Promise<{ entries: Array<object>, nextCursor: number, totalSize: number }>}
+ */
+async function getDomainEntriesSince(domain, cursor) {
+  try {
+    const redis = getRedisClient();
+    if (!redis || redis.status !== 'ready') {
+      return { entries: [], nextCursor: 0, totalSize: 0 };
+    }
+    const domainKey = `lineage:transitionLog:domain:${domain}`;
+    const totalSize = await redis.llen(domainKey);
+    if (cursor >= totalSize) {
+      return { entries: [], nextCursor: cursor, totalSize };
+    }
+    const items = await redis.lrange(domainKey, cursor, -1);
+    const entries = items.map(item => {
+      try { return JSON.parse(item); } catch { return null; }
+    }).filter(Boolean);
+    return { entries, nextCursor: cursor + entries.length, totalSize };
+  } catch (err) {
+    console.error(`[projection] getDomainEntriesSince(${domain}) error:`, err.message);
+    return { entries: [], nextCursor: cursor, totalSize: 0 };
+  }
 }
 
 /**
@@ -546,6 +574,7 @@ module.exports = {
   startSnapshotTimer,
   stopSnapshotTimer,
   getEntriesSince,
+  getDomainEntriesSince,
   getLogSize,
   getEntryByIndex,
   findLastEntry,

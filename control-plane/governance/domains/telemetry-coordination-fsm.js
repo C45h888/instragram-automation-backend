@@ -141,83 +141,73 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event, ctx) => {
-      const actions = [];
+buildActions: async (event, ctx) => {
+      // 1. Read intents from all domain-bounded partitions via per-namespace cursors
+      const { intents, newCursors } = await _readIntents();
+      _intentCursors = newCursors;
 
-      try {
-        // 1. Read intents from observability plane
-        const { intents, newCursor } = _readIntents();
-        _intentCursor = newCursor;
+      if (intents.length === 0) {
+        _priorCycleOutputCount = 0;
+        return [{ type: 'COORDINATION_NO_INTENTS', cursors: _intentCursors }];
+      }
 
-        if (intents.length === 0) {
-          _priorCycleOutputCount = 0;
-          return [{ type: 'COORDINATION_NO_INTENTS', cursor: _intentCursor }];
-        }
-
-        // Backpressure check
-        if (intents.length > MAX_BUFFERED_INTENTS) {
-          _backpressureSignaled = true;
-          if (ctx && ctx.dispatchGlobal) {
-            ctx.dispatchGlobal({
-              type: 'BACKPRESSURE_DETECTED',
-              reason: `Coordination FSM intent buffer saturated: ${intents.length} pending (threshold: ${MAX_BUFFERED_INTENTS})`,
-              evidence: { pendingIntentCount: intents.length },
-            });
-          }
-        }
-
-        // 2. Validate intents
-        const { valid, rejected } = _validateIntents(intents);
-        _rejectedIntentCount = rejected.length;
-
-        if (valid.length === 0) {
-          actions.push({
-            type: 'COORDINATION_ALL_REJECTED',
-            rejectedCount: rejected.length,
-            violations: rejected.slice(0, 10),
+      // Backpressure check
+      if (intents.length > MAX_BUFFERED_INTENTS) {
+        _backpressureSignaled = true;
+        if (ctx && ctx.dispatchGlobal) {
+          ctx.dispatchGlobal({
+            type: 'BACKPRESSURE_DETECTED',
+            reason: `Coordination FSM intent buffer saturated: ${intents.length} pending (threshold: ${MAX_BUFFERED_INTENTS})`,
+            evidence: { pendingIntentCount: intents.length },
           });
-          return actions;
         }
+      }
 
-        // 3. Deterministically order
-        const ordered = _orderIntents(valid);
+      // 2. Validate intents
+      const { valid, rejected } = _validateIntents(intents);
+      _rejectedIntentCount = rejected.length;
 
-        // 4. Serialize to canonical transitions
-        const transitions = ordered.map(intent => _serializeIntent(intent));
-        _serializedTransitionCount = transitions.length;
-
-        // 5. Emit validated transitions to observability
-        let emittedCount = 0;
-        for (const t of transitions) {
-          const emitted = _emitTransition(t);
-          if (emitted) emittedCount++;
-        }
-
-        _priorCycleOutputCount = emittedCount;
-
-        actions.push({
-          type: 'COORDINATION_CYCLE_COMPLETE',
-          readCount: intents.length,
-          validatedCount: valid.length,
+      if (valid.length === 0) {
+        return [{
+          type: 'COORDINATION_ALL_REJECTED',
           rejectedCount: rejected.length,
-          emittedCount,
-          cursor: _intentCursor,
-        });
+          violations: rejected.slice(0, 10),
+        }];
+      }
 
-        if (_backpressureSignaled && emittedCount > 0) {
-          _backpressureSignaled = false;
-          if (ctx && ctx.dispatchGlobal) {
-            ctx.dispatchGlobal({
-              type: 'BACKPRESSURE_CLEARED',
-              reason: `Coordination FSM processed ${emittedCount} intents — buffer drained`,
-            });
-          }
+      // 3. Deterministically order
+      const ordered = _orderIntents(valid);
+
+      // 4. Serialize to canonical transitions
+      const transitions = ordered.map(intent => _serializeIntent(intent));
+      _serializedTransitionCount = transitions.length;
+
+      // 5. Emit validated transitions to observability
+      let emittedCount = 0;
+      for (const t of transitions) {
+        const emitted = _emitTransition(t);
+        if (emitted) emittedCount++;
+      }
+
+      _priorCycleOutputCount = emittedCount;
+
+      const actions = [{
+        type: 'COORDINATION_CYCLE_COMPLETE',
+        readCount: intents.length,
+        validatedCount: valid.length,
+        rejectedCount: rejected.length,
+        emittedCount,
+        cursors: _intentCursors,
+      }];
+
+      if (_backpressureSignaled && emittedCount > 0) {
+        _backpressureSignaled = false;
+        if (ctx && ctx.dispatchGlobal) {
+          ctx.dispatchGlobal({
+            type: 'BACKPRESSURE_CLEARED',
+            reason: `Coordination FSM processed ${emittedCount} intents — buffer drained`,
+          });
         }
-      } catch (err) {
-        actions.push({
-          type: 'COORDINATION_CYCLE_ERROR',
-          error: err.message,
-        });
       }
 
       return actions;
@@ -423,8 +413,16 @@ const TRANSITION_MAP = {
 
 let _localState = 'IDLE';
 
-// ── Cursor — deterministic read position in observability transition log
-let _intentCursor = 0;
+// ── Per-namespace cursors — one cursor per domain-bounded partition.
+// Each namespace's cursor tracks only its own bounded partition independently.
+// This replaces the single _intentCursor which could not track 5 independent streams.
+let _intentCursors = {
+  runtime: 0,
+  integrity: 0,
+  authority: 0,
+  health: 0,
+  systemic: 0,
+};
 
 // ── Cycle counters
 let _cycleCount = 0;
@@ -505,28 +503,38 @@ function _triggerReactiveCoordination() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Read PROJECTION_INTENT entries from the observability transition log.
- * Uses deterministic cursor positions — same log, same positions, same output.
+ * Read PROJECTION_INTENT entries from all domain-bounded partitions.
+ * Each namespace is read with its own cursor — no cross-contamination.
+ * All intents are aggregated into one coordination batch per cycle.
  *
- * @returns {{ intents: Array<object>, newCursor: number }}
+ * @returns {Promise<{ intents: Array<object>, newCursors: object }>}
  */
-function _readIntents() {
+async function _readIntents() {
   try {
     const observability = require('../../observability');
-    const { entries, nextCursor } = observability.query.getEntriesSince(_intentCursor);
+    const NAMESPACES = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
+    const allIntents = [];
+    const newCursors = { ..._intentCursors };
 
-    // Filter: only PROJECTION_INTENT entries
-    const intents = [];
-    for (const entry of entries) {
-      if (entry.nextState === 'PROJECTION_INTENT') {
-        intents.push(entry);
+    // Read each namespace's bounded partition independently
+    for (const namespace of NAMESPACES) {
+      const cursor = newCursors[namespace];
+      const { entries, nextCursor } = await observability.query.getDomainEntriesSince(namespace, cursor);
+
+      // Filter: only PROJECTION_INTENT entries
+      for (const entry of entries) {
+        if (entry.nextState === 'PROJECTION_INTENT') {
+          allIntents.push(entry);
+        }
       }
+
+      newCursors[namespace] = nextCursor;
     }
 
-    return { intents, newCursor: nextCursor };
+    return { intents: allIntents, newCursors };
   } catch (err) {
     console.error('[telemetry-coordination-fsm] Failed to read intents:', err.message);
-    return { intents: [], newCursor: _intentCursor };
+    return { intents: [], newCursors: _intentCursors };
   }
 }
 
@@ -923,7 +931,8 @@ function init(rehydratedState) {
   try {
     const observability = require('../../observability');
     observability.query.registerConsumer('telemetry-coordination-fsm');
-    _intentCursor = 0;
+    // Reset all 5 per-namespace cursors on boot
+    _intentCursors = { runtime: 0, integrity: 0, authority: 0, health: 0, systemic: 0 };
     console.log(`[telemetry-coordination-fsm] Consumer registered — cursor at 0, log size ${observability.query.getLogSize()}`);
   } catch (_) {
     console.warn('[telemetry-coordination-fsm] Failed to register consumer:', _.message);
@@ -977,7 +986,7 @@ function getState() {
 function exportState() {
   return {
     state: _localState,
-    intentCursor: _intentCursor,
+    intentCursors: _intentCursors,
     cycleCount: _cycleCount,
     rejectedIntentCount: _rejectedIntentCount,
     serializedTransitionCount: _serializedTransitionCount,
