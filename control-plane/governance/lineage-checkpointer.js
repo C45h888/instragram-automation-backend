@@ -52,25 +52,45 @@ const MAX_ENTRIES = 200;
  * Create a bounded equilibrium snapshot of the current constitutional state.
  * Writes to the filesystem checkpoint file.
  *
+ * IMPORTANT: Only ACCEPTED entries are checkpointed. PENDING entries represent
+ * in-flight transitions that have not been validated by CK. Checkpointing them
+ * would cause false STALE_MATERIALIZED_STATE signals after death recovery,
+ * since the PENDING entry would be the last entry for its domain but the FSM
+ * has already moved on.
+ *
  * Called ONLY by CK when all stability gates pass.
  *
  * @param {object} opts
  * @param {Array<object>} opts.entries — last N lineage entries (max MAX_ENTRIES)
  * @param {string} opts.hash — current constitutional hash
  * @param {number} opts.entryCount — total lineage entry count
- * @param {object} opts.domainStates — { domainName: state } for all registered domains
  * @param {number} opts.epochCount — reconciliation epoch count
  * @returns {{ ts: number, hash: string, entryCount: number }}
  */
-function createSnapshot({ entries, hash, entryCount, domainStates, epochCount }) {
+function createSnapshot({ entries, hash, entryCount, epochCount }) {
+  // Filter to ACCEPTED entries only — checkpoint is the constitutional source of truth
+  // for what CK has validated. PENDING entries are in-flight and not yet confirmed.
+  const lineageLedger = require('./lineage-ledger');
+  const allEntries = entries || [];
+  const acceptedEntries = lineageLedger.getAcceptedEntries(allEntries);
+  const acceptedDomainStates = lineageLedger.materializeState(acceptedEntries, { onlyAccepted: true }).domains;
+
   const snapshot = {
     version: 1,
     ts: Date.now(),
     hash: hash || '',
     entryCount: entryCount || 0,
-    entries: (entries || []).slice(-MAX_ENTRIES),
-    domainStates: domainStates || {},
+    // Store ACCEPTED entries only — survivors of constitutional validation
+    entries: acceptedEntries.slice(-MAX_ENTRIES),
+    // domainStates reflects ACCEPTED-only materialization — safe for rehydration
+    domainStates: acceptedDomainStates,
     epochCount: epochCount || 0,
+    // Metadata for debugging — shows how many PENDING were excluded
+    _meta: {
+      acceptedCount: acceptedEntries.length,
+      totalCount: allEntries.length,
+      pendingExcluded: allEntries.length - acceptedEntries.length,
+    },
   };
 
   try {

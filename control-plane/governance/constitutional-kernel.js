@@ -31,6 +31,7 @@
 
 const lineageLedger = require('./lineage-ledger');
 const checkpointer = require('./lineage-checkpointer');
+const ingressSubstrate = require('./ingress-consistency/substrate');
 
 // Lazy import to avoid circular dependency at module load time
 let _observabilityTransition = null;
@@ -334,6 +335,9 @@ const DOMAIN_EVENT_MAP = {
   RESUME_TELEMETRY_COORDINATION: 'telemetry-coordination',
   // Phase 3: CK async validation — Phase 2 worker notifies CK post-write
   PROJECTION_PERSISTED: 'telemetry-coordination',
+  // Ingress lag retry orchestration
+  INGRESS_RETRY_REQUESTED: 'telemetry-coordination',
+  INGRESS_RESOLVED: 'telemetry-coordination',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -512,6 +516,32 @@ const GLOBAL_TRANSITION_MAP = {
     },
     buildActions: () => [],
   },
+
+  // ── Ingress Consistency — lag detected by substrate, signals CK ────────────
+  // INGRESS_STATE_CHANGED is a global event (not routed to any domain FSM).
+  // CK handles it by escalating to telemetry-coordination for retry orchestration.
+  INGRESS_STATE_CHANGED: {
+    target: () => null, // CK does not change its own state from this event
+    guard: () => ({ allowed: true }),
+    buildActions: (event, ctx) => {
+      const { lag, status } = event;
+
+      // Track ingestion lag state internally
+      _ingestionLagState = { lag, status, lastUpdate: Date.now() };
+
+      if (status === 'CRITICAL' || status === 'DEGRADED') {
+        // Escalate: dispatch INGRESS_RETRY_REQUESTED to telemetry-coordination domain
+        return [{ type: 'INGRESS_RETRY_REQUESTED', lag, status, timestamp: Date.now() }];
+      }
+
+      if (status === 'CONSISTENT' && _ingestionLagState && _ingestionLagState.lag > 0) {
+        // Lag cleared — inform telemetry-coordination to wind down retry budget
+        return [{ type: 'INGRESS_RESOLVED', lag: 0, status: 'CONSISTENT' }];
+      }
+
+      return [];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -576,6 +606,10 @@ const _domains = new Map(); // domainName → fsm
 
 // Rehydrated domain states — populated during rehydrate() from lineage
 let _rehydratedDomainStates = null;
+
+// Ingress consistency lag state — updated by INGRESS_STATE_CHANGED handler
+// Not a CK state (CK doesn't transition on lag), just tracking for G5 gate and diagnostics
+let _ingestionLagState = { lag: 0, status: 'CONSISTENT', lastUpdate: 0 };
 
 // Action subscription
 const _actionSubscribers = new Map(); // actionType → Set<fn>
@@ -1121,9 +1155,6 @@ async function triggerReconciliation() {
  * The CK remains the sole authority that can trigger coordination.
  * The FSM coordinates only — it does not self-trigger.
  */
-function triggerCoordinationCycle() {
-  dispatch({ type: 'PROCESS_INTENTS' });
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 11b. Constitutional Death Detection — multi-criterion
@@ -1212,16 +1243,32 @@ function _canCheckpoint() {
   // G4: No escalation signaled
   if (health.signals && health.signals.escalationSignaled) return false;
 
-  // G5: Ingestion lag bounded — Phase 2 writer is trigger-driven, no polling gap.
-  // Check that ledger has entries if observability log is growing.
+  // G5: Ingestion lag bounded — ingress consistency substrate
+  // Blocks checkpoint if ledger lags observability log by CRITICAL+ threshold
   try {
-    const lineageLedger = require('./lineage-ledger');
-    const obs = require('../observability');
-    const logSize = obs.query ? obs.query.getLogSize() : 0;
-    // Phase 3: trigger-driven writes — ledger should advance with log
-    if (logSize > 10 && _lastLedgerSizeCheck !== undefined && _lastLedgerSizeCheck === 0) return false;
+    const state = ingressSubstrate && ingressSubstrate.getIngressState
+      ? ingressSubstrate.getIngressState()
+      : null;
+
+    if (!state) {
+      // Substrate unavailable — fail closed
+      return false;
+    }
+
+    // Stale sample check — if last sample > 15s old, treat as uncertain
+    if (state.stale) {
+      return false;
+    }
+
+    if (state.status === 'CRITICAL' || state.status === 'DEGRADED') {
+      return false;
+    }
+
+    if (state.lag > 5) {
+      return false;
+    }
   } catch (_) {
-    // Non-critical — ledger may be unavailable during boot
+    return false;
   }
 
   return true;
@@ -1260,7 +1307,7 @@ async function _triggerConstitutionalDeath(ckpt) {
   });
 
   // 2. Stop all workers
-  try { await require('../telemetry-workers/phase2-dumb-writer').stop(); } catch (e) { console.warn('[CK] Phase2 writer stop error:', e.message); }
+  
   try { await require('../telemetry-workers').stopAll(); } catch (e) { console.warn('[CK] Telemetry workers stop error:', e.message); }
 
   // 3. Clear stale in-memory domain states
@@ -1278,13 +1325,15 @@ async function _triggerConstitutionalDeath(ckpt) {
     return; // do not continue — runtime enters HALTED via FATAL_ERROR
   }
 
-  // 5. Rehydrate CK from restored lineage
-  try {
-    await rehydrate();
-  } catch (e) {
-    console.error('[CK] Rehydration after checkpoint restore FAILED:', e.message);
-    dispatch({ type: 'FATAL_ERROR', reason: `Post-checkpoint rehydration failed: ${e.message}` });
-    return;
+  // 5. Rehydrate CK from checkpoint's pre-computed ACCEPTED-only domainStates
+  // No need to re-materialize from Redis — ckpt.domainStates already reflects
+  // ACCEPTED-only materialization from the last stable checkpoint.
+  if (ckpt.domainStates) {
+    _currentState = ckpt.domainStates.governance || 'BOOTING';
+    _rehydratedDomainStates = ckpt.domainStates;
+    console.log(`[CK] Rehydrated from checkpoint: globalState='${_currentState}', domains=${JSON.stringify(_rehydratedDomainStates)}`);
+  } else {
+    await rehydrate(); // fallback to Redis materialization
   }
 
   // 6. Re-register domains with rehydrated states
@@ -1298,7 +1347,7 @@ async function _triggerConstitutionalDeath(ckpt) {
 
   // 7. Restart workers
   try { await require('../telemetry-workers').startAll(); } catch (e) { console.warn('[CK] Telemetry workers restart error:', e.message); }
-  try { require('../telemetry-workers/phase2-dumb-writer').start(); } catch (e) { console.warn('[CK] Phase2 writer restart error:', e.message); }
+  
 
   // 8. Dispatch BOOT_COMPLETE → HEALTHY
   dispatch({ type: 'BOOT_COMPLETE' });
@@ -1526,15 +1575,10 @@ subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
       const entries = snapshot.entries.slice(-200); // last 200 entries
       const checkpointHash = snapshot.hash;
       const reconFsm = _domains.get('reconciliation');
-      const domainStates = {};
-      for (const [name, fsm] of _domains) {
-        domainStates[name] = fsm && typeof fsm.getState === 'function' ? fsm.getState() : 'unknown';
-      }
       checkpointer.createSnapshot({
         entries,
         hash: checkpointHash,
         entryCount: snapshot.entries.length,
-        domainStates,
         epochCount: reconFsm && typeof reconFsm.getEpochCount === 'function'
           ? reconFsm.getEpochCount() : 0,
       });
@@ -1564,7 +1608,6 @@ module.exports = {
   resetAuthStrikes,
   clearCircuitBreaker,
   triggerReconciliation,
-  triggerCoordinationCycle,
   validateMembraneTransition: _validateMembraneAuthority,
   validateProjectionSnapshot,
   recordMembraneBypassAnomaly,

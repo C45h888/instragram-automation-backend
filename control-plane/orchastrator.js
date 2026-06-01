@@ -27,6 +27,7 @@ const syncSubstrate = require('../substrates/sync-substrate');
 const engagementTelemetryAdapter = require('./governance/interpreters/engagement-telemetry-adapter');
 const telemetryWorkers = require('./telemetry-workers');
 const phase2DumbWriter = require('./telemetry-workers/phase2-dumb-writer');
+const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
@@ -122,6 +123,10 @@ async function startAllWorkers() {
   constitutional.dispatch({ type: 'BOOT_COMPLETE' });
 
   constitutional.startLoop(GOVERNANCE_TICK_MS);
+
+  // Start ingress consistency substrate — monitors log vs ledger lag, signals CK
+  // Layer 1: observability plane, sits under CK, not a domain FSM
+  ingressSubstrate.start(constitutional.dispatch);
 
   const redis = getRedisClient();
   if (redis && redis.status === 'ready') {

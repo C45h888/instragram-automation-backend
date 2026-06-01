@@ -112,6 +112,16 @@ const STATE_REGISTRY = {
   HALTED: {
     description: 'CK-ordered halt — no intent processing allowed',
   },
+  // ── Ingress lag retry escalation states ───────────────────────────────────
+  INGRESS_LAG_RETRYING: {
+    description: 'Ingress lag detected, retry cadence active via engagement FSM',
+  },
+  INGRESS_ESCALATED: {
+    description: 'Retry budget partially consumed (3+ attempts in 60s), heightened monitoring',
+  },
+  INGRESS_DEGRADED: {
+    description: 'Retry budget near exhaustion (6+ attempts in 60s), bounded worker dispatched, CK intervention required',
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -314,6 +324,97 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
+
+  // ── Ingress lag retry orchestration (from CK) ────────────────────────────
+  INGRESS_RETRY_REQUESTED: {
+    target: (event) => {
+      // Escalate based on retry budget
+      if (_retryEscalationState === 'DEGRADED') return 'INGRESS_DEGRADED';
+      if (_retryEscalationState === 'ESCALATED') return 'INGRESS_ESCALATED';
+      return 'INGRESS_LAG_RETRYING';
+    },
+    guard: () => ({ allowed: true }),
+    buildActions: (event, ctx) => {
+      const { lag, status } = event;
+      const actions = [];
+
+      // ── Retry budget bookkeeping ──────────────────────────────────────
+      const now = Date.now();
+      const WINDOW_MS = 60_000;  // 60-second retry window
+      const ESCALATION_THRESHOLD = 3;
+      const DEGRADED_THRESHOLD = 6;
+
+      // Reset window if expired
+      if (_retryWindowStart === null || (now - _retryWindowStart) > WINDOW_MS) {
+        _retryAttempts = 0;
+        _retryWindowStart = now;
+      }
+
+      _retryAttempts++;
+      _retryEscalationState =
+        _retryAttempts >= DEGRADED_THRESHOLD ? 'DEGRADED' :
+        _retryAttempts >= ESCALATION_THRESHOLD ? 'ESCALATED' :
+        'RETRYING';
+
+      // ── Coordination actions ──────────────────────────────────────────
+      // Signal engagement FSM to activate retry cadence
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'RETRY_CADENCE_REQUEST',
+          source: 'ingress',
+          lag,
+          escalationState: _retryEscalationState,
+        });
+      }
+
+      // Log degradation
+      actions.push({
+        type: 'LOG_DEGRADED',
+        substate: `INGRESS_LAG:${_retryEscalationState}`,
+        reason: `Ingress lag ${lag}, retry attempt ${_retryAttempts}/${DEGRADED_THRESHOLD}`,
+      });
+
+      // Report to CK (via action — CK subscribes to this type)
+      actions.push({
+        type: 'INGRESS_RETRY_ACTIVE',
+        lag,
+        retryAttempts: _retryAttempts,
+        escalationState: _retryEscalationState,
+      });
+
+      return actions;
+    },
+  },
+
+  // ── Lag resolved — wind down retry budget ────────────────────────────────
+  INGRESS_RESOLVED: {
+    target: 'IDLE',
+    guard: () => ({ allowed: true }),
+    buildActions: (event, ctx) => {
+      // Reset retry budget
+      _retryAttempts = 0;
+      _retryWindowStart = null;
+      _retryEscalationState = 'IDLE';
+
+      const actions = [];
+
+      // Clear retry cadence in engagement FSM
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'RETRY_CADENCE_CLEAR',
+          source: 'ingress',
+        });
+      }
+
+      actions.push({
+        type: 'LOG_DEGRADED',
+        substate: 'INGRESS_RESOLVED',
+        reason: 'Ingress lag cleared, retry cadence wound down',
+      });
+
+      return actions;
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -331,6 +432,11 @@ let _rejectedIntentCount = 0;
 let _serializedTransitionCount = 0;
 let _priorCycleOutputCount = 0;
 let _backpressureSignaled = false;
+
+// ── Ingress retry escalation budget ───────────────────────────────────────
+let _retryAttempts = 0;          // attempts within current 60s window
+let _retryWindowStart = null;    // timestamp of window start
+let _retryEscalationState = 'IDLE'; // 'IDLE' | 'RETRYING' | 'ESCALATED' | 'DEGRADED'
 
 // ── Rejection log — last N rejected intents for forensic analysis
 const _rejectionLog = []; // capped at 50
@@ -813,6 +919,18 @@ function getRejectionLog(n) {
   return [..._rejectionLog];
 }
 
+/**
+ * Return ingress retry escalation state for CK diagnostics.
+ */
+function getIngressRetryState() {
+  return {
+    retryAttempts: _retryAttempts,
+    windowStart: _retryWindowStart,
+    escalationState: _retryEscalationState,
+    localState: _localState,
+  };
+}
+
 module.exports = {
   name: 'telemetry-coordination',
   dispatch,
@@ -821,5 +939,6 @@ module.exports = {
   exportState,
   getHealth,
   getRejectionLog,
+  getIngressRetryState,
   MAX_BUFFERED_INTENTS,
 };

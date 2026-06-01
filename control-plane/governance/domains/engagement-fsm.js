@@ -46,6 +46,12 @@ const AUTH_FAILURE_MAX_STRIKES = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 3600000; // 1 hour default
 const MAX_RETRY_COUNT = 1;
 
+// ── Ingress retry state ─────────────────────────────────────────────────────
+// Activated by telemetry-coordination FSM when ingress lag detected.
+// Used to apply more aggressive retry cadence during lag events.
+let _ingressRetryActive = false;
+let _ingressRetryLag = 0;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -300,6 +306,32 @@ const TRANSITION_MAP = {
     buildActions: (event) => {
       const { intentId, retryCount } = event;
       _executionRetries.set(intentId, retryCount);
+      return [];
+    },
+  },
+
+  // ── Ingress retry cadence activation (from telemetry-coordination FSM) ──
+  RETRY_CADENCE_REQUEST: {
+    target: (event) => _localState, // no state change — just activate retry mode
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      if (event.source === 'ingress') {
+        _ingressRetryActive = true;
+        _ingressRetryLag = event.lag || 0;
+      }
+      return [];
+    },
+  },
+
+  // ── Ingress retry cadence clear (from telemetry-coordination FSM) ────────
+  RETRY_CADENCE_CLEAR: {
+    target: (event) => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      if (event.source === 'ingress') {
+        _ingressRetryActive = false;
+        _ingressRetryLag = 0;
+      }
       return [];
     },
   },

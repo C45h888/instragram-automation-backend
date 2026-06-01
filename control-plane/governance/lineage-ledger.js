@@ -181,11 +181,28 @@ async function getSize() {
  * Worker format:
  *   globalState     ← last entry where domain='governance' AND entity='runtime' → nextState
  *   domains.{name}  ← last entry where domain='{name}' → nextState
+/**
+ * Returns entries filtered to only ACCEPTED constitutional status.
+ * Used by checkpointer and reconciliation to exclude unconfirmed (PENDING) entries
+ * that represent in-flight transitions not yet validated by CK.
  *
+ * @param {Array<object>} entries — lineage entries
+ * @returns {Array<object>} only ACCEPTED entries
+ */
+function getAcceptedEntries(entries) {
+  if (!entries || entries.length === 0) return [];
+  return entries.filter(e =>
+    e.raw && e.raw.constitutionalStatus === 'ACCEPTED'
+  );
+}
+
+/**
  * @param {Array<object>} entries — worker-format lineage entries
+ * @param {object} [opts]
+ * @param {boolean} [opts.onlyAccepted=false] — if true, only ACCEPTED entries are materialized
  * @returns {{ globalState: string, domains: { acquisition: string, publishing: string, scheduling: string, dedup: string, reconciliation: string }, lastEvent: object|null, entryCount: number }}
  */
-function materializeState(entries) {
+function materializeState(entries, { onlyAccepted = false } = {}) {
   if (!entries || entries.length === 0) {
     return {
       globalState: 'BOOTING',
@@ -201,6 +218,8 @@ function materializeState(entries) {
 
   for (const entry of entries) {
     if (!entry || typeof entry.nextState !== 'string') continue;
+    // Filter to ACCEPTED entries when onlyAccepted is true
+    if (onlyAccepted && (!entry.raw || entry.raw.constitutionalStatus !== 'ACCEPTED')) continue;
 
     // Governance runtime: domain='governance', entity='runtime'
     if (entry.domain === 'governance' && entry.entity === 'runtime') {
@@ -368,7 +387,8 @@ async function getDomainLineageSince(domainName, sinceTimestamp) {
     const raw = await redis.lrange(domainKey, 0, -1);
     if (!raw || !Array.isArray(raw)) return [];
     const entries = raw.map(item => _parseEntry(item)).filter(Boolean);
-    return entries.filter(e => (e.timestamp || e.ts || 0) >= sinceTimestamp);
+    return entries.filter(e => (e.timestamp || e.ts || 0) >= sinceTimestamp)
+      .filter(e => !e.raw || e.raw.constitutionalStatus === 'ACCEPTED');
   } catch (err) {
     console.error(`[lineage-ledger] getDomainLineageSince(${domainName}) error:`, err.message);
     return [];
@@ -687,6 +707,7 @@ module.exports = {
   getLineage,
   getWorkerLineage,
   getSize,
+  getAcceptedEntries,
   materializeState,
   rehydrate,
   createEpoch,
