@@ -12,7 +12,7 @@
 // All execution intelligence lives in governance + domain registry.
 
 const { getRedisClient } = require('../../config/redis');
-const domainRegistry = require('../execution/domain-registry');
+const substrateRegistry = require('../execution/substrate-registry');
 const retryWorker = require('./retry-worker');
 const persistence = require('../../substrates/persistence');
 const syncSubstrate = require('../../substrates/sync-substrate');
@@ -28,8 +28,8 @@ const retrySubstrate = require('../../substrates/retry');
  * @param {object} params
  */
 async function executeAcquisition(gov, accountId, domain, intentId, params) {
-  const routing = domainRegistry.lookup(domain);
-  if (!routing) {
+  const substrate = substrateRegistry.lookup(domain);
+  if (!substrate) {
     console.error(`[acquisition-orchestrator] Unknown acquisition domain: ${domain}`);
     gov.dispatch({
       type: 'ACQUISITION_COMPLETE', accountId, domain, intentId,
@@ -40,18 +40,26 @@ async function executeAcquisition(gov, accountId, domain, intentId, params) {
 
   gov.dispatch({ type: 'ACQUISITION_EXECUTING', accountId, domain, intentId });
 
-  // Wire up fetch + persist via domain registry
+  // Wire substrate.acquire() into retry-worker's fetch/persist contract.
+  // acquire() runs the full pipeline: fetch → parse → normalize → persist.
+  // retry-worker handles error classification, engagement signals, telemetry.
   const wiredRouting = {
     fetch: async (acctId, execParams) => {
       const creds = await persistence.resolveAccountCredentials(acctId);
-      return routing.fetch(acctId, execParams, creds);
+      const result = await substrate.acquire(acctId, domain, execParams, creds);
+      return {
+        success: result.status === 'completed',
+        count: result.count,
+        error: result.error || null,
+        _usagePct: result._usagePct || null,
+      };
     },
-    persist: async (acctId, rawData) => {
-      return routing.persist(acctId, rawData);
+    persist: async (_acctId, rawData) => {
+      // No-op: persistence already completed inside acquire()
+      return { count: rawData?.count || 0 };
     },
   };
 
-  // Bounded single attempt via retry worker — governance sees every attempt
   await retryWorker.executeSingle(accountId, domain, params, intentId, gov, wiredRouting);
 }
 

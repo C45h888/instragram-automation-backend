@@ -426,14 +426,14 @@ class RuntimeSimulator {
   /**
    * Kill the Phase 2 dumb writer (simulate write path crash).
    */
-  async killLineageWorker() {
+  async killPhase2DumbWriter() {
     phase2DumbWriter.stop();
   }
 
   /**
    * Restart the Phase 2 dumb writer after a kill.
    */
-  async restartLineageWorker() {
+  async restartPhase2DumbWriter() {
     phase2DumbWriter.start();
   }
 
@@ -448,6 +448,21 @@ class RuntimeSimulator {
     await redis.flushall();
     // Allow connections to re-stabilize
     await sleep(500);
+  }
+
+  /**
+   * Kill all transition writers (simulate writer crash).
+   * Writers are stopped gracefully via stopAll().
+   */
+  async killTransitionWriters() {
+    transitionWriters.stopAll();
+  }
+
+  /**
+   * Restart transition writers after a kill.
+   */
+  async restartTransitionWriters() {
+    transitionWriters.startAll();
   }
 
   /**

@@ -8,7 +8,8 @@
 
 const { getSupabaseAdmin } = require('../config/supabase');
 const { resolveAccountCredentials, ensureConversationRows, ensureMediaRecord, syncHashtagsFromCaptions } = require('../helpers/agent-helpers');
-const { transformMessage } = require('./normalization');
+const { transformMessage, normalizeComment } = require('./engagement/normalizer');
+const { parseConversations } = require('./engagement/parser');
 const { logWithDomain } = require('./telemetry');
 const { _setClearAccountsCache } = require('./retry');
 
@@ -169,17 +170,7 @@ async function storeCommentBatches(businessAccountId, batches) {
     if (!mediaUUID) continue;
     for (const c of comments) {
       if (!c.id) continue;
-      allRecords.push({
-        instagram_comment_id: c.id,
-        text: c.text || '',
-        author_username: c.username || '',
-        author_instagram_id: null,
-        media_id: mediaUUID,
-        business_account_id: businessAccountId,
-        created_at: c.timestamp,
-        like_count: c.like_count || 0,
-        reply_count: 0,
-      });
+      allRecords.push(normalizeComment(c, mediaUUID, businessAccountId));
     }
   }
 
@@ -223,46 +214,21 @@ async function storeConversationBatches(businessAccountId, rawConversations, igU
   const supabase = getSupabaseAdmin();
   if (!supabase || !rawConversations.length) return { count: 0, conversations: [] };
 
-  const convRecords = [];
-  const shapedConversations = [];
+  const { records: parsedRecords, shaped: shapedConversations } = parseConversations(rawConversations, igUserId, pageId);
 
-  for (const conv of rawConversations) {
-    const customerMsg = conv.messages?.data?.find(
-      m => m.from?.id !== igUserId && m.from?.id !== pageId
-    );
-    const lastCustomerTime = customerMsg ? new Date(customerMsg.created_time) : null;
+  if (parsedRecords.length === 0) return { count: 0, conversations: shapedConversations };
 
-    const participants = conv.participants?.data || [];
-    const customerParticipant = participants.find(
-      p => p.id !== igUserId && p.id !== pageId
-    ) || participants[0];
-
-    if (!customerParticipant?.id) continue;
-
-    // Store raw timestamps only — window policy is derived by engagement-fsm
-    convRecords.push({
-      instagram_thread_id: conv.id,
-      customer_instagram_id: customerParticipant.id,
-      customer_username: customerParticipant.username || null,
-      business_account_id: businessAccountId,
-      last_message_at: conv.updated_time || null,
-      last_user_message_at: lastCustomerTime ? lastCustomerTime.toISOString() : null,
-      message_count: conv.message_count || 0,
-      conversation_status: 'active',
-    });
-
-    // Return raw conversation data — derived window fields stripped
-    shapedConversations.push({
-      id: conv.id,
-      participants,
-      last_message_at: conv.updated_time,
-      message_count: conv.message_count || 0,
-      last_message: conv.messages?.data?.[0] || null,
-      last_customer_message_at: lastCustomerTime ? lastCustomerTime.toISOString() : null,
-    });
-  }
-
-  if (convRecords.length === 0) return { count: 0, conversations: shapedConversations };
+  // Map parsed records to DB row shape (conversation normalization)
+  const convRecords = parsedRecords.map(r => ({
+    instagram_thread_id: r.id,
+    customer_instagram_id: r.customer_instagram_id,
+    customer_username: r.customer_username,
+    business_account_id: businessAccountId,
+    last_message_at: r.updated_time,
+    last_user_message_at: r.last_customer_message_at,
+    message_count: r.message_count,
+    conversation_status: 'active',
+  }));
 
   // Batch-resolve customer_user_id
   const igIds = convRecords.map(r => r.customer_instagram_id).filter(Boolean);
@@ -434,7 +400,7 @@ async function storeMediaInsightsBatch(businessAccountId, mediaInsights, caption
   const supabase = getSupabaseAdmin();
   if (!supabase) return { count: 0 };
 
-  const { normalizeMediaInsight } = require('./normalization');
+  const { normalizeMediaInsight } = require('./insights/normalizer');
   const mediaRecords = mediaInsights.map(m => normalizeMediaInsight(m, businessAccountId));
 
   const { error: mediaErr } = await supabase
@@ -467,7 +433,7 @@ async function storeBusinessPosts(businessAccountId, posts) {
   const supabase = getSupabaseAdmin();
   if (!supabase) return { count: 0 };
 
-  const { normalizeBusinessPost, syncHashtagsFromCaptions } = require('./normalization');
+  const { normalizeBusinessPost } = require('./content/normalizer');
   const mediaRecords = posts.map(p => normalizeBusinessPost(p, businessAccountId));
 
   const { error: upsertErr } = await supabase

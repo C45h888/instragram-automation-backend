@@ -7,7 +7,7 @@ const express = require('express');
 const router = express.Router();
 const { logAudit: logAuditService } = require('../../config/supabase');
 const persistence = require('../../substrates/persistence');
-const { mapRawPostToUgcContent } = require('../../substrates/normalization');
+const { mapRawPostToUgcContent } = require('../../substrates/ugc/normalizer');
 const ugcTransport = require('../../substrates/ugc/transport');
 const contentTransport = require('../../substrates/content/transport');
 
