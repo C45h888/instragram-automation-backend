@@ -1,18 +1,16 @@
 // control-plane/telemetry-workers/index.js
 // Bounded Telemetry Projection Layer: unified export for all projection workers.
 //
-// Architecture:
-//   Raw Telemetry Projection
-//         ↓
-//   Shared Projection Workers (5 bounded workers)
-//         ↓
-//   Observability Plane (SEMANTIC_PROJECTION_TRANSITION events)
-//         ↓
-//   Lineage Worker (Layer A — validates and persists, no synthesis)
-//         ↓
-//   Immutable Unified Ledger
-//         ↓
-//   Bounded Interpreters (FSM/HSM/Recon)
+// Architecture (Phase 3):
+//   Phase 1 Workers (5 bounded projection workers)
+//         ↓  emit PROJECTION_INTENT
+//   Observability Plane (_transitionLog, onWrite hook)
+//         ↓  trigger-driven
+//   Phase 2 Dumb Writer (serialize → append to ledger → notify CK)
+//         ↓  CK.dispatch(PROJECTION_PERSISTED)
+//   CK Async Validation (validate → mark ACCEPTED or REJECTED)
+//         ↓  CK.subscribeAction(PROJECTION_ACCEPTED)
+//   Namespace Projection Interpreter (write domain state to namespaces)
 //
 // All 5 projection workers are exported here. They are started/stopped
 // as a group by the orchestrator.
@@ -43,9 +41,9 @@ const workers = {
 // ── Group lifecycle ─────────────────────────────────────────────────────────────
 
 /**
- * Start all 5 projection workers.
- * Workers should be started BEFORE lineageWorker.start()
- * so they can produce projections for the lineage worker to consume.
+ * Start all 5 Phase 1 projection workers.
+ * Workers should be started BEFORE Phase 2 dumb writer
+ * so PROJECTION_INTENT entries are available when Phase 2 subscribes.
  *
  * @param {number} [pollIntervalMs] — override poll interval for all workers
  */

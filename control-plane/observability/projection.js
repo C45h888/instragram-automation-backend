@@ -52,6 +52,11 @@ const _entityLog = new Map(); // "domain:entity:entityId" → Array<transition>
 const _consumerCursors = new Map(); // consumerName → cursor index (0-based)
 const STALL_WARNING_THRESHOLD = MAX_LOG_ENTRIES * 0.8; // warn at 80% cap
 
+// ── Write hooks — trigger-driven subscribers (Phase 3: no timer-driven consumers) ──
+// Subscribers fire synchronously on every _transitionLog.push().
+// Used by Phase 2 dumb writers and FSM coordination monitors.
+const _writeHooks = new Set();
+
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 let _snapshotTimer = null;
@@ -164,6 +169,11 @@ function project(transition) {
 
   // Append to global transition log
   _transitionLog.push(transition);
+
+  // Fire write hooks — trigger-driven subscribers (Phase 3: no timers)
+  for (const hook of _writeHooks) {
+    try { hook(transition); } catch (e) { /* hook errors must not block the write path */ }
+  }
 
   // Consumer-aware truncation (Gap 3 fix)
   // Before truncating old entries, check that no registered consumer
@@ -460,6 +470,23 @@ function getConsumerLag(name) {
   };
 }
 
+// ── Write hook subscription (Phase 3: trigger-driven) ─────────────────────────
+/**
+ * Subscribe to transition log writes. Returns an unsubscribe function.
+ * Used by Phase 2 dumb writers and FSM coordination monitors.
+ * Fires synchronously on every _transitionLog.push() — no polling, no timers.
+ *
+ * @param {Function} callback — receives the transition entry
+ * @returns {Function} unsubscribe function
+ */
+function onWrite(callback) {
+  if (typeof callback !== 'function') {
+    throw new Error('[projection] onWrite requires a function callback');
+  }
+  _writeHooks.add(callback);
+  return () => _writeHooks.delete(callback);
+}
+
 /**
  * Start the periodic snapshot timer.
  * Call once at boot after rehydration.
@@ -512,6 +539,7 @@ module.exports = {
   unregisterConsumer,
   updateConsumerCursor,
   getConsumerLag,
+  onWrite,
   // Bounded consumer query methods
   getFSMEntriesSince,
   getHSMEntriesSince,

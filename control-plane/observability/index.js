@@ -163,6 +163,11 @@ function getConsumerLag(name) {
   return projection.getConsumerLag(name);
 }
 
+// ── Write hook subscription (Phase 3: trigger-driven) ─────────────────────────
+function onWrite(callback) {
+  return projection.onWrite(callback);
+}
+
 // ── Module lifecycle ──────────────────────────────────────────────────────────
 
 /**
@@ -210,6 +215,7 @@ module.exports = {
     getConsumerLag,
   },
   getSnapshot,
+  onWrite,
   init,
   stop,
 };

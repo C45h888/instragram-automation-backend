@@ -9,11 +9,12 @@
 //               and domain FSMs respectively.
 //
 // Architectural invariant:
-//   - Lineage worker is the sole writer via recordWorkerEntry()
+//   - CK-governed domains are the sole writers via recordWorkerEntry()
+//   - Phase 2 dumb workers append mechanically; CK validates asynchronously
 //   - All consumers (CK, reconciliation engine, FSMs) read via getLineage()
 //   - Lineage is the canonical source of truth; runtime state is a projection
-//   - Single Redis key: lineage:ledger:entries (worker-produced canonical ledger)
-//   - record() and createEpoch() are deprecated no-op stubs — all writes route via worker
+//   - Single Redis key: lineage:ledger:entries (canonical ledger)
+//   - Entries carry constitutionalStatus: PENDING → ACCEPTED or REJECTED (anomaly log)
 //
 // Contract:
 //   ledger.getLineage([n])           → Array<ledgerEntry>    (async, from Redis worker key)
@@ -82,6 +83,9 @@ const WORKER_KEYS = {
   divergences: 'lineage:worker:divergences',
   projectionSnapshot: 'lineage:projection:snapshot',
 };
+
+// Anomaly log — constitutionally rejected entries (Phase 3: CK async validation)
+const REDIS_KEY_ANOMALIES = 'lineage:anomalies:rejected';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Core API — read path
@@ -580,10 +584,95 @@ function persistWorkerDivergences(divergences, ttlSeconds = 90) {
 // Deprecated stubs — all write authority now routes via lineage worker
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Constitutional Validation — CK async acceptance marking (Phase 3)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 /**
- * @deprecated All writes route via lineage worker. Callers emit through
- *             observability.transition() which the worker consumes and
- *             persists to lineage:ledger:entries. Kept as no-op stub.
+ * Mark a ledger entry as constitutionally ACCEPTED.
+ * Updates the constitutionalStatus field in the raw payload.
+ * Called by CK asynchronously after validation passes.
+ *
+ * @param {string} ledgerId — the entry's ledgerId
+ * @returns {Promise<boolean>} true if marked successfully
+ */
+async function markEntryAccepted(ledgerId) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready') return false;
+  try {
+    // Scan for entry by ledgerId and update its raw.constitutionalStatus
+    const entries = await redis.lrange(REDIS_KEY_WORKER, 0, -1);
+    if (!Array.isArray(entries)) return false;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = _parseEntry(entries[i]);
+      if (entry && entry.ledgerId === ledgerId) {
+        entry.raw = entry.raw || {};
+        entry.raw.constitutionalStatus = 'ACCEPTED';
+        await redis.lset(REDIS_KEY_WORKER, i, JSON.stringify(entry));
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.error('[lineage-ledger] markEntryAccepted error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Remove a rejected entry from the canonical ledger.
+ * Uses LREM to remove by ledgerId match.
+ *
+ * @param {string} ledgerId — the entry's ledgerId
+ * @returns {Promise<boolean>} true if removed
+ */
+async function removeEntry(ledgerId) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready') return false;
+  try {
+    const entries = await redis.lrange(REDIS_KEY_WORKER, 0, -1);
+    if (!Array.isArray(entries)) return false;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = _parseEntry(entries[i]);
+      if (entry && entry.ledgerId === ledgerId) {
+        // LREM removes first occurrence matching the exact value
+        await redis.lrem(REDIS_KEY_WORKER, 1, entries[i]);
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.error('[lineage-ledger] removeEntry error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Record a constitutionally rejected entry to the anomaly log.
+ * Preserves full forensic trail separate from the canonical ledger.
+ *
+ * @param {object} anomaly — { type, ledgerId, reason, violations, entry, timestamp }
+ * @returns {Promise<boolean>}
+ */
+async function recordAnomaly(anomaly) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready') return false;
+  try {
+    await redis.rpush(REDIS_KEY_ANOMALIES, JSON.stringify({
+      ...anomaly,
+      recordedAt: Date.now(),
+    }));
+    return true;
+  } catch (err) {
+    console.error('[lineage-ledger] recordAnomaly error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * @deprecated All writes route via CK-governed domains. Callers emit through
+ *             Phase 2 workers → ledger → CK async validation.
+ *             Kept as no-op stub.
  *
  * @param {object} entry — unused
  * @returns {Promise<{ id: string, ts: number }>}
@@ -609,7 +698,11 @@ module.exports = {
   getLastReconciliationTickTs,
   injectTestEntry,
   clearDomainLineage,
+  markEntryAccepted,
+  removeEntry,
+  recordAnomaly,
   REDIS_KEY_WORKER,
+  REDIS_KEY_ANOMALIES,
   DOMAIN_KEYS,
   WORKER_KEYS,
   recordWorkerEntry,

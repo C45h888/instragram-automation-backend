@@ -84,21 +84,23 @@ async function waitForConsumerLag(consumerName, maxLag = 0, timeoutMs = DEFAULT_
 }
 
 /**
- * Poll until the lineage worker's in-memory entry count stabilizes.
+ * Poll until the in-memory ledger entry count stabilizes.
  * "Stable" = no growth for 2 consecutive polls, meaning ingestion
  * has caught up to the current transition log tail.
+ *
+ * Phase 3: Uses lineageLedger.getSize() (Redis llen) since lineage worker is removed.
  *
  * @param {number} [timeoutMs=5000]
  * @returns {Promise<number>} final stable entry count
  */
 async function waitForProjectionFlush(timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const lineageWorker = require('../../control-plane/governance/lineage-worker');
+  const lineageLedger = require('../../control-plane/governance/lineage-ledger');
   const deadline = Date.now() + timeoutMs;
-  let lastCount = lineageWorker.getLedgerSize();
+  let lastCount = await lineageLedger.getSize();
   let stablePolls = 0;
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, DEFAULT_POLL_MS));
-    const current = lineageWorker.getLedgerSize();
+    const current = await lineageLedger.getSize();
     if (current === lastCount) {
       stablePolls++;
       if (stablePolls >= 2) return current;
@@ -185,20 +187,28 @@ async function waitForLogAdvance(timeoutMs = 30000) {
 }
 
 /**
- * Wait until the lineage worker's cursor has advanced past the given entryId.
- * This is the deterministic constitutional visibility primitive — callers wait
- * for cursor legitimacy, not poll completion or elapsed time.
+ * Wait until the ledger has grown past a baseline, indicating the most recent
+ * write has been committed. Phase 3: polls lineageLedger.getSize() since
+ * Phase 2 dumb writer writes synchronously to Redis.
  *
- * Uses lineageWorker.waitForCommit() internally.
- *
- * @param {string|number} entryId — ledger entry ID to await commit for
+ * @param {string|number} entryId — ledger entry ID (used for baseline capture)
  * @param {number} [timeoutMs=30000] — constitutional deadlock protection timeout
- * @returns {Promise<string>} the committed entryId
- * @throws {Error} on timeout or constitutional failure
+ * @returns {Promise<number>} final ledger size
+ * @throws {Error} on timeout
  */
 async function waitForCommit(entryId, timeoutMs = 30000) {
-  const lineageWorker = require('../../control-plane/governance/lineage-worker');
-  return lineageWorker.waitForCommit(entryId, timeoutMs);
+  const lineageLedger = require('../../control-plane/governance/lineage-ledger');
+  const baseline = await lineageLedger.getSize();
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const current = await lineageLedger.getSize();
+    if (current > baseline) return current;
+    await new Promise(r => setTimeout(r, DEFAULT_POLL_MS));
+  }
+  throw new Error(
+    `[sync-barrier] waitForCommit timed out after ${timeoutMs}ms: ` +
+    `ledger did not advance past baseline ${baseline}`
+  );
 }
 
 module.exports = {

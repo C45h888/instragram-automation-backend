@@ -24,9 +24,10 @@ const cadence = require('./runtime/cadence');
 const lifecycle = require('./runtime/lifecycle');
 const persistence = require('../substrates/persistence');
 const syncSubstrate = require('../substrates/sync-substrate');
-const lineageWorker = require('./governance/lineage-worker');
 const engagementTelemetryAdapter = require('./governance/interpreters/engagement-telemetry-adapter');
 const telemetryWorkers = require('./telemetry-workers');
+const phase2DumbWriter = require('./telemetry-workers/phase2-dumb-writer');
+const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -47,7 +48,6 @@ const degradationOrchestrator = require('./orchestration/degradation-orchestrato
 
 const REFRESH_INTERVAL_MS = 90 * 1000; // 90s cadence
 const RECONCILIATION_INTERVAL_MS = 60 * 1000; // 60s reconciliation cadence — separate from maintenance
-const COORDINATION_INTERVAL_MS = 30 * 1000; // 30s telemetry coordination cadence — matches worker poll interval
 const DEBOUNCE_MS = 500;
 const GOVERNANCE_TICK_MS = 10_000; // 10s watchdog tick
 
@@ -88,15 +88,19 @@ async function startAllWorkers() {
   await observability.init();
 
   // Start the bounded telemetry projection workers FIRST.
-  // These produce SEMANTIC_PROJECTION_TRANSITION entries that the lineage
-  // worker consumes. Workers must be running before lineage-worker starts.
+  // These produce PROJECTION_INTENT entries that Phase 2 workers consume.
   await telemetryWorkers.startAll();
 
-  // Start the lineage worker — canonical runtime interpretation substrate.
-  // Consumes from the observability plane and produces immutable lineage
-  // entries for the reconciliation engine and governance.
-  // MUST start after telemetry workers so projections are available.
-  await lineageWorker.start(5000);
+  // Phase 3: Start Phase 2 dumb writer — trigger-driven, zero timers.
+  // Subscribes to observability onWrite hook, serializes PROJECTION_INTENT,
+  // appends to canonical ledger, notifies CK for async validation.
+  phase2DumbWriter.start();
+
+  // Phase 3: Wire namespace projection interpreter to CK.
+  // Subscribes to PROJECTION_ACCEPTED actions emitted by FSM after async validation.
+  constitutional.subscribeAction('PROJECTION_ACCEPTED', (action) => {
+    namespaceProjectionInterpreter.interpret(action);
+  });
 
   // Start the engagement telemetry adapter — bounded raw telemetry normalizer.
   // Emits RAW_METRICS_WINDOW, RAW_QUOTA_WINDOW, RAW_RATE_LIMIT_WINDOW to observability.
@@ -136,11 +140,10 @@ async function startAllWorkers() {
   });
   console.log(`[orchestrator] Reconciliation loop started — tick every ${RECONCILIATION_INTERVAL_MS / 1000}s`);
 
-  // ── Telemetry coordination tick — deterministic semantic ingress serialization ──
-  cadence.every(COORDINATION_INTERVAL_MS, () => {
-    constitutional.triggerCoordinationCycle();
-  });
-  console.log(`[orchestrator] Telemetry coordination loop started — tick every ${COORDINATION_INTERVAL_MS / 1000}s`);
+  // ── Telemetry coordination: trigger-driven (Phase 3) ──
+  // No more timer — Phase 2 worker notifies CK via PROJECTION_PERSISTED on every write.
+  // CK validates asynchronously via FSM's PROJECTION_PERSISTED handler.
+  console.log('[orchestrator] Telemetry coordination: trigger-driven via Phase 2 worker + CK async validation');
 
   const st = await constitutional.status();
   console.log(`[orchestrator] Constitutional kernel running — ${accounts.length} account(s) — global: ${st.state} — domains: ${Object.keys(st.domains).join(', ')}`);
@@ -150,7 +153,7 @@ async function stopAllWorkers() {
   console.log('[orchestrator] Stopping constitutional kernel...');
 
   await telemetryWorkers.stopAll();
-  await lineageWorker.stop();
+  phase2DumbWriter.stop();
   constitutional.stopLoop();
   syncSubstrate.stop();
   await cadence.stop();

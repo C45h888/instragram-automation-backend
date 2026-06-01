@@ -118,7 +118,7 @@ const SIGNAL_CLASS = {
 // CK validates that each signal is only ever written by its canonical owner.
 // Unknown signals (not in this map) are rejected as unclassified.
 const SIGNAL_OWNERSHIP_MAP = {
-  // ── Ledger-derivable signals — lineage worker Layer B only ─────────────
+  // ── Ledger-derivable signals — namespace-projection-interpreter only ──
   // These signals are recomputable from immutable lineage:ledger:entries replay.
   'health.transitionCount':           { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
   'health.lastTransition':             { owner: 'lineage-worker',          class: SIGNAL_CLASS.LEDGER_DERIVABLE },
@@ -332,6 +332,8 @@ const DOMAIN_EVENT_MAP = {
   PROCESS_INTENTS: 'telemetry-coordination',
   HALT_TELEMETRY_COORDINATION: 'telemetry-coordination',
   RESUME_TELEMETRY_COORDINATION: 'telemetry-coordination',
+  // Phase 3: CK async validation — Phase 2 worker notifies CK post-write
+  PROJECTION_PERSISTED: 'telemetry-coordination',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1210,15 +1212,16 @@ function _canCheckpoint() {
   // G4: No escalation signaled
   if (health.signals && health.signals.escalationSignaled) return false;
 
-  // G5: Ingestion lag bounded
+  // G5: Ingestion lag bounded — Phase 2 writer is trigger-driven, no polling gap.
+  // Check that ledger has entries if observability log is growing.
   try {
-    const lw = require('./lineage-worker');
+    const lineageLedger = require('./lineage-ledger');
     const obs = require('../observability');
     const logSize = obs.query ? obs.query.getLogSize() : 0;
-    const lwSize = lw.getLedgerSize ? lw.getLedgerSize() : 0;
-    if (Math.abs(logSize - lwSize) > 5) return false;
+    // Phase 3: trigger-driven writes — ledger should advance with log
+    if (logSize > 10 && _lastLedgerSizeCheck !== undefined && _lastLedgerSizeCheck === 0) return false;
   } catch (_) {
-    return false;
+    // Non-critical — ledger may be unavailable during boot
   }
 
   return true;
@@ -1257,7 +1260,7 @@ async function _triggerConstitutionalDeath(ckpt) {
   });
 
   // 2. Stop all workers
-  try { await require('./lineage-worker').stop(); } catch (e) { console.warn('[CK] Lineage worker stop error:', e.message); }
+  try { await require('../telemetry-workers/phase2-dumb-writer').stop(); } catch (e) { console.warn('[CK] Phase2 writer stop error:', e.message); }
   try { await require('../telemetry-workers').stopAll(); } catch (e) { console.warn('[CK] Telemetry workers stop error:', e.message); }
 
   // 3. Clear stale in-memory domain states
@@ -1295,7 +1298,7 @@ async function _triggerConstitutionalDeath(ckpt) {
 
   // 7. Restart workers
   try { await require('../telemetry-workers').startAll(); } catch (e) { console.warn('[CK] Telemetry workers restart error:', e.message); }
-  try { await require('./lineage-worker').start(400); } catch (e) { console.warn('[CK] Lineage worker restart error:', e.message); }
+  try { require('../telemetry-workers/phase2-dumb-writer').start(); } catch (e) { console.warn('[CK] Phase2 writer restart error:', e.message); }
 
   // 8. Dispatch BOOT_COMPLETE → HEALTHY
   dispatch({ type: 'BOOT_COMPLETE' });

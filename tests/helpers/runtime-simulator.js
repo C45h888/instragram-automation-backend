@@ -34,7 +34,8 @@
 const observability = require('../../control-plane/observability/index.js');
 const CK = require('../../control-plane/governance/constitutional-kernel.js');
 const telemetryWorkers = require('../../control-plane/telemetry-workers/index.js');
-const lineageWorker = require('../../control-plane/governance/lineage-worker.js');
+const phase2DumbWriter = require('../../control-plane/telemetry-workers/phase2-dumb-writer.js');
+const namespaceProjectionInterpreter = require('../../control-plane/governance/interpreters/namespace-projection-interpreter.js');
 const lineageLedger = require('../../control-plane/governance/lineage-ledger.js');
 const reconciliationEngine = require('../../control-plane/governance/reconciliation-engine.js');
 const metricsSubstrate = require('../../substrates/metrics-substrate.js');
@@ -129,13 +130,19 @@ class RuntimeSimulator {
     await engagementTelemetryAdapter.start();
 
     // 4. Start telemetry projection workers (5 workers: runtime, integrity,
-    //    authority, health, systemic). Must start BEFORE lineage worker so
-    //    projections are available when lineage-worker starts consuming.
+    //    authority, health, systemic). Phase 1 — emit PROJECTION_INTENT.
     await telemetryWorkers.startAll(this._telemetryPollMs);
 
-    // 5. Start lineage worker — consumes from observability plane → writes ledger.
-    //    MUST start after telemetry workers.
-    await lineageWorker.start(this._lineagePollMs);
+    // 5. Start Phase 2 dumb writer — trigger-driven (Phase 3).
+    //    Subscribes to observability onWrite hook, serializes, appends to ledger,
+    //    notifies CK for async validation.
+    phase2DumbWriter.start();
+
+    // 5b. Wire namespace projection interpreter to CK.
+    //    Subscribes to PROJECTION_ACCEPTED actions for post-validation interpretation.
+    CK.subscribeAction('PROJECTION_ACCEPTED', (action) => {
+      namespaceProjectionInterpreter.interpret(action);
+    });
 
     // 6. Initialise metrics substrate
     await metricsSubstrate.init();
@@ -180,7 +187,7 @@ class RuntimeSimulator {
       CK.stopLoop();
     }
 
-    await lineageWorker.stop();
+    phase2DumbWriter.stop();
     await telemetryWorkers.stopAll();
     await engagementTelemetryAdapter.stop();
     await observability.stop();
@@ -336,17 +343,17 @@ class RuntimeSimulator {
   }
 
   /**
-   * Kill the lineage worker (simulate lineage ingestion crash).
+   * Kill the Phase 2 dumb writer (simulate write path crash).
    */
   async killLineageWorker() {
-    await lineageWorker.stop();
+    phase2DumbWriter.stop();
   }
 
   /**
-   * Restart the lineage worker after a kill.
+   * Restart the Phase 2 dumb writer after a kill.
    */
   async restartLineageWorker() {
-    await lineageWorker.start(this._lineagePollMs);
+    phase2DumbWriter.start();
   }
 
   /**
@@ -433,11 +440,11 @@ class RuntimeSimulator {
   }
 
   /**
-   * Get lineage worker projection snapshot.
+   * Get namespace projection interpreter snapshot (Phase 3).
    * @returns {object}
    */
   getProjections() {
-    return lineageWorker.getProjections();
+    return namespaceProjectionInterpreter.getProjections();
   }
 
   /**

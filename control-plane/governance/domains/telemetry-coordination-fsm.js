@@ -245,6 +245,75 @@ const TRANSITION_MAP = {
       type: 'COORDINATION_RESUMED',
     }],
   },
+
+  // ── Phase 3: Async constitutional validation (triggered by Phase 2 worker) ──
+  PROJECTION_PERSISTED: {
+    target: 'IDLE',
+    guard: (event) => {
+      // Always allowed — async validation proceeds regardless of state
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const { ledgerId, entry } = event;
+      const actions = [];
+
+      try {
+        // 1. Validate constitutionally (reuses existing intent validation)
+        const validation = _validateSingleIntent({
+          authority: entry.authority,
+          raw: {
+            projectionNamespace: entry.raw?.projectionNamespace,
+            projectionType: entry.raw?.projectionType,
+            projectionPayload: entry.raw?.projectionPayload,
+            confidence: entry.raw?.confidence,
+            integrityScore: entry.raw?.integrityScore,
+          },
+        });
+
+        if (validation.valid) {
+          // 2. Mark accepted in canonical ledger
+          const lineageLedger = require('../lineage-ledger');
+          lineageLedger.markEntryAccepted(ledgerId).catch(err =>
+            console.error('[telemetry-coordination-fsm] markEntryAccepted error:', err.message)
+          );
+
+          _serializedTransitionCount++;
+          // PROJECTION_ACCEPTED action → interpreter subscribed via CK.subscribeAction
+          actions.push({
+            type: 'PROJECTION_ACCEPTED',
+            ledgerId,
+            entry: { ...entry, raw: { ...entry.raw, constitutionalStatus: 'ACCEPTED' } },
+          });
+        } else {
+          // 4. Remove from canonical ledger
+          const lineageLedger = require('../lineage-ledger');
+          lineageLedger.removeEntry(ledgerId).catch(err =>
+            console.error('[telemetry-coordination-fsm] removeEntry error:', err.message)
+          );
+
+          // 5. Write REJECTION to anomaly log
+          lineageLedger.recordAnomaly({
+            type: 'REJECTED_PROJECTION',
+            ledgerId,
+            reason: validation.violations.map(v => v.reason).join('; '),
+            violations: validation.violations,
+            entry,
+          }).catch(err =>
+            console.error('[telemetry-coordination-fsm] recordAnomaly error:', err.message)
+          );
+
+          _rejectedIntentCount++;
+          _recordRejection(entry, validation.violations);
+          actions.push({ type: 'PROJECTION_REJECTED', ledgerId, violations: validation.violations });
+        }
+      } catch (err) {
+        console.error('[telemetry-coordination-fsm] PROJECTION_PERSISTED error:', err.message);
+        actions.push({ type: 'PROJECTION_VALIDATION_ERROR', error: err.message });
+      }
+
+      return actions;
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -380,8 +449,8 @@ function _validateSignalOwnership(payload, namespace, violations) {
         continue;
       }
 
-      // Check if this signal is explicitly owned by lineage-worker (violation)
-      // Lineage-worker signals are LEDGER_DERIVABLE and must NOT appear
+      // Check if this signal is explicitly owned by namespace-projection-interpreter (violation)
+      // Interpreter signals are LEDGER_DERIVABLE and must NOT appear
       // in telemetry projection payloads
       const lineageOwnedPrefixes = [
         'domain.', 'authority.acquisition.', 'authority.publishing.',
@@ -683,12 +752,17 @@ function init(rehydratedState) {
     console.log(`[telemetry-coordination-fsm] Initialized with rehydrated state: ${rehydratedState}`);
   }
 
-  // Bootstrap cursor from observability log size
+  // Phase 3: Register as consumer for truncation protection.
+  // Cursor starts at 0 — all intents are visible from boot.
+  // Consumer registration protects against _transitionLog truncation.
   try {
     const observability = require('../../observability');
-    _intentCursor = observability.query.getLogSize();
-    console.log(`[telemetry-coordination-fsm] Bootstrapped cursor: ${_intentCursor}`);
-  } catch (_) {}
+    observability.query.registerConsumer('telemetry-coordination-fsm');
+    _intentCursor = 0;
+    console.log(`[telemetry-coordination-fsm] Consumer registered — cursor at 0, log size ${observability.query.getLogSize()}`);
+  } catch (_) {
+    console.warn('[telemetry-coordination-fsm] Failed to register consumer:', _.message);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
