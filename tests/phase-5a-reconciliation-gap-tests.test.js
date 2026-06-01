@@ -19,12 +19,14 @@
  *   GAP-9 — Hash race condition (timing-dependent, not deterministic)
  *   GAP-10 — FSM/lineage false positive rate (statistical measurement)
  *
- * TEST INFRASTRUCTURE (TEST ONLY — REMOVE AFTER VALIDATION):
- *   - lineageLedger.injectTestEntry()  — direct ledger write for controlled lineage
+ * TEST INFRASTRUCTURE:
+ *   - eventInjector.injectRawLineageEntry() — writes directly to Redis via
+ *     lineageLedger.injectTestEntry(). No polling needed — data is available
+ *     immediately after injectRawLineageEntry returns
  *   - lineageLedger.clearDomainLineage() — clean domain lineage between tests
  *   - sim.getDedupFsm(), sim.getEngagementFsm() — FSM getters for state control
- *   - eventInjector.injectRawLineageEntry() — timestamped lineage injection
- *   - sim.waitForWorkerIngestion() — await worker to process injected entries
+ *   - sim.waitForWorkerIngestion() — retained as defensive buffer only; redundant
+ *     for direct Redis writes (injectTestEntry is synchronous to Redis)
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
@@ -262,8 +264,6 @@ describe('Phase 5A: Reconciliation Engine Gap Tests', () => {
         });
       }
 
-      await sim.waitForWorkerIngestion(500);
-
       const result = await sim.runEngineComparison({
         fsms: new Map([['dedup', dedupFsm]]),
         substrates: {
@@ -315,8 +315,6 @@ describe('Phase 5A: Reconciliation Engine Gap Tests', () => {
           raw: { intentId: `boundary-intent-${i}`, resourceId: 'resource-boundary' },
         });
       }
-
-      await sim.waitForWorkerIngestion(500);
 
       const result = await sim.runEngineComparison({
         fsms: new Map([['dedup', dedupFsm]]),
@@ -427,8 +425,6 @@ describe('Phase 5A: Reconciliation Engine Gap Tests', () => {
         raw: { cooldownMs: 3600000, accountId: 'legitimate-breaker-account' },
       });
 
-      await sim.waitForWorkerIngestion(500);
-
       const result = await sim.runEngineComparison({
         fsms: new Map([['engagement', engagementFsm]]),
         substrates: {
@@ -496,8 +492,6 @@ describe('Phase 5A: Reconciliation Engine Gap Tests', () => {
         cooldownMs: 3600000,
       }, { validate: () => ({ allowed: true }), dispatchGlobal: () => {} });
 
-      await sim.waitForWorkerIngestion(500);
-
       const result = await sim.runEngineComparison({
         fsms: new Map([['engagement', engagementFsm]]),
         substrates: {
@@ -553,8 +547,6 @@ describe('Phase 5A: Reconciliation Engine Gap Tests', () => {
         accountId: 'stale-collision-account',
         cooldownMs: 3600000,
       }, { validate: () => ({ allowed: true }), dispatchGlobal: () => {} });
-
-      await sim.waitForWorkerIngestion(500);
 
       const result = await sim.runEngineComparison({
         fsms: new Map([['engagement', engagementFsm]]),

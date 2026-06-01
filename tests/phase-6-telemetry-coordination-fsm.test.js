@@ -10,11 +10,11 @@
  *                                                   ↓
  *   CK cadence → FSM reads intents → validates → orders → serializes
  *                                                   ↓
- *            SEMANTIC_PROJECTION_TRANSITION → observability → lineage worker → ledger
+ *        SEMANTIC_PROJECTION_TRANSITION → observability → transition-writers → ledger
  *
  * Targeted Tests (T1–T12):
  *   T1:  Valid projection intents admitted to lineage
- *   T2:  PROJECTION_INTENT gate — lineage worker rejects direct ingress
+ *   T2:  PROJECTION_INTENT gate — transition-writers reject direct ingress
  *   T3:  Unknown namespace intents rejected by FSM
  *   T4:  Invalid authority intents rejected by FSM
  *   T5:  Signal ownership contract enforced
@@ -154,9 +154,9 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
     await sleep(200);
 
     // Trigger the coordination cycle — FSM reads intents, validates, serializes
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
 
-    // Wait for lineage worker to consume the FSM-emitted transition
+    // Wait for transition-writers to consume the FSM-emitted transition
     const entry = await waitForProjectionInLedger('health', 15000);
 
     expect(entry).toBeDefined();
@@ -165,7 +165,7 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
     expect(KNOWN_NAMESPACES).toContain(entry.raw.projectionNamespace);
   });
 
-  // ── T2: PROJECTION_INTENT gate — lineage worker rejects them ──────────
+  // ── T2: PROJECTION_INTENT gate — transition-writers reject them ──────────
   it('T2: PROJECTION_INTENT entries are blocked from direct lineage ingress', async () => {
     const ledgerSizeBefore = await lineageLedger.getSize();
 
@@ -176,8 +176,8 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
     });
 
     // Inject a plain transition after it as a "sentinel" — once this
-    // appears in the ledger, we know the lineage worker has consumed
-    // everything up to and including our PROJECTION_INTENT.
+    // appears in the ledger, we know the transition-writers have processed
+    // all entries up to and including our PROJECTION_INTENT.
     const sentinelId = `phase6-t2-sentinel-${Date.now()}`;
     observability.transition({
       domain: 'governance',
@@ -217,7 +217,7 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
     });
 
     // Trigger coordination — FSM should reject the unknown namespace
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     // Rejection log should have grown
     const logAfter = tcf.getRejectionLog();
@@ -238,7 +238,7 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
       correlationId: `phase6-t4-${Date.now()}`,
     });
 
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     const logAfter = tcf.getRejectionLog();
     expect(logAfter.length).toBeGreaterThan(logBefore);
@@ -264,7 +264,7 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
       correlationId: `phase6-t5-${Date.now()}`,
     });
 
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     const logAfter = tcf.getRejectionLog();
     expect(logAfter.length).toBeGreaterThan(logBefore);
@@ -399,7 +399,7 @@ describe('Phase 6: FSM Determinism', () => {
     injectProjectionIntent({ namespace: 'authority', correlationId: `phase6-t9-auth-${ts}`, timestamp: ts });
     injectProjectionIntent({ namespace: 'integrity', correlationId: `phase6-t9-int-${ts}`, timestamp: ts });
 
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     // Wait for lineage ingestion
     await waitForLedgerEntryCount(1, 15000);
@@ -436,7 +436,7 @@ describe('Phase 6: FSM Determinism', () => {
       timestamp: ts,
     });
 
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     await waitForLedgerEntryCount(1, 15000);
 
@@ -479,7 +479,7 @@ describe('Phase 6: FSM Determinism', () => {
       timestamp: FIXED_TS,
     });
 
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     await waitForLedgerEntryCount(1, 15000);
 
@@ -516,7 +516,7 @@ describe('Phase 6: FSM Determinism', () => {
         timestamp: FIXED_TS,
       });
     }
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
     await waitForLedgerEntryCount(1, 15000);
 
     const ledgerA = await lineageLedger.getLineage(200);
@@ -545,7 +545,7 @@ describe('Phase 6: FSM Determinism', () => {
         timestamp: FIXED_TS,
       });
     }
-    CK.triggerCoordinationCycle();
+    CK.dispatch({ type: 'PROCESS_INTENTS' });
     await waitForLedgerEntryCount(1, 15000);
 
     const ledgerB = await lineageLedger.getLineage(200);
@@ -741,7 +741,7 @@ describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
       const coordResults = [];
       const coordTimer = setInterval(() => {
         try {
-          CK.triggerCoordinationCycle();
+          CK.dispatch({ type: 'PROCESS_INTENTS' });
           coordCycleCount++;
           coordResults.push({
             cycle: coordCycleCount,
@@ -852,13 +852,13 @@ describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
         console.log('[phase-6] Telemetry workers restarted');
       }, RECYCLE_INTERVAL_MS);
 
-      // ── Lineage worker recycle timer ──────────────────────────────
+      // ── Transition-writers recycle timer ──────────────────────────────
       const lineageRecycleTimer = setInterval(async () => {
-        console.log('[phase-6] Recycling lineage worker...');
+        console.log('[phase-6] Recycling transition-writers...');
         await sim.killLineageWorker();
         await sleep(200);
         await sim.restartLineageWorker();
-        console.log('[phase-6] Lineage worker restarted');
+        console.log('[phase-6] Transition-writers restarted');
       }, LINEAGE_RECYCLE_INTERVAL_MS);
 
       // ═══════════════════════════════════════════════════════════════

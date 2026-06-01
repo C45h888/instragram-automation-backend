@@ -19,7 +19,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
-import lineageWorker from '../control-plane/governance/lineage-worker.js';
+import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForLogSize } = require('./helpers/sync-barriers');
 const { deterministicEntryHash } = require('./helpers/constitutional-invariants');
@@ -27,11 +27,11 @@ const { deterministicEntryHash } = require('./helpers/constitutional-invariants'
 describe('Phase 4K: Durable Persistence Integrity', () => {
   beforeAll(async () => {
     await observability.init();
-    await lineageWorker.start(300);
+    await phase2DumbWriter.start();
   }, 15000);
 
   afterAll(async () => {
-    await lineageWorker.stop();
+    await phase2DumbWriter.stop();
     await observability.stop();
   });
 

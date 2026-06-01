@@ -19,7 +19,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
-import lineageWorker from '../control-plane/governance/lineage-worker.js';
+import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForLedgerEntry } = require('./helpers/sync-barriers');
 const { assertIdempotentReplay, assertStaleEntriesFlagged, assertNoSilentCorruption } = require('./helpers/constitutional-invariants');
@@ -27,11 +27,11 @@ const { assertIdempotentReplay, assertStaleEntriesFlagged, assertNoSilentCorrupt
 describe('Phase 4I: Adversarial Concurrency Corruption Recovery', () => {
   beforeAll(async () => {
     await observability.init();
-    await lineageWorker.start(400);
+    await phase2DumbWriter.start();
   }, 15000);
 
   afterAll(async () => {
-    await lineageWorker.stop();
+    await phase2DumbWriter.stop();
     await observability.stop();
   });
 

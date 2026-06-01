@@ -17,8 +17,10 @@ describe('Phase 4A: Projection Ownership Integrity', () => {
     }
   });
 
-  it('lineage-worker remains ingestion-first and does not emit semantic_projection transitions', () => {
-    const src = readFileSync(path.resolve(process.cwd(), 'control-plane/governance/lineage-worker.js'), 'utf8');
+  it('phase2-dumb-writer does not emit semantic_projection transitions — only writes PENDING ledger entries', () => {
+    const src = readFileSync(path.resolve(process.cwd(), 'control-plane/telemetry-workers/phase2-dumb-writer.js'), 'utf8');
+    // Phase 2 writer should write to ledger with PENDING status, not emit transitions itself
     expect(src.includes("entity: 'semantic_projection'")).toBe(false);
+    expect(src.includes("constitutionalStatus: 'PENDING'")).toBe(true);
   });
 });

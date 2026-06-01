@@ -24,7 +24,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
 import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
-import lineageWorker from '../control-plane/governance/lineage-worker.js';
+import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
+import namespaceProjectionInterpreter from '../control-plane/governance/interpreters/namespace-projection-interpreter.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForProjectionFlush } = require('./helpers/sync-barriers');
 const {
@@ -37,11 +38,11 @@ describe('Phase 4M: Unified Worker Recycle Under Active Concurrency', () => {
   beforeAll(async () => {
     await observability.init();
     await telemetryWorkers.startAll(35);
-    await lineageWorker.start(400);
+    await phase2DumbWriter.start();
   }, 20000);
 
   afterAll(async () => {
-    await lineageWorker.stop();
+    await phase2DumbWriter.stop();
     await telemetryWorkers.stopAll();
     await observability.stop();
   });
@@ -66,18 +67,18 @@ describe('Phase 4M: Unified Worker Recycle Under Active Concurrency', () => {
     const entryCountBefore = ledgerBefore.length;
     expect(entryCountBefore).toBeGreaterThan(0);
 
-    // ── Phase 2: Kill lineage worker mid-ingestion ────────────────────
-    await lineageWorker.stop();
+    // ── Phase 2: Kill Phase 2 dumb writer mid-ingestion ────────────────────
+    await phase2DumbWriter.stop();
 
-    // Inject more waves while worker is dead
+    // Inject more waves while writer is dead
     const deadInjectCount = 3;
     for (let i = 100; i < 100 + deadInjectCount; i++) {
       await injectMixedDomainWave({ waveId, seq: i, includeFault: false });
     }
 
-    // ── Phase 3: Restart worker, verify cursor recovery ───────────────
+    // ── Phase 3: Restart writer, verify ledger recovery ───────────────
     const cursorBeforeRestart = await lineageLedger.getWorkerCursor();
-    await lineageWorker.start(400);
+    await phase2DumbWriter.start();
 
     // Inject post-restart waves
     for (let i = 200; i < 205; i++) {

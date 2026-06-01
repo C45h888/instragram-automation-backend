@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
-import lineageWorker from '../control-plane/governance/lineage-worker.js';
+import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForLedgerEntry } = require('./helpers/sync-barriers');
 const { assertNoTimestampRegression, assertMonotonicCursors, assertIdempotentReplay, assertStaleEntriesFlagged, assertCausalChainIntegrity } = require('./helpers/constitutional-invariants');
@@ -25,11 +25,11 @@ const { assertNoTimestampRegression, assertMonotonicCursors, assertIdempotentRep
 describe('Phase 4F: Causal Ordering Guarantees', () => {
   beforeAll(async () => {
     await observability.init();
-    await lineageWorker.start(400);
+    await phase2DumbWriter.start();
   }, 15000);
 
   afterAll(async () => {
-    await lineageWorker.stop();
+    await phase2DumbWriter.stop();
     await observability.stop();
   });
 
@@ -154,20 +154,15 @@ describe('Phase 4F: Causal Ordering Guarantees', () => {
     // Wait for lineage worker to consume the broken entry
     await waitForLedgerEntryCount(1, 8000);
 
-    // The entry should be ingested (lineage worker ingests even broken chains
-    // and records them as anomalies rather than rejecting outright)
+    // The CK async validation should have rejected the broken causal chain entry
+    // Check the ledger entry's constitutionalStatus (REJECTED = broken causal chain detected)
     const ledger = await lineageLedger.getLineage(50);
     const brokenEntries = ledger.filter((e) => e.entityId === entityId);
     expect(brokenEntries.length).toBe(1);
 
-    // The lineage worker's divergence log should contain a BROKEN_CAUSATION_CHAIN entry
-    const divergences = lineageWorker.getDivergences();
-    const brokenChainDiv = divergences.find(
-      (d) => d.type === 'BROKEN_CAUSATION_CHAIN' &&
-             d.details && d.details.parentTransitionId === brokenParentId
-    );
-    expect(brokenChainDiv).toBeDefined();
-    expect(brokenChainDiv.details.traceId).toBe(brokenEntries[0].traceId);
+    // CK rejects entries with broken causal chains — constitutionalStatus must be REJECTED
+    const brokenEntry = brokenEntries[0];
+    expect(brokenEntry.raw.constitutionalStatus).toBe('REJECTED');
   });
 
   it('ledger entries pass causal chain integrity after sustained concurrent workload', async () => {

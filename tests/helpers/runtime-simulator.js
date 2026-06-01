@@ -4,19 +4,26 @@
  *
  * Boots the complete governance stack for Phase 5 integration testing:
  *   observability → CK domain registration → telemetry workers →
- *   lineage worker → CK rehydrate → CK startLoop
+ *   transitionWriters → CK rehydrate → CK startLoop → telemetryCoordinationFsm
  *
- * Boot order (matches production orchestrator exactly):
+ * Boot order (matches production orchestrator exactly — 17 steps):
  *   1. observability.init()
  *   2. Register all 7 domain FSMs with CK
- *   3. Start engagement telemetry adapter (raw bounded telemetry pre-processor)
- *   4. Start telemetry projection workers (5 workers)
- *   5. Start lineage worker (consumes observability → writes ledger)
- *   6. metricsSubstrate.init()
- *   7. CK.rehydrate()
- *   8. lifecycle.refresh() + LIFECYCLE_REFRESHED dispatch
- *   9. BOOT_COMPLETE dispatch (CK: BOOTING → HEALTHY)
- *   10. CK.startLoop()
+ *   3. telemetryWorkers.startAll() — bounded projection workers, Phase 1
+ *   4. transitionWriters.startAll() — 5 event-driven writers, Phase 2
+ *   5. phase2DumbWriter.start() — deprecated but kept for test compat
+ *   6. CK.subscribeAction('PROJECTION_ACCEPTED') — namespace projection interpreter
+ *   7. engagementTelemetryAdapter.start() — raw bounded telemetry pre-processor
+ *   8. CK.rehydrate()
+ *   9. metricsSubstrate.init()
+ *   10. lifecycle.refresh() + LIFECYCLE_REFRESHED dispatch
+ *   11. BOOT_COMPLETE dispatch (CK: BOOTING → HEALTHY)
+ *   12. CK.startLoop()
+ *   13. telemetryCoordinationFsm.start(ckCtx) — reactive onWrite coordination, Phase 3
+ *   14. ingressSubstrate.start()
+ *   15. syncSubstrate.start()
+ *   16. cadence.every(90s) — CADENCE_TICK
+ *   17. cadence.every(60s) — CK.triggerReconciliation()
  *
  * Architectural invariant:
  *   This simulator is a TEST SUBSTRATE. It never mutates constitutional state,
@@ -34,6 +41,7 @@
 const observability = require('../../control-plane/observability/index.js');
 const CK = require('../../control-plane/governance/constitutional-kernel.js');
 const telemetryWorkers = require('../../control-plane/telemetry-workers/index.js');
+const transitionWriters = require('../../control-plane/telemetry-workers/transition-writers/index.js');
 const phase2DumbWriter = require('../../control-plane/telemetry-workers/phase2-dumb-writer.js');
 const namespaceProjectionInterpreter = require('../../control-plane/governance/interpreters/namespace-projection-interpreter.js');
 const lineageLedger = require('../../control-plane/governance/lineage-ledger.js');
@@ -41,6 +49,10 @@ const reconciliationEngine = require('../../control-plane/governance/reconciliat
 const metricsSubstrate = require('../../substrates/metrics-substrate.js');
 const lifecycle = require('../../control-plane/runtime/lifecycle.js');
 const engagementTelemetryAdapter = require('../../control-plane/governance/interpreters/engagement-telemetry-adapter.js');
+const ingressSubstrate = require('../../control-plane/governance/ingress-consistency/substrate.js');
+const syncSubstrate = require('../../substrates/sync-substrate.js');
+const cadence = require('../../control-plane/runtime/cadence.js');
+const { getRedisClient } = require('../../config/redis.js');
 
 const acquisitionFsm = require('../../control-plane/governance/domains/acquisition-fsm.js');
 const publishingFsm = require('../../control-plane/governance/domains/publishing-fsm.js');
@@ -96,17 +108,24 @@ class RuntimeSimulator {
   /**
    * Boot the complete constitutional runtime stack.
    *
-   * Order matches production orchestrator.js startAllWorkers():
-   *   observability.init()
-   *   → register all 7 domain FSMs
-   *   → engagementTelemetryAdapter.start()
-   *   → telemetryWorkers.startAll()
-   *   → lineageWorker.start()
-   *   → metricsSubstrate.init()
-   *   → CK.rehydrate()
-   *   → lifecycle.refresh() + LIFECYCLE_REFRESHED dispatch
-   *   → BOOT_COMPLETE dispatch
-   *   → CK.startLoop()
+   * Order matches production orchestrator.js startAllWorkers() EXACTLY:
+   *   1. observability.init()
+   *   2. Register all 7 domain FSMs with CK
+   *   3. telemetryWorkers.startAll() — bounded projection workers, Phase 1
+   *   4. transitionWriters.startAll() — 5 event-driven writers, Phase 2
+   *   5. phase2DumbWriter.start() — deprecated but kept for test compat
+   *   6. CK.subscribeAction('PROJECTION_ACCEPTED') — namespace projection interpreter
+   *   7. engagementTelemetryAdapter.start() — raw bounded telemetry pre-processor
+   *   8. CK.rehydrate()
+   *   9. metricsSubstrate.init()
+   *   10. lifecycle.refresh() + LIFECYCLE_REFRESHED dispatch
+   *   11. BOOT_COMPLETE dispatch
+   *   12. CK.startLoop()
+   *   13. telemetryCoordinationFsm.start(ckCtx) — reactive onWrite coordination, Phase 3
+   *   14. ingressSubstrate.start()
+   *   15. syncSubstrate.start()
+   *   16. cadence.every() — CADENCE_TICK
+   *   17. cadence.every(RECONCILIATION_INTERVAL_MS) — CK.triggerReconciliation()
    */
   async boot() {
     if (this._booted) {
@@ -124,33 +143,37 @@ class RuntimeSimulator {
       CK.registerDomain(fsm);
     }
 
-    // 3. Start engagement telemetry adapter — raw bounded telemetry pre-processor.
-    //    Emits RAW_METRICS_WINDOW, RAW_QUOTA_WINDOW, RAW_RATE_LIMIT_WINDOW to observability.
-    //    Must start before telemetry workers so workers can consume its emissions.
-    await engagementTelemetryAdapter.start();
-
-    // 4. Start telemetry projection workers (5 workers: runtime, integrity,
+    // 3. Start telemetry projection workers (5 workers: runtime, integrity,
     //    authority, health, systemic). Phase 1 — emit PROJECTION_INTENT.
     await telemetryWorkers.startAll(this._telemetryPollMs);
 
-    // 5. Start Phase 2 dumb writer — trigger-driven (Phase 3).
-    //    Subscribes to observability onWrite hook, serializes, appends to ledger,
-    //    notifies CK for async validation.
+    // 4. Start 5 transition writers — event-driven, bounded by namespace.
+    //    Each writer subscribes to observability.onWrite() and filters for:
+    //      coordinatedBy === 'telemetry-coordination-fsm' AND domain === <namespace>
+    //    Phase 2 FSM reactive coordination layer — replaces phase2DumbWriter as primary write path.
+    transitionWriters.startAll();
+
+    // 5. Start Phase 2 dumb writer (DEPRECATED — transition-writers replace it).
+    //    Kept wired for test compatibility.
     phase2DumbWriter.start();
 
-    // 5b. Wire namespace projection interpreter to CK.
-    //    Subscribes to PROJECTION_ACCEPTED actions for post-validation interpretation.
+    // 6. Wire namespace projection interpreter to CK.
+    //    Subscribes to PROJECTION_ACCEPTED actions emitted by FSM after async validation.
     CK.subscribeAction('PROJECTION_ACCEPTED', (action) => {
       namespaceProjectionInterpreter.interpret(action);
     });
 
-    // 6. Initialise metrics substrate
-    await metricsSubstrate.init();
+    // 7. Start engagement telemetry adapter — raw bounded telemetry pre-processor.
+    //    Emits RAW_METRICS_WINDOW, RAW_QUOTA_WINDOW, RAW_RATE_LIMIT_WINDOW to observability.
+    await engagementTelemetryAdapter.start();
 
-    // 7. Rehydrate CK from the lineage ledger (worker has started populating it)
+    // 8. Rehydrate CK from the lineage ledger (workers have started populating it)
     await CK.rehydrate();
 
-    // 8. Refresh lifecycle and dispatch account state — matches production order
+    // 9. Initialise metrics substrate
+    await metricsSubstrate.init();
+
+    // 10. Refresh lifecycle and dispatch account state — matches production order
     await lifecycle.refresh();
     const accounts = await require('../../substrates/persistence.js').getActiveAccounts();
     CK.dispatch({
@@ -158,14 +181,42 @@ class RuntimeSimulator {
       accountIds: accounts.map((a) => a.id),
     });
 
-    // 9. Signal boot complete — moves CK from BOOTING → HEALTHY
-    //    (production orchestrator does this; test substrate must replicate it)
+    // 11. Signal boot complete — moves CK from BOOTING → HEALTHY
     CK.dispatch({ type: 'BOOT_COMPLETE' });
 
-    // 10. Start the CK watchdog loop
+    // 12. Start the CK watchdog loop
     if (this._autoTick) {
       CK.startLoop(this._tickIntervalMs);
     }
+
+    // 13. Start telemetry coordination FSM reactive layer — Phase 3.
+    //     ctx shape matches what CK dispatches to domain FSMs:
+    //     { validate, dispatchGlobal, getGlobalState }.
+    const ckCtx = {
+      validate: (from, to, evt) => CK.validateDomainTransition('telemetry-coordination', from, to, evt),
+      dispatchGlobal: (evt) => CK.dispatch(evt),
+      getGlobalState: () => CK.getState(),
+    };
+    telemetryCoordinationFsm.start(ckCtx);
+
+    // 14. Start ingress consistency substrate — monitors log vs ledger lag, signals CK
+    ingressSubstrate.start((evt) => CK.dispatch(evt));
+
+    // 15. Start sync substrate if Redis is available
+    const redis = getRedisClient();
+    if (redis && redis.status === 'ready') {
+      syncSubstrate.start(redis, (event) => CK.dispatch(event));
+    }
+
+    // 16. Cadence: regular tick for CADENCE_TICK domain events
+    cadence.every(90 * 1000, async () => {
+      CK.dispatch({ type: 'CADENCE_TICK' });
+    });
+
+    // 17. Cadence: reconciliation verification tick — separate from maintenance cadence
+    cadence.every(60 * 1000, () => {
+      CK.triggerReconciliation();
+    });
 
     // Allow worker ingestion to catch up to initial boot state
     await sleep(300);
@@ -178,7 +229,9 @@ class RuntimeSimulator {
 
   /**
    * Gracefully shut down the runtime stack.
-   * Order: CK loop → lineage worker → telemetry workers → observability.
+   * Order: CK loop → telemetryCoordinationFsm → transitionWriters →
+   *        phase2DumbWriter → telemetry workers → ingress → sync →
+   *        cadence → observability.
    */
   async shutdown() {
     if (!this._booted) return;
@@ -187,9 +240,37 @@ class RuntimeSimulator {
       CK.stopLoop();
     }
 
+    // Stop telemetry coordination FSM reactive layer
+    telemetryCoordinationFsm.stop();
+
+    // Stop 5 transition writers
+    transitionWriters.stopAll();
+
+    // Stop Phase 2 dumb writer (deprecated)
     phase2DumbWriter.stop();
+
+    // Stop telemetry projection workers
     await telemetryWorkers.stopAll();
+
+    // Stop engagement telemetry adapter
     await engagementTelemetryAdapter.stop();
+
+    // Stop ingress consistency substrate
+    if (ingressSubstrate && ingressSubstrate.stop) {
+      await ingressSubstrate.stop();
+    }
+
+    // Stop sync substrate
+    if (syncSubstrate && syncSubstrate.stop) {
+      syncSubstrate.stop();
+    }
+
+    // Stop cadence
+    if (cadence && cadence.stop) {
+      await cadence.stop();
+    }
+
+    // Shutdown observability plane — persist final snapshot
     await observability.stop();
 
     this._booted = false;
@@ -488,7 +569,7 @@ class RuntimeSimulator {
   }
 
   /**
-   * Wait for the lineage worker to ingest entries from the observability log.
+   * Wait for the transition-writers and phase2-dumb-writer to persist entries to the ledger.
    * Polls until ledger size increases from the baseline.
    *
    * @param {number} [pollMs=500] - Poll interval in ms
