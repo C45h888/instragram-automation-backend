@@ -19,7 +19,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
 import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
-import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
+
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForCursorAdvance } = require('./helpers/sync-barriers');
 const { assertNoTimestampRegression } = require('./helpers/constitutional-invariants');
@@ -35,13 +35,11 @@ describe('Phase 4H: Consumer Lag Resilience', () => {
   beforeAll(async () => {
     await observability.init();
     await telemetryWorkers.startAll(35);
-    await phase2DumbWriter.start();
     slowConsumer = `phase4h-slow-${Date.now()}`;
     fastConsumer = `phase4h-fast-${Date.now()}`;
   }, 20000);
 
   afterAll(async () => {
-    await phase2DumbWriter.stop();
     await telemetryWorkers.stopAll();
     await observability.stop();
   });

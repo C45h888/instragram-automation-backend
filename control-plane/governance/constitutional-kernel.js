@@ -936,110 +936,11 @@ function stopLoop() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 10b. Event-Driven Reconciliation Trigger — degradation subscriber
-//
-// Replaces the blind timer-based reconciliation trigger. CK subscribes to
-// its own LOG_DEGRADED actions. When any domain FSM or CK global transition
-// produces a degradation signal, CK triggers a reconciliation cycle to verify
-// all three planes (FSM ↔ lineage ↔ substrate) are consistent.
-//
-// Exclusion: substate RECONCILING is the OUTPUT of a reconciliation cycle.
-// Triggering from it would create a feedback loop.
-//
-// Anti-thrash: MIN_RECON_INTERVAL_MS (30s) prevents cascading triggers when
-// multiple domains degrade simultaneously.
-// ═══════════════════════════════════════════════════════════════════════════════
+// Reconciliation substrate — owns snapshot building, substrate queries,
+// checkpoint gate evaluation, and worker orchestration.
+// CK remains HSM authority — dispatches FSM transitions after substrate returns.
 
-/**
- * Register the event-driven reconciliation trigger.
- * Called once at module init. Subscribes to LOG_DEGRADED actions and
- * triggers reconciliation when degradation is detected.
- *
- * Deterministic trigger criteria:
- *   1. action.substate !== 'RECONCILING'     — prevent feedback loop
- *   2. reconciliation FSM is IDLE             — FSM ready for new cycle
- *   3. !_reconInProgress                      — no concurrent cycle
- *   4. ≥ MIN_RECON_INTERVAL_MS since last     — anti-thrash
- */
-function _registerReconciliationTrigger() {
-  subscribeAction('LOG_DEGRADED', (action) => {
-    // ── Exclusion: RECONCILING substate is reconciliation OUTPUT → loop prevention ─
-    if (action.substate === 'RECONCILING') return;
-
-    // ── FSM gate: only trigger when reconciliation FSM is IDLE ───────────────
-    const reconFsm = _domains.get('reconciliation');
-    if (!reconFsm || reconFsm.getState() !== 'IDLE') return;
-
-    // ── Reentrancy gate: no concurrent reconciliation cycle ──────────────────
-    if (_reconInProgress) return;
-
-    // ── Anti-thrash gate: minimum interval between triggers ──────────────────
-    const now = Date.now();
-    if (now - _lastReconTriggeredAt < MIN_RECON_INTERVAL_MS) return;
-    _lastReconTriggeredAt = now;
-
-    // ── Fire-and-forget: do not block the action dispatch chain ──────────────
-    triggerReconciliation().catch(err =>
-      console.error('[constitutional-kernel] Degradation-triggered reconciliation failed:', err.message)
-    );
-  });
-
-  console.log('[constitutional-kernel] Event-driven reconciliation trigger registered');
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 11. Reconciliation bridge — async engine comparison subscriber
-//
-// When the reconciliation FSM transitions to RECONCILING, it emits a
-// RECONCILIATION_CYCLE_STARTED action. This subscriber catches that action,
-// calls the dumb reconciliation engine (semantically blind substrate),
-// verifies constitutional hash integrity, and dispatches results back
-// to the FSM via RECONCILIATION_RESULTS_RECEIVED.
-//
-// The FSM governs lifecycle. This bridge performs the async mechanical work.
-// The HSM (CK) retains hash verification authority.
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Build the substrate query interface for the reconciliation engine.
- * Provides bounded access to operational substrates for three-reality comparison.
- * Preserved from prior CK-owned reconciliation — now only used by the bridge subscriber.
- */
-function _buildSubstrateQueries() {
-  const dedupSubstrate = require('../../substrates/dedup-substrate');
-  const retrySubstrate = require('../../substrates/retry');
-  const metricsSubstrate = require('../../substrates/metrics-substrate');
-  const cadence = require('../runtime/cadence');
-
-  return {
-    dedupIsInFlight: async (accountId, actionType, resourceId) => {
-      return dedupSubstrate.isInFlight(accountId, actionType, resourceId);
-    },
-    retryInFlight: (accountId) => {
-      return retrySubstrate.isAccountRateLimited ? retrySubstrate.isAccountRateLimited(accountId) : false;
-    },
-    bufferSnapshot: () => {
-      const buffer = require('../runtime/buffer');
-      try {
-        return buffer.snapshot ? buffer.snapshot() : { size: 0, flushing: false };
-      } catch {
-        return { size: 0, flushing: false };
-      }
-    },
-    metricsSignals: () => {
-      return metricsSubstrate.getHealthSignals ? metricsSubstrate.getHealthSignals() : {};
-    },
-    cadenceLastTick: () => {
-      return cadence.lastTick ? cadence.lastTick() : null;
-    },
-    dedupSnapshot: () => {
-      return typeof dedupSubstrate.getInflightSnapshot === 'function'
-        ? dedupSubstrate.getInflightSnapshot()
-        : { identityCount: 0, resourceCount: 0, sample: [] };
-    },
-  };
-}
+// Reconciliation substrate owns this — moved to reconciliation-substrate.js
 
 /**
  * Trigger a complete reconciliation cycle.

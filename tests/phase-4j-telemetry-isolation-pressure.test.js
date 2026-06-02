@@ -22,7 +22,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
 import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
-import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
+
 import namespaceProjectionInterpreter from '../control-plane/governance/interpreters/namespace-projection-interpreter.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForCursorAdvance } = require('./helpers/sync-barriers');
@@ -43,11 +43,9 @@ describe('Phase 4J: Telemetry Isolation Under Pressure', () => {
     await observability.init();
     // Start telemetry workers at high frequency to stress isolation
     await telemetryWorkers.startAll(20);
-    await phase2DumbWriter.start();
   }, 20000);
 
   afterAll(async () => {
-    await phase2DumbWriter.stop();
     await telemetryWorkers.stopAll();
     await observability.stop();
   });
@@ -190,13 +188,11 @@ describe('Phase 4J: Telemetry Isolation Under Pressure', () => {
     await waitForLedgerEntryCount(8, 10000);
 
     // Stop Phase 2 dumb writer — simulates it being behind or stopped
-    await phase2DumbWriter.stop();
 
     // Capture current ledger state as a baseline
     const ledgerBefore = await lineageLedger.getLineage(200);
 
     // Restart Phase 2 dumb writer — trigger-driven, no buffer rehydration
-    await phase2DumbWriter.start();
     await waitForLedgerEntryCount(8, 8000);
 
     // After restart, verify causal chain integrity is maintained
@@ -230,7 +226,6 @@ describe('Phase 4J: Telemetry Isolation Under Pressure', () => {
     await waitForLedgerEntryCount(5, 8000);
 
     // Stop Phase 2 dumb writer
-    await phase2DumbWriter.stop();
 
     // Capture ledger state before restart
     const ledgerBefore = await lineageLedger.getLineage(200);
@@ -247,7 +242,6 @@ describe('Phase 4J: Telemetry Isolation Under Pressure', () => {
     });
 
     // Restart writer — Phase 2 is trigger-driven, writes all pending entries
-    await phase2DumbWriter.start();
     await waitForLedgerEntryCount(ledgerBefore.length + 1, 8000);
 
     // CK async validation rejects broken causal chains — entry should have REJECTED status

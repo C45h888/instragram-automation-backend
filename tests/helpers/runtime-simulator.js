@@ -11,7 +11,7 @@
  *   2. Register all 7 domain FSMs with CK
  *   3. telemetryWorkers.startAll() — bounded projection workers, Phase 1
  *   4. transitionWriters.startAll() — 5 event-driven writers, Phase 2
- *   5. phase2DumbWriter.start() — deprecated but kept for test compat
+ *   5. (REMOVED) phase2-dumb-writer — deleted; transition-writers own all writes
  *   6. CK.subscribeAction('PROJECTION_ACCEPTED') — namespace projection interpreter
  *   7. engagementTelemetryAdapter.start() — raw bounded telemetry pre-processor
  *   8. CK.rehydrate()
@@ -42,7 +42,7 @@ const observability = require('../../control-plane/observability/index.js');
 const CK = require('../../control-plane/governance/constitutional-kernel.js');
 const telemetryWorkers = require('../../control-plane/telemetry-workers/index.js');
 const transitionWriters = require('../../control-plane/telemetry-workers/transition-writers/index.js');
-const phase2DumbWriter = require('../../control-plane/telemetry-workers/phase2-dumb-writer.js');
+const phase2DumbWriter = null; // REMOVED — transition-writers are sole write path
 const namespaceProjectionInterpreter = require('../../control-plane/governance/interpreters/namespace-projection-interpreter.js');
 const lineageLedger = require('../../control-plane/governance/lineage-ledger.js');
 const reconciliationEngine = require('../../control-plane/governance/reconciliation-engine.js');
@@ -113,7 +113,7 @@ class RuntimeSimulator {
    *   2. Register all 7 domain FSMs with CK
    *   3. telemetryWorkers.startAll() — bounded projection workers, Phase 1
    *   4. transitionWriters.startAll() — 5 event-driven writers, Phase 2
-   *   5. phase2DumbWriter.start() — deprecated but kept for test compat
+   *   5. (REMOVED) phase2-dumb-writer — deleted; transition-writers own all writes
    *   6. CK.subscribeAction('PROJECTION_ACCEPTED') — namespace projection interpreter
    *   7. engagementTelemetryAdapter.start() — raw bounded telemetry pre-processor
    *   8. CK.rehydrate()
@@ -150,12 +150,10 @@ class RuntimeSimulator {
     // 4. Start 5 transition writers — event-driven, bounded by namespace.
     //    Each writer subscribes to observability.onWrite() and filters for:
     //      coordinatedBy === 'telemetry-coordination-fsm' AND domain === <namespace>
-    //    Phase 2 FSM reactive coordination layer — replaces phase2DumbWriter as primary write path.
+    //    Phase 2 FSM reactive coordination layer — transition-writers own all writes.
     transitionWriters.startAll();
 
-    // 5. Start Phase 2 dumb writer (DEPRECATED — transition-writers replace it).
-    //    Kept wired for test compatibility.
-    phase2DumbWriter.start();
+    // 5. (REMOVED) Phase 2 dumb writer — no longer exists; transition-writers own all writes
 
     // 6. Wire namespace projection interpreter to CK.
     //    Subscribes to PROJECTION_ACCEPTED actions emitted by FSM after async validation.
@@ -230,7 +228,7 @@ class RuntimeSimulator {
   /**
    * Gracefully shut down the runtime stack.
    * Order: CK loop → telemetryCoordinationFsm → transitionWriters →
-   *        phase2DumbWriter → telemetry workers → ingress → sync →
+   *        telemetry workers → ingress → sync →
    *        cadence → observability.
    */
   async shutdown() {
@@ -246,8 +244,7 @@ class RuntimeSimulator {
     // Stop 5 transition writers
     transitionWriters.stopAll();
 
-    // Stop Phase 2 dumb writer (deprecated)
-    phase2DumbWriter.stop();
+    // Stop Phase 2 dumb writer (DEPRECATED)
 
     // Stop telemetry projection workers
     await telemetryWorkers.stopAll();
@@ -424,17 +421,17 @@ class RuntimeSimulator {
   }
 
   /**
-   * Kill the Phase 2 dumb writer (simulate write path crash).
+   * Kill the Phase 2 dumb writer — REMOVED. No-op.
    */
   async killPhase2DumbWriter() {
-    phase2DumbWriter.stop();
+    // phase2-dumb-writer deleted; transition-writers are sole write path
   }
 
   /**
-   * Restart the Phase 2 dumb writer after a kill.
+   * Restart the Phase 2 dumb writer — REMOVED. No-op.
    */
   async restartPhase2DumbWriter() {
-    phase2DumbWriter.start();
+    // phase2-dumb-writer deleted; transition-writers are sole write path
   }
 
   /**
@@ -584,7 +581,7 @@ class RuntimeSimulator {
   }
 
   /**
-   * Wait for the transition-writers and phase2-dumb-writer to persist entries to the ledger.
+   * Wait for the transition-writers to persist entries to the ledger.
    * Polls until ledger size increases from the baseline.
    *
    * @param {number} [pollMs=500] - Poll interval in ms

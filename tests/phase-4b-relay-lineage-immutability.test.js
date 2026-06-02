@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
 import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
-import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
+
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLogSize, waitForLedgerEntry } = require('./helpers/sync-barriers');
 
@@ -9,11 +9,9 @@ describe('Phase 4B: Relay-to-Lineage Immutability', () => {
   beforeAll(async () => {
     await observability.init();
     await telemetryWorkers.startAll(40);
-    await phase2DumbWriter.start();
   }, 20000);
 
   afterAll(async () => {
-    await phase2DumbWriter.stop();
     await telemetryWorkers.stopAll();
     await observability.stop();
   });

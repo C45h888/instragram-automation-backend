@@ -18,7 +18,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
-import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
+
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount } = require('./helpers/sync-barriers');
 const { deterministicEntryHash } = require('./helpers/constitutional-invariants');
@@ -48,11 +48,9 @@ async function runWorkloadAndHash(waveIdPrefix, includeFault = false) {
 describe('Phase 4L: Periodic Hash Convergence', () => {
   beforeAll(async () => {
     await observability.init();
-    await phase2DumbWriter.start();
   }, 15000);
 
   afterAll(async () => {
-    await phase2DumbWriter.stop();
     await observability.stop();
   });
 

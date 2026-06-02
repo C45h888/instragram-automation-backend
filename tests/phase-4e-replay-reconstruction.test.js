@@ -18,7 +18,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
 import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
-import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
+
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForProjectionFlush, waitForLedgerEntryCount } = require('./helpers/sync-barriers');
 const { deterministicEntryHash, assertNoTimestampRegression, assertCausalChainIntegrity } = require('./helpers/constitutional-invariants');
@@ -27,11 +27,9 @@ describe('Phase 4E: Replay Reconstruction Determinism', () => {
   beforeAll(async () => {
     await observability.init();
     await telemetryWorkers.startAll(40);
-    await phase2DumbWriter.start();
   }, 20000);
 
   afterAll(async () => {
-    await phase2DumbWriter.stop();
     await telemetryWorkers.stopAll();
     await observability.stop();
   });
@@ -70,7 +68,6 @@ describe('Phase 4E: Replay Reconstruction Determinism', () => {
 
     // 5. Stop all workers — simulates worker death
     await telemetryWorkers.stopAll();
-    await phase2DumbWriter.stop();
 
     // 6. Clear in-memory state: stop and reinit observability
     await observability.stop();
@@ -78,7 +75,6 @@ describe('Phase 4E: Replay Reconstruction Determinism', () => {
     await observability.init();
 
     // 7. Restart Phase 2 dumb writer — trigger-driven, no cursor to recover
-    await phase2DumbWriter.start();
 
     // 8. Wait for replay to repopulate the ledger
     await waitForLedgerEntryCount(ledgerBefore.length, 10000);
@@ -109,11 +105,9 @@ describe('Phase 4E: Replay Reconstruction Determinism', () => {
 
     // Kill workers
     await telemetryWorkers.stopAll();
-    await phase2DumbWriter.stop();
 
     // Reinit
     await observability.init();
-    await phase2DumbWriter.start();
     await telemetryWorkers.startAll(35);
 
     // Wait for ledger to recover all 6 wave entries

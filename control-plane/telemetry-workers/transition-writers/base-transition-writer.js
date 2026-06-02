@@ -86,6 +86,7 @@ function createTransitionWriter(namespace) {
   let _writeCount = 0;         // successful writes
   let _failedWrites = 0;       // failed writes (ledger errors, not CK errors)
   let _ckDispatchFailures = 0; // CK dispatch failures (separate from ledger failures)
+  let _totalErrors = 0;        // total errors across all categories
   let _lastError = null;       // most recent error message
   let _lastErrorCategory = null; // most recent error category
   let _lastErrorAt = null;     // most recent error timestamp
@@ -95,6 +96,13 @@ function createTransitionWriter(namespace) {
   const _errorCounts = Object.fromEntries(
     Object.values(ERROR_CATEGORIES).map(c => [c, 0])
   );
+
+  // ── Error tracking helper ────────────────────────────────────────────────
+  function _recordError(err, category) {
+    _lastError = err?.message ?? String(err);
+    _lastErrorCategory = category;
+    _lastErrorAt = Date.now();
+  }
 
   function start() {
     // eslint-disable-next-line global-require

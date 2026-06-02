@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
-import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
+
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntryCount, waitForLedgerEntry } = require('./helpers/sync-barriers');
 const { assertNoTimestampRegression, assertMonotonicCursors, assertIdempotentReplay, assertStaleEntriesFlagged, assertCausalChainIntegrity } = require('./helpers/constitutional-invariants');
@@ -25,11 +25,9 @@ const { assertNoTimestampRegression, assertMonotonicCursors, assertIdempotentRep
 describe('Phase 4F: Causal Ordering Guarantees', () => {
   beforeAll(async () => {
     await observability.init();
-    await phase2DumbWriter.start();
   }, 15000);
 
   afterAll(async () => {
-    await phase2DumbWriter.stop();
     await observability.stop();
   });
 

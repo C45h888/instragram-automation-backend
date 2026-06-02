@@ -37,7 +37,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import observability from '../control-plane/observability/index.js';
 import telemetryWorkers from '../control-plane/telemetry-workers/index.js';
-import phase2DumbWriter from '../control-plane/telemetry-workers/phase2-dumb-writer.js';
+
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 const { waitForLedgerEntry, waitForLedgerEntryCount, waitForProjectionFlush } = require('./helpers/sync-barriers');
 const { deterministicEntryHash, assertNoTimestampRegression, assertMonotonicCursors } = require('./helpers/constitutional-invariants');
@@ -170,11 +170,9 @@ describe('Phase 4N: Mixed Constitutional Soak (30-Minute Continuous)', () => {
   beforeAll(async () => {
     await observability.init();
     await telemetryWorkers.startAll(50);
-    await phase2DumbWriter.start();
   }, 30000);
 
   afterAll(async () => {
-    await phase2DumbWriter.stop();
     await telemetryWorkers.stopAll();
     await observability.stop();
   });
