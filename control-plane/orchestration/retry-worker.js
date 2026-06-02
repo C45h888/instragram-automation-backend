@@ -20,6 +20,7 @@ const retry = require('../../substrates/retry');
 const quota = require('../../substrates/quota');
 const telemetry = require('../../substrates/telemetry');
 const metricsSubstrate = require('../../substrates/metrics-substrate');
+const rateLimiter = require('../../substrates/rate-limiter');
 
 // ── Retry count tracking (per intentId, for engagement signal emission) ──────
 const _retryCounts = new Map(); // intentId → retry count
@@ -43,6 +44,31 @@ const MAX_ACQUISITION_RETRIES = 1;
  */
 async function executeSingle(accountId, domain, params, intentId, governance, routing) {
   const startTime = Date.now();
+
+  // ── Pre-flight: substrate rate-limit check ─────────────────────────────
+  const rlCheck = rateLimiter.isRateLimited(domain, accountId);
+  if (rlCheck.limited) {
+    console.log(`[retry-worker] ${domain}/${accountId} rate-limited until ${new Date(rlCheck.until).toISOString()}, skipping intent ${intentId}`);
+    await _recordFailure(domain, accountId, intentId, 'rate_limited', 0);
+    _emitTransition(intentId, 'PENDING', 'SKIPPED', { accountId, domain, reason: 'rate_limit_active' });
+    _emitObservation(governance, accountId, intentId, domain, 'failed', {
+      error_category: 'rate_limit',
+      retryable: false,
+      count: 0,
+      latencyMs: 0,
+      error: 'rate_limit_active',
+    });
+    return { status: 'failed', count: 0, error: 'rate_limit_active', instagram_id: null };
+  }
+
+  // Rate limit just expired — notify CK so engagement-fsm can test circuit
+  if (rlCheck.wasPreviouslyLimited) {
+    governance.dispatch({
+      type: 'RATE_LIMIT_CLEARED',
+      accountId, domain,
+      substrate: rateLimiter.getSubstrate(domain),
+    });
+  }
 
   // ── Pre-flight: circuit breaker check — routed through CK to engagement FSM ─
   // Constitutional hierarchy: the engagement FSM is the SOLE authority on circuit breaker state.
@@ -110,8 +136,16 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
     _emitEngagementSignal(governance, 'AUTH_SUCCESS', { accountId, intentId });
   } else if (brk) {
     // Rate limit → engagement-fsm manages circuit breaker via CK routing
+    const { affectedDomains } = rateLimiter.recordRateLimit(
+      domain, accountId, result.code, retryAfterMs
+    );
     _emitEngagementSignal(governance, 'RATE_LIMIT_DETECTED', {
-      accountId, cooldownMs: (retryAfterMs || 3600000),
+      accountId,
+      cooldownMs: (retryAfterMs || 3600000),
+      domain,
+      substrate: rateLimiter.getSubstrate(domain),
+      affectedDomains,
+      igCode: result.code,
     });
   } else if (skip) {
     // Auth failure → engagement-fsm manages auth strikes via CK routing

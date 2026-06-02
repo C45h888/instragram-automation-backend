@@ -145,18 +145,18 @@ function getLogSize() {
   return projection.getLogSize();
 }
 
-// ── Consumer cursor registry (Gap 3) ─────────────────────────────────────────
+// ── Consumer cursor registry (Gap 3 fix) ─────────────────────────────────────────
 
-function registerConsumer(name) {
-  projection.registerConsumer(name);
+async function registerConsumer(name) {
+  await projection.registerConsumer(name);
 }
 
 function unregisterConsumer(name) {
   projection.unregisterConsumer(name);
 }
 
-function updateConsumerCursor(name, cursor) {
-  projection.updateConsumerCursor(name, cursor);
+async function updateConsumerCursor(name, cursor) {
+  await projection.updateConsumerCursor(name, cursor);
 }
 
 function getConsumerLag(name) {

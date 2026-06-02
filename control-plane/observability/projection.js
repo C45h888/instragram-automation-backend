@@ -27,6 +27,7 @@ const { getRedisClient } = require('../../config/redis');
 
 const REDIS_KEY = 'governance:observability:projection';
 const REDIS_TTL_S = 300; // 5 minutes
+const REDIS_CURSOR_KEY_PREFIX = 'governance:observability:consumer-cursor:';
 const MAX_LOG_ENTRIES = 10_000;
 const SNAPSHOT_INTERVAL_MS = 30_000;
 
@@ -452,19 +453,39 @@ function _getMinConsumerCursor() {
 
 /**
  * Register a named consumer for truncation protection.
- * The consumer's initial cursor is set to the current log tail.
+ * On first registration, initializes cursor from Redis for crash survival.
+ * Subsequent registrations reuse the in-memory cursor.
  *
  * @param {string} name — unique consumer name, e.g. 'lineage-worker'
  */
-function registerConsumer(name) {
+async function registerConsumer(name) {
   if (!name || typeof name !== 'string') {
     throw new Error('[projection] registerConsumer requires a non-empty name string');
   }
-  if (_consumerCursors.has(name)) {
-    console.warn(`[projection] Consumer '${name}' already registered — overwriting cursor`);
+
+  const redisKey = REDIS_CURSOR_KEY_PREFIX + name;
+  let initialCursor = 0;
+
+  // Restore persisted cursor from Redis if available
+  try {
+    const redis = getRedisClient();
+    if (redis) {
+      const saved = await redis.get(redisKey);
+      if (saved !== null) {
+        initialCursor = parseInt(saved, 10);
+        if (isNaN(initialCursor)) initialCursor = 0;
+      }
+    }
+  } catch (_) {
+    // Redis unavailable — start from 0, will catch up via replay
+    initialCursor = 0;
   }
-  _consumerCursors.set(name, 0);
-  console.log(`[projection] Consumer '${name}' registered — initial cursor 0, log size ${_transitionLog.length}`);
+
+  _consumerCursors.set(name, initialCursor);
+  console.log(
+    `[projection] Consumer '${name}' registered — ` +
+    `cursor restored to ${initialCursor}, log size ${_transitionLog.length}`
+  );
 }
 
 /**
@@ -479,18 +500,30 @@ function unregisterConsumer(name) {
 
 /**
  * Update a consumer's cursor position to indicate entries up to this
- * index have been successfully consumed.
+ * index have been successfully consumed. Persists to Redis for crash survival.
  *
  * @param {string} name — consumer name
  * @param {number} cursor — new cursor position (0-based index of last consumed entry + 1)
  */
-function updateConsumerCursor(name, cursor) {
+async function updateConsumerCursor(name, cursor) {
   if (!_consumerCursors.has(name)) {
     console.warn(`[projection] updateConsumerCursor: consumer '${name}' not registered`);
     return;
   }
   const prev = _consumerCursors.get(name);
-  _consumerCursors.set(name, Math.max(prev, cursor));
+  const next = Math.max(prev, cursor);
+  _consumerCursors.set(name, next);
+
+  // Persist to Redis for crash survival — fire and forget
+  try {
+    const redis = getRedisClient();
+    if (redis) {
+      const redisKey = REDIS_CURSOR_KEY_PREFIX + name;
+      redis.set(redisKey, String(next), 'EX', 86400).catch(() => {}); // 24h TTL
+    }
+  } catch (_) {
+    // Redis unavailable — in-memory cursor still advances
+  }
 }
 
 /**

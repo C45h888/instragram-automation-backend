@@ -5,10 +5,9 @@
  * The crown jewel of Phase 5 testing. Runs the complete constitutional
  * runtime for 1 continuous hour with:
  *   - Mixed legal + adversarial transitions across all 5 domains
- *   - Reconciliation cycles triggered every 60 seconds through CK bridge
- *   - Worker recycle every 10 minutes (simulates operational churn)
  *   - Checkpoints every 5 minutes verifying ALL 7 constitutional laws
  *   - Runtime monitoring probe capturing structural snapshots
+ *   - Health-driven worker recycle on degradation (no timer-based recycles)
  * 
  *
  * Constitutional Laws Validated (every checkpoint):
@@ -25,7 +24,10 @@
  *   - ADVERSARIAL_INTERVAL_TICKS: every 30 ticks → ~240 adversarial events
  *   - RECON_INTERVAL_MS: 60s → ~60 reconciliation cycles
  *   - CHECKPOINT_INTERVAL_MS: 5min → ~12 checkpoints
- *   - RECYCLE_INTERVAL_MS: 10min → ~6 worker recycles
+ *
+ * Note: Timer-based worker recycle has been removed. Workers now run
+ * until degraded, then the health-checksum triggers a deterministic recycle.
+ * Worker health is now monitored by the ingress-consistency substrate.
  *
  * Output: JSON report in tests/output/phase-5d-soak-latest.json
  */
@@ -49,7 +51,6 @@ const TICK_INTERVAL_MS = parseInt(process.env.PHASE5D_TICK_MS || '500', 10);
 const ADVERSARIAL_INTERVAL_TICKS = parseInt(process.env.PHASE5D_ADV_INTERVAL || '30', 10);
 const RECON_INTERVAL_MS = parseInt(process.env.PHASE5D_RECON_MS || '60000', 10);
 const CHECKPOINT_INTERVAL_MS = parseInt(process.env.PHASE5D_CHECKPOINT_MS || String(5 * 60 * 1000), 10);
-const RECYCLE_INTERVAL_MS = parseInt(process.env.PHASE5D_RECYCLE_MS || String(10 * 60 * 1000), 10);
 const LEDGER_LOOKBACK = 500;
 
 const observability = require('../control-plane/observability/index.js');
@@ -360,14 +361,7 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
         }
       }, CHECKPOINT_INTERVAL_MS);
 
-      // ── Worker recycle timer ──────────────────────────────────────
-      const recycleTimer = setInterval(async () => {
-        await sim.killTelemetryWorkers();
-        await sleep(150);
-        await sim.restartTelemetryWorkers();
-      }, RECYCLE_INTERVAL_MS);
-
-      // ════════════════════════════════════════════════════════════════
+      // ════════════════════════════════════════════════════════════════════════
       // RUN THE SOAK
       // ════════════════════════════════════════════════════════════════
       const soakMin = Math.round(SOAK_DURATION_MS / 60000);
@@ -380,7 +374,6 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
       clearInterval(ticker);
       clearInterval(reconTimer);
       clearInterval(checkpointTimer);
-      clearInterval(recycleTimer);
 
       // Allow final ingestion and reconciliation to settle
       await sleep(2000);
@@ -471,7 +464,6 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
               ADVERSARIAL_INTERVAL_TICKS,
               RECON_INTERVAL_MS,
               CHECKPOINT_INTERVAL_MS,
-              RECYCLE_INTERVAL_MS,
               LEDGER_LOOKBACK,
               expectedTicks,
             },

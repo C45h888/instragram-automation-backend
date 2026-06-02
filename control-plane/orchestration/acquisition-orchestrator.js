@@ -17,6 +17,7 @@ const retryWorker = require('./retry-worker');
 const persistence = require('../../substrates/persistence');
 const syncSubstrate = require('../../substrates/sync-substrate');
 const retrySubstrate = require('../../substrates/retry');
+const rateLimiter = require('../../substrates/rate-limiter');
 
 /**
  * Execute a single bounded acquisition attempt via retry worker.
@@ -119,12 +120,24 @@ function wire(gov, acquisitionFsm) {
       status: 'failed', count: 0, error: action.error || 'permanent_failure',
     });
   });
-
   gov.subscribeAction('ENGAGE_CIRCUIT_BREAKER', (action) => {
-    const { accountId, cooldownMs = 3600000 } = action;
+    const { accountId, cooldownMs = 3600000, substrate, affectedDomains } = action;
+
+    // Account-level mechanical mark (existing)
     const retryAfterSeconds = Math.ceil((cooldownMs || 3600000) / 1000);
     retrySubstrate.markAccountRateLimited(accountId, retryAfterSeconds);
-    console.warn(`[acquisition-orchestrator] Circuit breaker engaged for ${accountId}, cooldown ${retryAfterSeconds}s`);
+
+    // Per-domain marks in rate-limiter (new — substrate-aware)
+    if (affectedDomains && Array.isArray(affectedDomains) && affectedDomains.length > 0) {
+      for (const d of affectedDomains) {
+        rateLimiter.recordRateLimit(d, accountId, null, retryAfterSeconds);
+      }
+    }
+
+    console.warn(`[acquisition-orchestrator] Circuit breaker engaged for ${accountId}` +
+      (substrate ? `, substrate: ${substrate}` : '') +
+      (affectedDomains?.length ? `, domains: ${affectedDomains.join(',')}` : '') +
+      `, cooldown ${retryAfterSeconds}s`);
   });
 
   gov.subscribeAction('START_INTENT_DISCOVERY', (action) => {
@@ -132,6 +145,15 @@ function wire(gov, acquisitionFsm) {
     if (redis && redis.status === 'ready') {
       syncSubstrate.start(redis, (event) => gov.dispatch(event));
     }
+  });
+
+  gov.subscribeAction('CIRCUIT_BREAKER_CLEARED', (action) => {
+    // When account-level circuit breaker clears, all per-domain rate limits are stale
+    rateLimiter.clearSubstrate('engagement', action.accountId);
+    rateLimiter.clearSubstrate('ugc', action.accountId);
+    rateLimiter.clearSubstrate('content', action.accountId);
+    rateLimiter.clearSubstrate('insights', action.accountId);
+    console.log(`[acquisition-orchestrator] Circuit breaker cleared for ${action.accountId} — all substrate rate limits flushed`);
   });
 
   gov.subscribeAction('STOP_INTENT_DISCOVERY', (action) => {

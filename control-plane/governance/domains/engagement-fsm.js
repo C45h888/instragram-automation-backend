@@ -14,7 +14,8 @@
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Substrate ↓  → retry-substrate performs mechanical mark/clear operations
-//                  FSM governs lifecycle meaning, substrate performs mechanics
+//                  rate-limiter substrate tracks per-domain rate limit state
+//                  FSM governs lifecycle meaning, substrates perform mechanics
 //
 // Domain FSMs emit state transitions through the observability plane.
 // The lineage worker consumes from the observability plane and writes to the
@@ -37,6 +38,8 @@ function _obs() {
   }
   return _observability;
 }
+
+const rateLimiter = require('../../../substrates/rate-limiter');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 0. Governance Policy Constants — domain-owned thresholds
@@ -87,22 +90,37 @@ const TRANSITION_MAP = {
     target: 'CIRCUIT_OPEN',
     guard: () => ({ allowed: true }),
     buildActions: (event) => {
-      const { accountId, cooldownMs = CIRCUIT_BREAKER_COOLDOWN_MS } = event;
+      const { accountId, cooldownMs = CIRCUIT_BREAKER_COOLDOWN_MS, substrate, affectedDomains } = event;
 
-      // Record or update circuit breaker state
+      // Record circuit breaker state (account-level)
       const existing = _circuitBreakers.get(accountId);
       _circuitBreakers.set(accountId, {
         until: Date.now() + cooldownMs,
         cooldownMs,
         openedAt: existing ? existing.openedAt : Date.now(),
         reopenedAt: existing ? Date.now() : null,
+        substrate,  // NEW: track which substrate triggered the breaker
+        affectedDomains: affectedDomains || [],
       });
+
+      // Query substrate state for informed degradation
+      let escalationReason = `Circuit breaker OPEN for ${accountId}, cooldown ${cooldownMs / 1000}s`;
+      if (substrate && affectedDomains) {
+        const substrateState = rateLimiter.getSubstrateState(substrate);
+        const degradedDomains = Object.keys(substrateState.domains)
+          .filter(d => substrateState.domains[d].until > Date.now());
+        if (degradedDomains.length === affectedDomains.length) {
+          escalationReason = `Circuit breaker OPEN for ${accountId} — entire ${substrate} substrate degraded (${degradedDomains.join(', ')})`;
+        }
+      }
 
       return [
         {
           type: 'ENGAGE_CIRCUIT_BREAKER',
           accountId,
           cooldownMs,
+          substrate,
+          affectedDomains: affectedDomains || [],
           authority: 'engagement-fsm',
         },
         {
@@ -113,7 +131,7 @@ const TRANSITION_MAP = {
         {
           type: 'LOG_DEGRADED',
           substate: 'PARTIAL_FAILURE',
-          reason: `Circuit breaker OPEN for ${accountId}, cooldown ${cooldownMs / 1000}s`,
+          reason: escalationReason,
         },
       ];
     },
@@ -310,15 +328,64 @@ const TRANSITION_MAP = {
     },
   },
 
+  // ── Rate limit cleared → check if substrate is fully clear, test circuit ──
+  RATE_LIMIT_CLEARED: {
+    target: () => _localState,  // no state change — informational
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      const { accountId, substrate } = event;
+
+      // Only relevant when circuit breaker is active
+      if (_localState !== 'CIRCUIT_OPEN' && _localState !== 'CIRCUIT_COOLING') {
+        return [];
+      }
+
+      // Query: is the entire substrate clear?
+      const state = rateLimiter.getSubstrateState(substrate);
+      if (!state.anyLimited) {
+        // All domains in this substrate are clear → advance to cooling
+        return [{
+          type: 'CIRCUIT_COOLDOWN_ELAPSED',
+          accountId,
+        }];
+      }
+
+      return [];
+    },
+  },
+
   // ── Ingress retry cadence activation (from telemetry-coordination FSM) ──
   RETRY_CADENCE_REQUEST: {
     target: (event) => _localState, // no state change — just activate retry mode
     guard: () => ({ allowed: true }),
     buildActions: (event) => {
+      const { source, lag, errorCategory, namespace, escalationState } = event;
+
       if (event.source === 'ingress') {
         _ingressRetryActive = true;
-        _ingressRetryLag = event.lag || 0;
+        _ingressRetryLag = lag || 0;
       }
+
+      if (event.source === 'worker') {
+        // Worker degradation — register error for alerting and cadence
+        if (namespace && errorCategory) {
+          _workerErrorRegistry.set(namespace, {
+            category: errorCategory,
+            failedWrites: lag || 0,
+            escalatedAt: Date.now(),
+            escalationState: escalationState || 'RETRYING',
+          });
+        }
+        _ingressRetryActive = true;
+      }
+
+      // Classify error for alert routing
+      if (errorCategory) {
+        const routingKey = ERROR_CATEGORY_ROUTING[errorCategory] ?? ERROR_CATEGORY_ROUTING.UNKNOWN;
+        // Alert routing is handled by action effects — the action itself carries the routing
+        // The consuming alert subscriber uses the routing key to determine handler
+      }
+
       return [];
     },
   },
@@ -332,6 +399,22 @@ const TRANSITION_MAP = {
         _ingressRetryActive = false;
         _ingressRetryLag = 0;
       }
+
+      if (event.source === 'worker') {
+        // Clear worker error registry for the given namespace
+        if (event.namespace) {
+          _workerErrorRegistry.delete(event.namespace);
+        } else {
+          // No namespace: clear all worker registrations
+          _workerErrorRegistry.clear();
+        }
+        // If both sources are cleared, deactivate retry mode entirely
+        const stillHasWorkerEntries = _workerErrorRegistry.size > 0;
+        if (!event.source && !stillHasWorkerEntries) {
+          _ingressRetryActive = false;
+        }
+      }
+
       return [];
     },
   },
@@ -384,6 +467,21 @@ const _authFailureStrikes = new Map();
 
 // ── Execution retry state: intentId → retry count ───────────────────────────
 const _executionRetries = new Map();
+
+// ── Worker error registry: namespace → { category, failedWrites, escalatedAt } ─
+// Populated when RETRY_CADENCE_REQUEST arrives from 'worker' source.
+// Used for alert routing and error classification.
+const _workerErrorRegistry = new Map();
+
+// Error category → alert routing key mapping
+// Routes errors to the correct response handler based on error type
+const ERROR_CATEGORY_ROUTING = {
+  REDIS_UNAVAILABLE: 'REDIS_INFRASTRUCTURE',
+  LINEAGE_WRITE_FAILED: 'LEDGER_WRITE',
+  CK_DISPATCH_FAILED: 'CK_GOVERNANCE',
+  SERIALIZATION_ERROR: 'DATA_INTEGRITY',
+  UNKNOWN: 'UNKNOWN',
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch — process event, ask constitutional for validation, transition

@@ -167,6 +167,7 @@ const DOMAIN_EVENT_MAP = {
   // Engagement domain — circuit breaker, auth strikes, retry counting
   AUTH_FAILURE_STRIKE: 'engagement',
   RATE_LIMIT_DETECTED: 'engagement',
+  RATE_LIMIT_CLEARED: 'engagement',
   RETRY_EXHAUSTED: 'engagement',
   CIRCUIT_BREAKER_CHECK: 'engagement',
   CIRCUIT_COOLDOWN_ELAPSED: 'engagement',
@@ -414,6 +415,69 @@ const GLOBAL_TRANSITION_MAP = {
       return [];
     },
   },
+
+  // ── Transition Writer Health — worker layer degraded ─────────────────────
+  // Fired by ingress-consistency substrate when transition-writer health is not OK.
+  // CK treats this as an infrastructure alert — tracks state but does not
+  // transition CK's own lifecycle state. Informational for observability.
+  TRANSITION_WRITER_HEALTH_CHANGED: {
+    target: () => null, // CK does not change lifecycle state from this event
+    guard: () => ({ allowed: true }),
+    buildActions: (event, ctx) => {
+      const { namespace, health } = event;
+
+      // Track aggregate writer health state internally for diagnostics
+      _ingestionLagState = {
+        ..._ingestionLagState,
+        writerStatus: health.status,
+        writerLastError: health.writers?.find(w => !w.ok)?.lastError ?? null,
+        writerLastErrorCategory: health.writers?.find(w => !w.ok)?.lastErrorCategory ?? null,
+        lastUpdate: Date.now(),
+      };
+
+      if (health.status === 'FAILED' || health.status === 'STOPPED') {
+        // Critical: all writers dead — escalate through telemetry retry chain
+        return [
+          {
+            type: 'TRANSITION_WRITER_FAILED',
+            namespace: namespace || 'aggregate',
+            health,
+          },
+          {
+            type: 'INGRESS_RETRY_REQUESTED',
+            lag: health.totalErrors || 0,
+            status: 'CRITICAL',
+            source: 'transition_writer',
+            timestamp: Date.now(),
+          },
+        ];
+      }
+
+      if (health.status === 'DEGRADED') {
+        // Degraded: some writes failing — signal for retry cadence
+        return [
+          {
+            type: 'TRANSITION_WRITER_DEGRADED',
+            namespace: namespace || 'aggregate',
+            health,
+          },
+        ];
+      }
+
+      // Writer recovered — log resolved
+      if (health.status === 'OK' && _ingestionLagState?.writerStatus !== 'OK') {
+        return [
+          {
+            type: 'TRANSITION_WRITER_RECOVERED',
+            namespace: namespace || 'aggregate',
+            totalWrites: health.totalWrites,
+          },
+        ];
+      }
+
+      return [];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -634,7 +698,12 @@ function registerDomain(fsm) {
   if (_rehydratedDomainStates && typeof fsm.init === 'function') {
     const rehydratedState = _rehydratedDomainStates[fsm.name];
     if (rehydratedState) {
-      fsm.init(rehydratedState);
+      // init() may be async (e.g. telemetry-coordination-fsm reads Redis-backed cursor).
+      // Fire-and-forget is safe here: cursor restoration is idempotent and init is called
+      // before any reactive processing begins.
+      fsm.init(rehydratedState).catch((err) => {
+        console.error(`[constitutional-kernel] Domain '${fsm.name}' init error:`, err.message);
+      });
       console.log(`[constitutional-kernel] Domain '${fsm.name}' initialized with rehydrated state: ${rehydratedState}`);
     }
   }
@@ -1212,7 +1281,10 @@ async function _triggerConstitutionalDeath(ckpt) {
   for (const [name, fsm] of _domains) {
     const state = _rehydratedDomainStates ? _rehydratedDomainStates[name] : null;
     if (state && typeof fsm.init === 'function') {
-      fsm.init(state);
+      // Same fire-and-forget pattern as registerDomain — init may be async
+      fsm.init(state).catch((err) => {
+        console.error(`[CK] Domain '${name}' init error:`, err.message);
+      });
       console.log(`[CK] Domain '${name}' re-initialized with checkpoint state: ${state}`);
     }
   }
@@ -1276,6 +1348,32 @@ async function rehydrate() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 13. Observability
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Public diagnostic API ──────────────────────────────────────────────────
+
+/**
+ * Return the current aggregate health of the transition-writer layer.
+ * Used by ingress-consistency substrate to determine if writers are operational.
+ * @returns {object} aggregate health from transition-writers/index.js
+ */
+function getTransitionWriterHealth() {
+  try {
+    // eslint-disable-next-line global-require
+    const tw = require('../telemetry-workers/transition-writers');
+    return tw.getHealth();
+  } catch (err) {
+    return { status: 'UNAVAILABLE', error: err.message, timestamp: Date.now() };
+  }
+}
+
+/**
+ * Return the current ingress/consumption lag state tracked by CK.
+ * Updated on every INGRESS_STATE_CHANGED or TRANSITION_WRITER_HEALTH_CHANGED.
+ * @returns {object} lag state
+ */
+function getIngressState() {
+  return { ..._ingestionLagState };
+}
 
 async function status() {
   const now = Date.now();
@@ -1483,4 +1581,6 @@ module.exports = {
   validateMembraneTransition: _validateMembraneAuthority,
   recordMembraneBypassAnomaly,
   SIGNAL_CLASS,
+  getTransitionWriterHealth,
+  getIngressState,
 };

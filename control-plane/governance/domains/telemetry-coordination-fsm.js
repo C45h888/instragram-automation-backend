@@ -405,13 +405,90 @@ buildActions: async (event, ctx) => {
       return actions;
     },
   },
+
+  // ── Transition Writer Health — worker layer degraded ─────────────────────
+  // Fired by CK when transition-writer health transitions to DEGRADED or FAILED.
+  // The telemetry FSM transitions to WORKER_DEGRADED substate and activates
+  // the retry escalation chain to engage the recovery protocol.
+  TRANSITION_WRITER_HEALTH_CHANGED: {
+    target: (event) => {
+      // Transition to degraded substate if writers are not healthy
+      if (!event.health || event.health.ok) return _localState; // no change if healthy
+      if (event.health.status === 'FAILED' || event.health.status === 'STOPPED') {
+        return 'WORKER_DEGRADED';
+      }
+      return 'WORKER_DEGRADED';
+    },
+    guard: () => ({ allowed: true }),
+    buildActions: (event, ctx) => {
+      const { health } = event;
+      const actions = [];
+
+      if (!health.ok) {
+        // Determine escalation level based on error category
+        const worstCat = health.worstCategory;
+        const escalationLevel =
+          worstCat === 'REDIS_UNAVAILABLE' ? 'DEGRADED' :
+          worstCat === 'CK_DISPATCH_FAILED' ? 'ESCALATED' :
+          'RETRYING';
+
+        // ── Escalate: activate retry cadence via engagement FSM ────────────
+        if (ctx && ctx.dispatchGlobal) {
+          ctx.dispatchGlobal({
+            type: 'RETRY_CADENCE_REQUEST',
+            source: 'worker',
+            namespace: health.writers?.find(w => !w.ok)?.namespace ?? 'unknown',
+            errorCategory: worstCat,
+            lag: health.totalErrors || 0,
+            escalationState: escalationLevel,
+          });
+        }
+
+        // ── Log degradation with error classification ───────────────────────
+        const degradedWriter = health.writers?.find(w => !w.ok);
+        actions.push({
+          type: 'LOG_DEGRADED',
+          substate: `WORKER_DEGRADED:${degradedWriter?.namespace ?? 'unknown'}`,
+          reason: `Transition writer ${degradedWriter?.namespace ?? 'unknown'} degraded: [${worstCat}] ${degradedWriter?.lastError ?? 'unknown error'}`,
+          errorCount: health.totalErrors,
+          errorCategory: worstCat,
+          failedWrites: degradedWriter?.failedWrites ?? 0,
+        });
+
+        // ── Signal CK that retry is active ─────────────────────────────────
+        actions.push({
+          type: 'INGRESS_RETRY_ACTIVE',
+          lag: health.totalErrors || 0,
+          retryAttempts: 1,
+          escalationState: escalationLevel,
+          source: 'worker',
+        });
+      } else {
+        // Worker recovered — clear retry cadence
+        if (ctx && ctx.dispatchGlobal) {
+          ctx.dispatchGlobal({
+            type: 'RETRY_CADENCE_CLEAR',
+            source: 'worker',
+          });
+        }
+
+        actions.push({
+          type: 'LOG_DEGRADED',
+          substate: 'WORKER_RECOVERED',
+          reason: `Transition writer layer recovered — total writes: ${health.totalWrites}`,
+        });
+      }
+
+      return actions;
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3. Domain-local runtime state (private)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let _localState = 'IDLE';
+let _localState = 'IDLE'; // IDLE | VALIDATING | ORDERING | SERIALIZING | EMITTING | HALTED | WORKER_DEGRADED | INGRESS_LAG_RETRYING | INGRESS_ESCALATED | INGRESS_DEGRADED
 
 // ── Per-namespace cursors — one cursor per domain-bounded partition.
 // Each namespace's cursor tracks only its own bounded partition independently.
@@ -919,7 +996,7 @@ function dispatch(event, ctx) {
  *
  * @param {string} rehydratedState — the domain state to restore (e.g., 'IDLE', 'HALTED')
  */
-function init(rehydratedState) {
+async function init(rehydratedState) {
   if (rehydratedState && typeof rehydratedState === 'string') {
     _localState = rehydratedState;
     console.log(`[telemetry-coordination-fsm] Initialized with rehydrated state: ${rehydratedState}`);
@@ -930,7 +1007,7 @@ function init(rehydratedState) {
   // Consumer registration protects against _transitionLog truncation.
   try {
     const observability = require('../../observability');
-    observability.query.registerConsumer('telemetry-coordination-fsm');
+    await observability.query.registerConsumer('telemetry-coordination-fsm');
     // Reset all 5 per-namespace cursors on boot
     _intentCursors = { runtime: 0, integrity: 0, authority: 0, health: 0, systemic: 0 };
     console.log(`[telemetry-coordination-fsm] Consumer registered — cursor at 0, log size ${observability.query.getLogSize()}`);
