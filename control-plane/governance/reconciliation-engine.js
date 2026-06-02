@@ -10,7 +10,7 @@
 //               epoch creation, lifecycle management — those belong to
 //               the reconciliation FSM and constitutional kernel.
 //
-// Called by: CK bridge subscriber (after reconciliation FSM signals CYCLE_STARTED).
+// Called by: reconciliation-worker.js (within reconciliation-substrate boundary).
 //
 // Architecture invariant:
 //   This engine is a DUMB SUBSTRATE. It compares and classifies only.

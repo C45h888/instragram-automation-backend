@@ -1,30 +1,34 @@
 // substrates/parsing/workers/ugc-worker.js
-// UGC parsing worker: parse → normalize → persist for UGC domain.
+// UGC parsing worker: build rows → CK(DB_WRITE_REQUESTED).
 //
-// Owns: transforming raw UGC media into Supabase rows.
-// Does NOT own: fetch, transport, orchestration, governance.
+// Owns: transforming raw UGC media into normalized rows,
+//        emitting through CK for governed DB write.
+// Does NOT own: Supabase, governance policy, fetch, orchestration.
 
 const { mapRawPostToUgcContent } = require('../../ugc/normalizer');
-const persistence = require('../../persistence');
 
-/**
- * Execute the UGC parsing pipeline.
- *
- * @param {object} rawData — raw transport response { records, cleanHashtag }
- * @param {string} accountId
- * @param {object} [extra] — unused
- * @returns {Promise<{count: number, error?: string}>}
- */
-async function execute(rawData, accountId, extra = {}) {
+async function execute(rawData, accountId, intentId, extra = {}, governance) {
   if (!rawData.records || rawData.records.length === 0) return { count: 0 };
 
   const source = rawData.cleanHashtag ? 'hashtag' : 'tagged';
-  const records = rawData.records
+  const rows = rawData.records
     .filter(p => p.id)
     .map(p => mapRawPostToUgcContent(p, accountId, source, rawData.cleanHashtag || null));
 
-  const result = await persistence.storeUgcContentBatch(records);
-  return { count: result.count || 0 };
+  if (rows.length === 0) return { count: 0 };
+
+  if (governance) {
+    governance.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'ugc',
+      accountId, intentId,
+      table: 'ugc_content',
+      operation: 'batch_upsert_ugc',
+      rows,
+    });
+  }
+
+  return { count: 0 };
 }
 
 module.exports = { execute };

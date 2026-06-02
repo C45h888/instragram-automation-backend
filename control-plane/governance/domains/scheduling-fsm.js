@@ -12,7 +12,7 @@
 // Architectural invariant:
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
-//   Membranes ↓  → actions returned to constitutional for emission to orchestrators
+//   Membranes ↓  → actions returned to constitFSM utional for emission to orchestrators
 
 // Lazy import to avoid circular dependency
 let _observability = null;

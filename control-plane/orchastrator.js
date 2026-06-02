@@ -32,6 +32,7 @@ const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
 const parsing = require('../substrates/parsing');
 const retryCadence = require('../substrates/retry-cadence');
+const dbWriters = require('../substrates/db/writers');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -41,6 +42,7 @@ const dedupFsm = require('./governance/domains/dedup-fsm');
 const engagementFsm = require('./governance/domains/engagement-fsm');
 const reconciliationFsm = require('./governance/domains/reconciliation-fsm');
 const telemetryCoordinationFsm = require('./governance/domains/telemetry-coordination-fsm');
+const persistTelemetryFsm = require('./governance/domains/persist-telemetry-fsm');
 
 // ── 6 Membrane orchestrators ─────────────────────────────────────────────────
 const cadenceOrchestrator     = require('./orchestration/cadence-orchestrator');
@@ -68,6 +70,7 @@ function _wire() {
   constitutional.registerDomain(engagementFsm);
   constitutional.registerDomain(reconciliationFsm);
   constitutional.registerDomain(telemetryCoordinationFsm);
+  constitutional.registerDomain(persistTelemetryFsm);
 
   // Wire execution bridge's governance reference for observation emission
   executionBridge.setGovernance(constitutional);
@@ -120,6 +123,9 @@ async function startAllWorkers() {
 
   // Wire retry-cadence substrate to CK — workers emit OBSERVATION + RETRY_EXHAUSTED events
   retryCadence.setGovernance(constitutional);
+
+  // Wire DB writers substrate to CK — workers emit DB_WRITE_COMPLETE on Supabase upsert
+  dbWriters.setGovernance(constitutional);
 
   // Rehydrate CK from the worker-populated ledger.
   // Prior entries from a previous process lifetime are now available.

@@ -1,23 +1,42 @@
 // substrates/parsing/workers/content-worker.js
-// Content parsing worker: parse → normalize → persist for content domain.
+// Content parsing worker: build rows → CK(DB_WRITE_REQUESTED).
 //
-// Owns: transforming raw business post data into Supabase rows.
-// Does NOT own: fetch, transport, orchestration, governance.
+// Owns: transforming raw business post data into normalized instagram_media rows,
+//        emitting through CK for governed DB write.
+// Does NOT own: Supabase, governance policy, fetch, orchestration.
 
-const persistence = require('../../persistence');
-
-/**
- * Execute the content parsing pipeline.
- *
- * @param {object} rawData — raw transport response { posts }
- * @param {string} accountId
- * @param {object} [extra] — unused
- * @returns {Promise<{count: number, error?: string}>}
- */
-async function execute(rawData, accountId, extra = {}) {
+async function execute(rawData, accountId, intentId, extra = {}, governance) {
   if (!rawData.posts || rawData.posts.length === 0) return { count: 0 };
-  const result = await persistence.storeBusinessPosts(accountId, rawData.posts);
-  return { count: result.count || 0 };
+
+  const rows = rawData.posts
+    .filter(p => p && p.id)
+    .map(p => ({
+      instagram_media_id: p.id,
+      business_account_id: accountId,
+      media_type: p.media_type || null,
+      caption: p.caption || null,
+      media_url: p.media_url || null,
+      thumbnail_url: p.thumbnail_url || null,
+      permalink: p.permalink || null,
+      like_count: p.like_count || 0,
+      comments_count: p.comments_count || 0,
+      published_at: p.timestamp || null,
+    }));
+
+  if (rows.length === 0) return { count: 0 };
+
+  if (governance) {
+    governance.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'media',
+      accountId, intentId,
+      table: 'instagram_media',
+      operation: 'batch_upsert_posts',
+      rows,
+    });
+  }
+
+  return { count: 0 };
 }
 
 module.exports = { execute };

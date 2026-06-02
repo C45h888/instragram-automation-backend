@@ -204,6 +204,10 @@ const DOMAIN_EVENT_MAP = {
   RECONCILIATION_RESULTS_RECEIVED: 'reconciliation',
   RECONCILIATION_CYCLE_COMPLETE: 'reconciliation',
 
+  // Persist-Telemetry domain — governs all DB write operations
+  DB_WRITE_REQUESTED: 'persist-telemetry',
+  DB_WRITE_COMPLETE: 'persist-telemetry',
+
   // Telemetry Coordination domain — deterministic semantic ingress plane
   TELEMETRY_PROCESS_INTENTS: 'telemetry-coordination', // reactive trigger (routes through CK then to FSM)
   PROCESS_INTENTS: 'telemetry-coordination',
@@ -560,9 +564,12 @@ let _stateEnteredAt = Date.now();
 let _loopInterval = null;
 let _reconInProgress = false; // Guard: prevent concurrent reconciliation cycles
 
-// Constitutional snapshot — captured at T0 of each reconciliation cycle.
-// Immutable source of truth for the entire cycle. Bridge subscriber uses this.
-let _reconciliationSnapshot = null; // { entries: Array, hash: string }
+// Anti-thrash: minimum interval between reconciliation triggers (ms)
+// Prevents cascading cycles when multiple domains degrade simultaneously.
+let _lastReconTriggeredAt = 0;
+const MIN_RECON_INTERVAL_MS = 30_000;
+
+// Snapshot building moved to reconciliation-substrate.js — CK no longer captures it
 
 let _accountIds = [];
 
@@ -580,19 +587,11 @@ let _ingestionLagState = { lag: 0, status: 'CONSISTENT', lastUpdate: 0 };
 const _actionSubscribers = new Map(); // actionType → Set<fn>
 let _legacyActionSubscriber = null;
 
-// Reconciliation cycle reentrancy guard + completion promise
-// triggerReconciliation() sets _reconInProgress=true and a new completion promise.
-// The cycle stub (RECONCILIATION_CYCLE_COMPLETE) resolves the promise, unblocking
-// triggerReconciliation() callers that await the result.
-let _reconPromiseResolve = null;
-let _reconPromiseReject = null;
+// Reconciliation: _reconInProgress and anti-thrash vars live at lines 561+584
 
-// ── Event-driven reconciliation trigger — anti-thrash guard ──────────────
-// Prevents cascading reconciliation cycles when multiple domains degrade
-// simultaneously. The subscriber fires on every LOG_DEGRADED, but only the
-// first one within MIN_RECON_INTERVAL_MS actually triggers reconciliation.
-let _lastReconTriggeredAt = 0;
-const MIN_RECON_INTERVAL_MS = 30_000;
+// ── Reconciliation anti-thrash ────────────────────────────────────────────────
+// MIN_RECON_INTERVAL_MS and _lastReconTriggeredAt control trigger cadence.
+// _reconInProgress prevents concurrent cycles.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 5. Action dispatcher
@@ -940,32 +939,25 @@ function stopLoop() {
 // checkpoint gate evaluation, and worker orchestration.
 // CK remains HSM authority — dispatches FSM transitions after substrate returns.
 
+const reconciliationSubstrate = require('./reconciliation-substrate');
+
 // Reconciliation substrate owns this — moved to reconciliation-substrate.js
 
 /**
  * Trigger a complete reconciliation cycle.
  *
- * Lifecycle ownership (now split between trigger and bridge subscriber):
- *   triggerReconciliation():
- *     1. Death detection — abort before dispatch if lineage is already dead
- *     2. Set up completion promise — resolved by bridge subscriber when cycle ends
- *     3. Dispatch RECONCILIATION_TICK → FSM transitions IDLE → RECONCILING
- *        (FSM validates via ctx.validate, emits CYCLE_STARTED action)
- *     4. Return the promise — callers await this
- *
- *   Bridge subscriber (Section 11 wiring at module init):
- *     5. Run the async engine comparison (mechanical work)
- *     6. HSM verifies constitutional hash independently
- *     7. Dispatch RECONCILIATION_RESULTS_RECEIVED → FSM → CONVERGENT/DRIFTED
- *     8. Dispatch RECONCILIATION_CYCLE_COMPLETE → FSM → IDLE
- *     9. Resolve the completion promise
- *    10. Stability checkpoint if all gates pass
+ * Lifecycle:
+ *   1. Death detection — abort if lineage is already dead
+ *   2. Dispatch RECONCILIATION_TICK → FSM transitions IDLE → RECONCILING
+ *   3. Substrate runs the cycle and returns the result
+ *   4. CK dispatches FSM transitions with the result
+ *   5. Return the result to callers
  *
  * Constitutional invariant:
- *   The cycle ALWAYS completes. Even on engine failure, a CYCLE_COMPLETE
- *   is dispatched so the FSM returns to IDLE and subsequent cycles can proceed.
+ *   The cycle ALWAYS completes. Even on engine failure, RECONCILIATION_RESULTS_RECEIVED
+ *   and RECONCILIATION_CYCLE_COMPLETE are dispatched so the FSM returns to IDLE.
  *
- * @returns {Promise<{ observations: Array, worstSeverity: number, hash: string, hashMismatch: boolean, elapsedMs: number }>|null}
+ * @returns {Promise<{ observations, worstSeverity, hash, snapshotHash, elapsedMs }>|null}
  */
 async function triggerReconciliation() {
   // ── Reentrancy guard — prevent concurrent cycles ───────────────────────
@@ -984,34 +976,49 @@ async function triggerReconciliation() {
     return null;
   }
 
-  // ── IMMUTABLE CONSTITUTIONAL SNAPSHOT ─────────────────────────────────
-  // Capture the snapshot BEFORE dispatching RECONCILIATION_TICK.
-  // This is the immutable source of truth for the entire reconciliation cycle.
-  // No Redis re-reads occur after this point during the cycle.
-  // This eliminates the race condition where worker ingests between engine.compare()
-  // and CK's independent hash verification.
-  try {
-    const snapshot = await lineageLedger.getLineageWithHash();
-    _reconciliationSnapshot = { entries: snapshot.entries, hash: snapshot.hash };
-  } catch (err) {
-    console.error('[CK] Failed to capture constitutional snapshot:', err.message);
+  // ── FSM must be IDLE to accept a new cycle ─────────────────────────────
+  const reconFsm = _domains.get('reconciliation');
+  if (!reconFsm || reconFsm.getState() !== 'IDLE') {
+    console.warn('[constitutional-kernel] Reconciliation FSM not IDLE — rejecting trigger');
     _reconInProgress = false;
     return null;
   }
 
-  // ── Set up completion promise — bridge subscriber resolves it on cycle end ──
-  const result = await new Promise((resolve) => {
-    _reconPromiseResolve = resolve;
-    _reconPromiseReject = null;
+  // ── Anti-thrash gate ────────────────────────────────────────────────────
+  const now = Date.now();
+  if (now - _lastReconTriggeredAt < MIN_RECON_INTERVAL_MS) {
+    _reconInProgress = false;
+    return null;
+  }
+  _lastReconTriggeredAt = now;
 
-    // Phase 1: FSM transitions IDLE → RECONCILING
-    // Bridge subscriber picks up RECONCILIATION_CYCLE_STARTED action
-    // and uses _reconciliationSnapshot for the entire cycle
-    dispatch({ type: 'RECONCILIATION_TICK' });
+  // ── Dispatch TICK — FSM transitions IDLE → RECONCILING ────────────────
+  // FSM validates via ctx.validate, emits CYCLE_STARTED action
+  dispatch({ type: 'RECONCILIATION_TICK' });
+
+  // ── Substrate runs the full cycle (snapshot + engine + checkpoint gate) ─
+  let result;
+  try {
+    result = await reconciliationSubstrate.triggerCycle({
+      fsms: _domains,
+      currentState: _currentState,
+    });
+  } catch (err) {
+    console.error('[constitutional-kernel] Reconciliation substrate error:', err.message);
+    result = null;
+  }
+
+  // ── Always dispatch results to FSM — cycle MUST complete ──────────────
+  dispatch({
+    type: 'RECONCILIATION_RESULTS_RECEIVED',
+    observations: result ? result.observations : [],
+    worstSeverity: result ? result.worstSeverity : 0,
+    hash: result ? result.hash : '',
   });
 
+  dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
+
   _reconInProgress = false;
-  _reconciliationSnapshot = null; // clear after cycle completes
   return result;
 }
 
@@ -1082,68 +1089,7 @@ function _detectConstitutionalDeath(ledgerSize, ckpt) {
   return false;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 11c. Stability Gate Evaluation — when to checkpoint
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Evaluate whether the runtime is in a constitutionally stable state
- * suitable for creating a checkpoint snapshot.
- *
- * Gates:
- *   G1: Governance must be HEALTHY
- *   G2: Reconciliation FSM must be IDLE
- *   G3: No active drift (consecutiveDrifted === 0)
- *   G4: No escalation signaled
- *   G5: Ingestion lag bounded (< 5 entry gap between log and ledger)
- *
- * @returns {boolean}
- */
-function _canCheckpoint() {
-  // G1: Governance must be HEALTHY
-  if (_currentState !== 'HEALTHY') return false;
-
-  // G2: Reconciliation FSM must be IDLE
-  const reconFsm = _domains.get('reconciliation');
-  if (!reconFsm || reconFsm.getState() !== 'IDLE') return false;
-
-  // G3: No active drift
-  const health = reconFsm.getHealth ? reconFsm.getHealth() : {};
-  if (health.signals && health.signals.consecutiveDrifted > 0) return false;
-
-  // G4: No escalation signaled
-  if (health.signals && health.signals.escalationSignaled) return false;
-
-  // G5: Ingestion lag bounded — ingress consistency substrate
-  // Blocks checkpoint if ledger lags observability log by CRITICAL+ threshold
-  try {
-    const state = ingressSubstrate && ingressSubstrate.getIngressState
-      ? ingressSubstrate.getIngressState()
-      : null;
-
-    if (!state) {
-      // Substrate unavailable — fail closed
-      return false;
-    }
-
-    // Stale sample check — if last sample > 15s old, treat as uncertain
-    if (state.stale) {
-      return false;
-    }
-
-    if (state.status === 'CRITICAL' || state.status === 'DEGRADED') {
-      return false;
-    }
-
-    if (state.lag > 5) {
-      return false;
-    }
-  } catch (_) {
-    return false;
-  }
-
-  return true;
-}
+// _canCheckpoint moved to reconciliation-substrate.js — CK no longer owns checkpoint gate evaluation
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 11d. Constitutional Death Sequence — checkpoint reboot
@@ -1367,126 +1313,17 @@ function clearCircuitBreaker(accountId) {
 // 15. Module initialization
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Register the event-driven reconciliation trigger at module init.
-// This must happen before any domains are registered so the subscriber
-// is active when domain FSMs begin emitting LOG_DEGRADED actions.
-_registerReconciliationTrigger();
+// ── Module initialization ──────────────────────────────────────────────────────
+// Reconciliation FSM owns trigger criteria (IDLE + MIN_INTERVAL + no drift).
+// CK dispatches RECONCILIATION_TICK — FSM evaluates criteria before accepting.
+// Reconciliation substrate owns snapshot building, engine comparison,
+// checkpoint gate, and worker orchestration.
+// See: reconciliation-substrate.js and reconciliation-worker.js
 
 // Rehydration is called explicitly by the orchestrator AFTER the lineage worker
 // has started. This ensures CK reads from a ledger populated by the worker
 // rather than rehydrating from an empty/potentially-stale Redis key.
 // Boot order: orchestrator → observability.init() → worker.start() → CK.rehydrate()
-
-// ── Section 11 reconciliation bridge subscriber wiring ──────────────────────
-// When the reconciliation FSM transitions to RECONCILING, it emits
-// RECONCILIATION_CYCLE_STARTED. This subscriber catches that action,
-// calls the dumb reconciliation engine, verifies constitutional hash integrity,
-// and dispatches results back to the FSM via RECONCILIATION_RESULTS_RECEIVED.
-// This is the async mechanical work that the FSM cannot perform itself.
-//
-// The cycle ALWAYS completes — even on engine failure, RECONCILIATION_RESULTS_RECEIVED
-// and RECONCILIATION_CYCLE_COMPLETE are dispatched so the FSM returns to IDLE
-// and subsequent cycles can proceed.
-subscribeAction('RECONCILIATION_CYCLE_STARTED', async (action) => {
-  // Phase 1 already done by FSM (RECONCILING state set, cycle slate reset).
-  // Phase 2: Run the async engine comparison using the constitutional snapshot.
-
-  // Use the snapshot captured at T0 in triggerReconciliation().
-  // This is the immutable constitutional plane — no Redis re-reads.
-  // hashMismatch now compares engine.hash vs snapshot.hash (same data, not fresh reads)
-  const snapshot = _reconciliationSnapshot;
-
-  if (!snapshot) {
-    console.error('[CK] No constitutional snapshot available for reconciliation cycle');
-    dispatch({
-      type: 'RECONCILIATION_RESULTS_RECEIVED',
-      observations: [],
-      worstSeverity: 0,
-      hash: '',
-      hashMismatch: false,
-    });
-    dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
-    return;
-  }
-
-  let observations = [];
-  let worstSeverity = 0;
-  let hash = '';
-
-  try {
-    const engine = require('./reconciliation-engine');
-    const substrates = _buildSubstrateQueries();
-
-    // Pass snapshot.entries — engine uses these directly (no Redis call inside compare)
-    const results = await engine.compare({
-      fsms: _domains,
-      substrates,
-      lineageLedger,
-      snapshotEntries: snapshot.entries,
-    });
-
-    observations = results.observations || [];
-    worstSeverity = results.worstSeverity || 0;
-    hash = results.hash || '';
-
-    // HSM verifies against THE SAME snapshot hash — not a fresh re-read.
-    // If mismatch, it's actual semantic drift, not a timing artifact.
-    const hashMismatch = results.hash !== snapshot.hash;
-    if (hashMismatch) {
-      console.error('[constitutional-kernel] Constitutional HASH MISMATCH during reconciliation');
-      _emitGovernanceTransition(_currentState, _currentState, {
-        intent: 'RECONCILIATION_HASH_MISMATCH',
-        reason: 'Constitutional identity divergence detected during reconciliation cycle',
-      });
-    }
-  } catch (err) {
-    console.error('[constitutional-kernel] Reconciliation engine error:', err.message);
-  }
-
-  // Phase 3: Route results through FSM — FSM transitions RECONCILING → CONVERGENT or DRIFTED
-  dispatch({
-    type: 'RECONCILIATION_RESULTS_RECEIVED',
-    observations,
-    worstSeverity,
-    hash,
-    hashMismatch: false, // hashMismatch emitted via governance transition above
-  });
-
-  // Phase 4: Always complete the cycle — FSM returns to IDLE
-  dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
-
-  // Resolve the promise so triggerReconciliation() callers unblock
-  if (_reconPromiseResolve) {
-    _reconPromiseResolve({
-      observations,
-      worstSeverity,
-      hash,
-      hashMismatch: false,
-      elapsedMs: Date.now() - _stateEnteredAt,
-    });
-    _reconPromiseResolve = null;
-    _reconPromiseReject = null;
-  }
-
-  // ── Stability checkpoint ──────────────────────────────────────────────────
-  if (_canCheckpoint()) {
-    try {
-      // Use the snapshot entries for checkpoint — no fresh re-read
-      const entries = snapshot.entries.slice(-200); // last 200 entries
-      const checkpointHash = snapshot.hash;
-      const reconFsm = _domains.get('reconciliation');
-      checkpointer.createSnapshot({
-        entries,
-        hash: checkpointHash,
-        entryCount: snapshot.entries.length,
-        epochCount: reconFsm && typeof reconFsm.getEpochCount === 'function'
-          ? reconFsm.getEpochCount() : 0,
-      });
-    } catch (e) {
-      console.error('[constitutional-kernel] Checkpoint creation failed:', e.message);
-    }
-  }
-});
 
 module.exports = {
   dispatch,

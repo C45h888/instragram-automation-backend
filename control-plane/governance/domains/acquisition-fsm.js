@@ -163,10 +163,6 @@ const TRANSITION_MAP = {
       }
 
       return [{
-        type: 'WRITE_ACQUISITION_RESULT',
-        accountId, domain, intentId,
-        result: { status: 'completed', count: result.count },
-      }, {
         type: 'START_INTENT_DISCOVERY',
       }];
     },

@@ -1,30 +1,44 @@
 // substrates/parsing/workers/comments-worker.js
-// Comments parsing worker: parse → normalize → persist for comments domain.
+// Comments parsing worker: build rows → CK(DB_WRITE_REQUESTED).
 //
-// Owns: transforming raw comment batches into Supabase rows.
-// Does NOT own: fetch, transport, orchestration, governance.
+// Owns: transforming raw comment batches into normalized rows,
+//        emitting through CK for governed DB write.
+// Does NOT own: Supabase, governance policy, fetch, orchestration.
 
-const persistence = require('../../persistence');
+async function execute(rawData, accountId, intentId, extra = {}, governance) {
+  const rows = [];
+  const allComments = rawData.batches
+    ? rawData.batches.flatMap(b => (b.comments || []).map(c => ({ ...c, _mediaId: b.mediaId })))
+    : (rawData.records || []).map(c => ({ ...c, _mediaId: 'direct' }));
 
-/**
- * Execute the comment parsing pipeline.
- *
- * @param {object} rawData — raw transport response { batches, records }
- * @param {string} accountId
- * @param {object} [extra] — unused for comments
- * @returns {Promise<{count: number, error?: string}>}
- */
-async function execute(rawData, accountId, extra = {}) {
-  if (rawData.batches && rawData.batches.length > 0) {
-    const result = await persistence.storeCommentBatches(accountId, rawData.batches);
-    return { count: result.count || 0 };
+  for (const c of allComments) {
+    if (!c.id) continue;
+    rows.push({
+      instagram_comment_id: c.id,
+      text: c.text || '',
+      author_username: c.username || '',
+      author_instagram_id: null,
+      media_id: c._mediaId,
+      business_account_id: accountId,
+      created_at: c.timestamp,
+      like_count: c.like_count || 0,
+      reply_count: 0,
+    });
   }
-  if (rawData.records && rawData.records.length > 0) {
-    const result = await persistence.storeCommentBatches(accountId, [
-      { mediaId: 'direct', comments: rawData.records },
-    ]);
-    return { count: result.count || 0 };
+
+  if (rows.length === 0) return { count: 0 };
+
+  if (governance) {
+    governance.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'comments',
+      accountId, intentId,
+      table: 'instagram_comments',
+      operation: 'batch_upsert_comments',
+      rows,
+    });
   }
+
   return { count: 0 };
 }
 

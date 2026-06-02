@@ -59,7 +59,7 @@ function dispatch(domain, rawData, accountId, intentId, extra = {}) {
   // Run async — fire and forget
   setImmediate(async () => {
     try {
-      const result = await worker.execute(rawData, accountId, extra);
+      const result = await worker.execute(rawData, accountId, intentId, extra, _governance);
       _jobs.set(jobId, { ..._jobs.get(jobId), status: 'completed', result });
       _emitComplete(jobId, accountId, domain, intentId, { status: 'completed', count: result.count || 0 });
     } catch (err) {
