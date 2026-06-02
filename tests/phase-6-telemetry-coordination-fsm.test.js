@@ -853,11 +853,11 @@ describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
       }, RECYCLE_INTERVAL_MS);
 
       // ── Transition-writers recycle timer ──────────────────────────────
-      const lineageRecycleTimer = setInterval(async () => {
+      const transitionWritersRecycleTimer = setInterval(async () => {
         console.log('[phase-6] Recycling transition-writers...');
-        await sim.killLineageWorker();
+        await sim.killTransitionWriters();
         await sleep(200);
-        await sim.restartLineageWorker();
+        await sim.restartTransitionWriters();
         console.log('[phase-6] Transition-writers restarted');
       }, LINEAGE_RECYCLE_INTERVAL_MS);
 
@@ -875,7 +875,7 @@ describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
       clearInterval(coordTimer);
       clearInterval(checkpointTimer);
       clearInterval(recycleTimer);
-      clearInterval(lineageRecycleTimer);
+      clearInterval(transitionWritersRecycleTimer);
 
       // Allow final ingestion and coordination to settle
       await sleep(3000);

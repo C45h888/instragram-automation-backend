@@ -58,7 +58,7 @@ describe('Phase 4M: Unified Worker Recycle Under Active Concurrency', () => {
       await injectMixedDomainWave({ waveId, seq: i, includeFault: i % 3 === 0 });
     }
 
-    // Wait for lineage worker to consume
+    // Wait for Phase 2 dumb writer to consume
     await waitForProjectionFlush(10000);
 
     // Capture pre-death ledger state

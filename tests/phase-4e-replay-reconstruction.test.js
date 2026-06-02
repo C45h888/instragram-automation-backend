@@ -57,7 +57,7 @@ describe('Phase 4E: Replay Reconstruction Determinism', () => {
     }
     await Promise.all(waves);
 
-    // 2. Wait for lineage worker to consume all injected transitions
+    // 2. Wait for Phase 2 dumb writer to consume all injected transitions
     await waitForProjectionFlush(8000);
 
     // 3. Capture original ledger state hash
@@ -104,7 +104,7 @@ describe('Phase 4E: Replay Reconstruction Determinism', () => {
       await injectMixedDomainWave({ waveId, seq: i, includeFault: i % 4 === 0 });
     }
 
-    // Wait for lineage worker to consume and persist all entries
+    // Wait for Phase 2 dumb writer to consume and persist all entries
     await waitForProjectionFlush(10000);
 
     // Kill workers

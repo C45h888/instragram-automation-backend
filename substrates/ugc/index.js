@@ -1,49 +1,33 @@
 // substrates/ugc/index.js
-// UGC substrate: full acquisition pipeline for user-generated content.
+// UGC substrate: full pipeline for hashtag search and tagged media.
 //
 // Owns: fetch → parse → normalize → persist for UGC domain.
-// Does NOT own: retry decisions, governance, orchestration.
+// Does NOT own: retry logic, error classification, orchestration, credential resolution.
 
 const transport = require('./transport');
-const parser = require('./parser');
-const normalizer = require('./normalizer');
+const { mapRawPostToUgcContent } = require('./normalizer');
 const persistence = require('../persistence');
 
 /**
- * Execute a full acquisition cycle for the UGC domain.
- *
- * @param {string} accountId
- * @param {string} domain — 'ugc'
- * @param {object} params — intent payload { hashtag, limit }
- * @param {object} credentials — pre-resolved
- * @returns {Promise<{status: string, count: number, error: string|null, _usagePct: number|null}>}
+ * Fetch raw data from Instagram API for UGC domain.
  */
-async function acquire(accountId, domain, params, credentials) {
-  let raw;
-
+async function fetch(accountId, params, credentials) {
   if (params.hashtag) {
-    raw = await transport.fetchHashtagMedia(accountId, params.hashtag, params.limit, credentials);
-  } else {
-    raw = await transport.fetchTaggedMedia(accountId, params.limit, credentials);
+    return transport.fetchHashtagMedia(accountId, params.hashtag, params.limit, credentials);
   }
-
-  if (!raw.success) {
-    return { status: 'failed', count: 0, error: raw.error, _usagePct: raw._usagePct || null };
-  }
-
-  const sourceData = raw.rawMedia || raw.records || [];
-  const parsed = parser.parseUgcMedia(sourceData);
-  if (parsed.length === 0) {
-    return { status: 'completed', count: 0, error: null, _usagePct: raw._usagePct };
-  }
-
-  const source = raw.cleanHashtag ? 'hashtag' : 'tagged';
-  const records = parsed.map(p =>
-    normalizer.mapRawPostToUgcContent(p, accountId, source, raw.cleanHashtag || null)
-  );
-
-  await persistence.storeUgcContentBatch(records);
-  return { status: 'completed', count: records.length, error: null, _usagePct: raw._usagePct };
+  return transport.fetchTaggedMedia(accountId, params.limit, credentials);
 }
 
-module.exports = { acquire };
+/**
+ * Persist raw UGC data to Supabase. Normalizes internally.
+ */
+async function persist(accountId, rawData) {
+  if (!rawData.records || rawData.records.length === 0) return { count: 0 };
+  const source = rawData.cleanHashtag ? 'hashtag' : 'tagged';
+  const records = rawData.records
+    .filter(p => p.id)
+    .map(p => mapRawPostToUgcContent(p, accountId, source, rawData.cleanHashtag || null));
+  return persistence.storeUgcContentBatch(records);
+}
+
+module.exports = { fetch, persist };

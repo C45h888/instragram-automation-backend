@@ -14,7 +14,7 @@
 const { getRedisClient } = require('../../config/redis');
 const { getActiveAccounts } = require('../../substrates/persistence');
 const dbWorker = require('../execution/db-worker');
-const { domainForAction } = require('../execution/domain-registry');
+const { domainForAction } = require('../execution/substrate-registry');
 
 // ── Observability state tracking ────────────────────────────────────────────
 

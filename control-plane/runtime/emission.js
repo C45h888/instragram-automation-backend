@@ -11,7 +11,7 @@
 
 const { getRedisClient } = require('../../config/redis');
 const mutationSubstrate = require('../mutation-substrate');
-const { domainForAction } = require('../execution/domain-registry');
+const { domainForAction, fetchTypeForAction } = require('../execution/substrate-registry');
 
 const RESULT_TTL_SEC = 3600;
 
