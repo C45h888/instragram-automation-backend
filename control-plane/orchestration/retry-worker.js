@@ -21,6 +21,7 @@ const quota = require('../../substrates/quota');
 const telemetry = require('../../substrates/telemetry');
 const metricsSubstrate = require('../../substrates/metrics-substrate');
 const rateLimiter = require('../../substrates/rate-limiter');
+const parsing = require('../../substrates/parsing');
 
 // ── Retry count tracking (per intentId, for engagement signal emission) ──────
 const _retryCounts = new Map(); // intentId → retry count
@@ -114,15 +115,26 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
     quota.updateQuotaUsage(accountId, result._usagePct);
   }
 
-  // ── Persist on success ───────────────────────────────────────────────────
+  // ── Persist on success → dispatch to parsing substrate (async) ──────────
   if (result.success) {
-    try {
-      const persistResult = await routing.persist(accountId, result);
-      result.count = persistResult?.count || result.count || 0;
-      result.instagram_id = result.instagram_id || null;
-    } catch (persistErr) {
-      result = { success: false, count: 0, error: persistErr.message };
-    }
+    // Dispatch to parsing substrate — runs parse→normalize→persist asynchronously.
+    // The retry-worker does NOT wait for the result. It emits PARSING_DISPATCHED
+    // to CK and continues. When the worker completes, it emits PARSING_COMPLETE.
+    const { jobId } = parsing.dispatch(
+      domain, result, accountId, intentId,
+      { igUserId: result.igUserId, pageId: result.pageId, pageToken: result.pageToken }
+    );
+
+    governance.dispatch({
+      type: 'PARSING_DISPATCHED',
+      accountId, domain, intentId,
+      jobId,
+      rawCount: result.count || 0,
+    });
+
+    // Count set to 0 — real count comes from PARSING_COMPLETE event
+    result.count = 0;
+    result.instagram_id = result.instagram_id || null;
   }
 
   // ── Error classification (mechanical — retry substrate only) ────────────

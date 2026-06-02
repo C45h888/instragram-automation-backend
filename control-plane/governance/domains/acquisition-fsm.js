@@ -121,6 +121,57 @@ const TRANSITION_MAP = {
     },
   },
 
+  // ── Parsing dispatched → parsing worker is running asynchronously ───────────
+  PARSING_DISPATCHED: {
+    target: () => _localState, // stays in ACQUIRING — wait for PARSING_COMPLETE
+    guard: (event) => {
+      if (_localState !== 'ACQUIRING') {
+        return { allowed: false, reason: `Cannot dispatch parsing from ${_localState}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      _pendingParsing.set(event.intentId, {
+        jobId: event.jobId,
+        domain: event.domain,
+        accountId: event.accountId,
+        rawCount: event.rawCount || 0,
+      });
+      return [];
+    },
+  },
+
+  // ── Parsing complete → worker finished, transition to IDLE ──────────────────
+  PARSING_COMPLETE: {
+    target: 'IDLE',
+    guard: (event) => {
+      if (_localState !== 'ACQUIRING') {
+        return { allowed: false, reason: `Cannot complete parsing from ${_localState}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { accountId, domain, intentId, result } = event;
+      _pendingParsing.delete(intentId);
+
+      if (result.status === 'failed') {
+        return [{
+          type: 'MARK_PERMANENT_FAILURE',
+          accountId, domain, intentId,
+          error: result.error || 'parsing_failed',
+        }];
+      }
+
+      return [{
+        type: 'WRITE_ACQUISITION_RESULT',
+        accountId, domain, intentId,
+        result: { status: 'completed', count: result.count },
+      }, {
+        type: 'START_INTENT_DISCOVERY',
+      }];
+    },
+  },
+
   // ── Execution observations — intent lifecycle only ──────────────────────────
 // Constitutional purity: acquisition-fsm owns ONLY intent lifecycle (IDLE ↔ ACQUIRING).
 // Engagement signals (auth_failure, rate_limit, retry_exhausted) are emitted by
@@ -129,9 +180,13 @@ const TRANSITION_MAP = {
 
   EXECUTION_OBSERVATION: {
     target: (event) => {
+      // If parsing is still pending, stay in ACQUIRING
+      if (event.intentId && _pendingParsing.has(event.intentId)) {
+        return _localState;
+      }
       if (event.status === 'completed') return 'IDLE';
       if (!event.retryable && event.status !== 'completed') return 'IDLE';
-      return _localState; // stay in ACQUIRING for retryable
+      return _localState;
     },
     guard: (event) => {
       if (_localState !== 'ACQUIRING') {
@@ -216,6 +271,7 @@ let _lastTransitionedAt = null; // last state change timestamp for temporal alig
 // ── Execution state tracking ─────────────────────────────────────────────────
 const _executionRetries = new Map();    // intentId → retry count
 const _executionState = new Map();      // intentId → { accountId, domain, lastError }
+const _pendingParsing = new Map();      // intentId → { jobId, domain, accountId, rawCount }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch — process event, ask constitutional for validation, transition

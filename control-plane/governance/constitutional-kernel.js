@@ -163,6 +163,8 @@ const DOMAIN_EVENT_MAP = {
   ACQUISITION_EXECUTING: 'acquisition',
   ACQUISITION_COMPLETE: 'acquisition',
   EXECUTION_OBSERVATION: 'acquisition',
+  PARSING_DISPATCHED: 'acquisition',
+  PARSING_COMPLETE: 'acquisition',
 
   // Engagement domain — circuit breaker, auth strikes, retry counting
   AUTH_FAILURE_STRIKE: 'engagement',

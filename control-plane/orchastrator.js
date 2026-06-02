@@ -30,6 +30,7 @@ const transitionWriters = require('./telemetry-workers/transition-writers');
 
 const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
+const parsing = require('../substrates/parsing');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -114,6 +115,9 @@ async function startAllWorkers() {
   // Emits RAW_METRICS_WINDOW, RAW_QUOTA_WINDOW, RAW_RATE_LIMIT_WINDOW to observability.
   // All semantic synthesis (RETRY_PRESSURE, QUOTA_PRESSURE, etc.) is done by projection workers.
   await engagementTelemetryAdapter.start();
+
+  // Wire parsing substrate to CK — workers emit PARSING_COMPLETE events on completion
+  parsing.setGovernance(constitutional);
 
   // Rehydrate CK from the worker-populated ledger.
   // Prior entries from a previous process lifetime are now available.
