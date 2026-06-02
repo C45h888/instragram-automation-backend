@@ -145,6 +145,9 @@ buildActions: async (event, ctx) => {
       // 1. Read intents from all domain-bounded partitions via per-namespace cursors
       const { intents, newCursors } = await _readIntents();
       _intentCursors = newCursors;
+      // Persist cursors to Redis after each coordination cycle.
+      // Prevents replay storm on restart — FSM resumes from where it left off.
+      await _persistCursors(newCursors);
 
       if (intents.length === 0) {
         _priorCycleOutputCount = 0;
@@ -551,6 +554,13 @@ function _onTransitionLogWrite(transition) {
 // Uses setImmediate to yield without sleeping — coordination fires in the
 // next event loop tick, never blocking the onWrite callback that triggered it.
 // Multiple onWrite events arriving before the tick are batched into one cycle.
+//
+// CRITICAL FIX: Reactive coordination now routes through CK via dispatchGlobal,
+// not directly to FSM.dispatch(). This makes CK aware of every coordination
+// cycle and sequences it properly with other domain events. Without this,
+// CK has no visibility into reactive telemetry cycles — it cannot coordinate
+// them with other domain FSMs, cannot backpressure them, and cannot observe
+// them in its own action log.
 function _triggerReactiveCoordination() {
   // Prevent re-entrant calls — if a coordination is already pending, skip.
   if (_coordinationPending) return;
@@ -561,11 +571,17 @@ function _triggerReactiveCoordination() {
   // from the current tick to accumulate before the coordination cycle fires.
   setImmediate(() => {
     try {
-      if (_ckContext && typeof _ckContext.dispatch === 'function') {
-        // Dispatch a reactive PROCESS_INTENTS — uses same handler as cadence trigger
-        // Idempotent: if no new intents exist, returns COORDINATION_NO_INTENTS with
-        // no state mutation.
-        dispatch({ type: 'PROCESS_INTENTS', source: 'reactive' }, _ckContext);
+      // Route through CK — CK dispatches to FSM, giving CK full visibility
+      // and sequencing control over the reactive coordination cycle.
+      if (_ckContext && typeof _ckContext.dispatchGlobal === 'function') {
+        // dispatchGlobal routes through CK.dispatch() which routes to domain FSMs
+        // This makes CK aware: it sees every reactive cycle, can backpressure,
+        // and can sequence with other domain events.
+        _ckContext.dispatchGlobal({ type: 'TELEMETRY_PROCESS_INTENTS', source: 'reactive' });
+      } else if (_ckContext && typeof _ckContext.dispatch === 'function') {
+        // Fallback to direct FSM dispatch only if CK context is unavailable
+        // (e.g., FSM started without CK context). This path bypasses CK.
+        _ckContext.dispatch({ type: 'PROCESS_INTENTS', source: 'reactive' });
       }
     } catch (err) {
       console.error('[telemetry-coordination-fsm] Reactive coordination error:', err.message);
@@ -612,6 +628,52 @@ async function _readIntents() {
   } catch (err) {
     console.error('[telemetry-coordination-fsm] Failed to read intents:', err.message);
     return { intents: [], newCursors: _intentCursors };
+  }
+}
+
+/**
+ * Persist per-namespace cursors to Redis after each coordination cycle.
+ * Prevents replay storm on restart — FSM resumes from where it left off.
+ * Cursors are namespaced: governance:telemetry:fsm:cursor:{namespace}
+ *
+ * @param {object} newCursors — { runtime: number, integrity: number, authority: number, health: number, systemic: number }
+ */
+async function _persistCursors(newCursors) {
+  try {
+    const redis = require('../../../config/redis').getRedisClient();
+    if (!redis || redis.status !== 'ready') return;
+
+    const pipeline = redis.pipeline();
+    for (const [namespace, cursor] of Object.entries(newCursors)) {
+      pipeline.set(`governance:telemetry:fsm:cursor:${namespace}`, String(cursor), 'EX', 86400);
+    }
+    await pipeline.exec();
+  } catch (err) {
+    console.error('[telemetry-coordination-fsm] _persistCursors error:', err.message);
+  }
+}
+
+/**
+ * Restore per-namespace cursors from Redis on boot.
+ * If no cursor is found for a namespace, defaults to 0.
+ * Called from init() — replaces the hard reset to 0 on every boot.
+ *
+ * @returns {Promise<object>} restored cursors
+ */
+async function _restoreCursors() {
+  try {
+    const redis = require('../../../config/redis').getRedisClient();
+    if (!redis || redis.status !== 'ready') return null;
+
+    const result = {};
+    const NAMESPACES = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
+    for (const ns of NAMESPACES) {
+      const saved = await redis.get(`governance:telemetry:fsm:cursor:${ns}`);
+      result[ns] = saved ? parseInt(saved, 10) : 0;
+    }
+    return result;
+  } catch (err) {
+    return null; // Redis unavailable — will start from 0
   }
 }
 
@@ -1003,16 +1065,24 @@ async function init(rehydratedState) {
   }
 
   // Phase 3: Register as consumer for truncation protection.
-  // Cursor starts at 0 — all intents are visible from boot.
   // Consumer registration protects against _transitionLog truncation.
   try {
     const observability = require('../../observability');
     await observability.query.registerConsumer('telemetry-coordination-fsm');
-    // Reset all 5 per-namespace cursors on boot
-    _intentCursors = { runtime: 0, integrity: 0, authority: 0, health: 0, systemic: 0 };
-    console.log(`[telemetry-coordination-fsm] Consumer registered — cursor at 0, log size ${observability.query.getLogSize()}`);
+
+    // Restore cursors from Redis — prevents replay storm on restart.
+    // If Redis unavailable, defaults to 0 (full replay).
+    const restored = await _restoreCursors();
+    if (restored) {
+      _intentCursors = restored;
+      console.log(`[telemetry-coordination-fsm] Consumer registered — cursors restored: ${JSON.stringify(_intentCursors)}, log size ${observability.query.getLogSize()}`);
+    } else {
+      _intentCursors = { runtime: 0, integrity: 0, authority: 0, health: 0, systemic: 0 };
+      console.log(`[telemetry-coordination-fsm] Consumer registered — cursors reset to 0, log size ${observability.query.getLogSize()}`);
+    }
   } catch (_) {
     console.warn('[telemetry-coordination-fsm] Failed to register consumer:', _.message);
+    _intentCursors = { runtime: 0, integrity: 0, authority: 0, health: 0, systemic: 0 };
   }
 }
 

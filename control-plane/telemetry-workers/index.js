@@ -6,7 +6,7 @@
 //         ↓  emit PROJECTION_INTENT
 //   Observability Plane (_transitionLog, onWrite hook)
 //         ↓  trigger-driven
-//   Phase 2 Dumb Writer (serialize → append to ledger → notify CK)
+//   Phase 2: FSM Reactive Coordination (telemetryCoordinationFsm)
 //         ↓  CK.dispatch(PROJECTION_PERSISTED)
 //   CK Async Validation (validate → mark ACCEPTED or REJECTED)
 //         ↓  CK.subscribeAction(PROJECTION_ACCEPTED)

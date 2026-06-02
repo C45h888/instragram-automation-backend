@@ -41,10 +41,10 @@ function _obs() {
 //   ACQUIRING  — acquisition intent received, execution in flight
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 0. Execution Policy Constants — domain-owned thresholds
+// 0. Execution Policy Constants — retry policy moved to retry-cadence/policy.js
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const MAX_ACQUISITION_RETRIES = 1;
+// MAX_ACQUISITION_RETRIES removed — retry-cadence substrate owns per-substrate policy.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
@@ -230,26 +230,13 @@ const TRANSITION_MAP = {
                   reason: `Rate limit for ${accountId}/${domain} — engagement-fsm manages via CK routing` }];
       }
 
-      // ── Transient/retryable → acquisition decides retry ─────────────────
+      // ── Transient/retryable → retry-cadence substrate handles via CK routing ──
+      // Retry counting, backoff, and scheduling are owned by retry-cadence substrate.
+      // retry-worker emits RETRY_REQUESTED → CK → engagement-fsm → retry-cadence.dispatch()
       if (retryable) {
-        const retryCount = (_executionRetries.get(intentId) || 0) + 1;
-        _executionRetries.set(intentId, retryCount);
-
-        if (retryCount <= MAX_ACQUISITION_RETRIES) {
-          const delayMs = event.retryAfterMs || 30000;
-          return [{
-            type: 'RETRY_ACQUISITION',
-            accountId, domain, intentId,
-            params: { domain, intent_id: intentId, payload: event.params || {} },
-            retryCount,
-            delayMs: Math.min(delayMs, 300000),
-          }];
-        }
-
-        // Retries exhausted → engagement-fsm receives RETRY_EXHAUSTED via CK routing
         _executionRetries.delete(intentId);
         _executionState.delete(intentId);
-        return [];
+        return [];  // no synchronous action — retry-cadence handles asynchronously
       }
 
       // ── Permanent failure (non-retryable, non-auth, non-rate) ───────────

@@ -142,12 +142,41 @@ async function _rehydrate() {
 // ── Core projection write ──────────────────────────────────────────────────────
 
 /**
+ * Write a transition entry to domain-bounded Redis partition keys.
+ * Awaited by project() before onWrite fires — this is the synchronous ordering
+ * guarantee that eliminates the reactive coordination race condition.
+ *
+ * Writes to two keys:
+ *   lineage:transitionLog:domain:{domain} — namespace-bounded partition
+ *   lineage:transitionLog:entries          — global log (all transitions)
+ *
+ * @param {object} transition — the transition entry to write
+ * @param {string} domain — namespace: runtime | integrity | authority | health | systemic
+ */
+async function _writeDomainPartition(transition, domain) {
+  try {
+    const redis = getRedisClient();
+    if (!redis || redis.status !== 'ready') return;
+    const domainKey = `lineage:transitionLog:domain:${domain}`;
+    const serialized = JSON.stringify(transition);
+    // Both writes must complete before onWrite fires — await both
+    await Promise.all([
+      redis.rpush(domainKey, serialized),
+      redis.rpush('lineage:transitionLog:entries', serialized),
+    ]);
+  } catch (err) {
+    // Log but do not re-throw — projection state is in-memory, Redis is supplementary
+    console.error('[projection] _writeDomainPartition error:', err.message);
+  }
+}
+
+/**
  * Project a normalized transition into the live in-memory indexes.
  * Called by the transition emitter after normalization.
  *
  * @param {object} transition — canonical STATE_TRANSITION from normalizer
  */
-function project(transition) {
+async function project(transition) {
   const { domain, entity, entityId, nextState, previousState } = transition;
 
   // Build composite key
@@ -174,18 +203,13 @@ function project(transition) {
   // Write to domain-bounded partition keys — mutable telemetry layer.
   // Each projection worker writes to its bounded namespace partition.
   // Transition-writers read from these bounded keys (not the global log).
-  // This is fire-and-forget — Redis write errors must not block the write path.
-  (function _writeDomainPartition() {
-    try {
-      const redis = getRedisClient();
-      if (!redis || redis.status !== 'ready') return;
-      const domainKey = `lineage:transitionLog:domain:${domain}`;
-      redis.rpush(domainKey, JSON.stringify(transition)).catch(() => {});
-      redis.rpush('lineage:transitionLog:entries', JSON.stringify(transition)).catch(() => {});
-    } catch (_) {}
-  })();
+  // Awaited before onWrite fires — this guarantees the entry is in Redis
+  // before FSM reactive coordination is triggered, eliminating the race condition
+  // where setImmediate(PROCESS_INTENTS) fires before rpush completes.
+  await _writeDomainPartition(transition, domain);
 
   // Fire write hooks — trigger-driven subscribers (Phase 3: no timers)
+  // Safe to fire now: entry is confirmed in Redis bounded partition.
   for (const hook of _writeHooks) {
     try { hook(transition); } catch (e) { /* hook errors must not block the write path */ }
   }

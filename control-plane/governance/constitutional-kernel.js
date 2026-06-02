@@ -178,7 +178,7 @@ const DOMAIN_EVENT_MAP = {
   CIRCUIT_BREAKER_CLEARED: 'engagement',
   AUTH_STRIKES_RESET: 'engagement',
   AUTH_SUCCESS: 'engagement',
-  RETRY_COUNT_INCREMENTED: 'engagement',
+  RETRY_REQUESTED: 'engagement',
 
   // Publishing domain
   BUFFER_EVENT_INGESTED: 'publishing',
@@ -205,6 +205,7 @@ const DOMAIN_EVENT_MAP = {
   RECONCILIATION_CYCLE_COMPLETE: 'reconciliation',
 
   // Telemetry Coordination domain — deterministic semantic ingress plane
+  TELEMETRY_PROCESS_INTENTS: 'telemetry-coordination', // reactive trigger (routes through CK then to FSM)
   PROCESS_INTENTS: 'telemetry-coordination',
   HALT_TELEMETRY_COORDINATION: 'telemetry-coordination',
   RESUME_TELEMETRY_COORDINATION: 'telemetry-coordination',
@@ -414,6 +415,32 @@ const GLOBAL_TRANSITION_MAP = {
         return [{ type: 'INGRESS_RESOLVED', lag: 0, status: 'CONSISTENT' }];
       }
 
+      return [];
+    },
+  },
+
+  // ── Reactive Telemetry Coordination — FSM onWrite path now routes through CK ──
+  // When FSM's reactive onWrite trigger fires (on PROJECTION_INTENT entries),
+  // it calls _ckContext.dispatchGlobal({ type: 'TELEMETRY_PROCESS_INTENTS' }).
+  // This handler dispatches to the telemetry-coordination FSM, giving CK full
+  // visibility and sequencing control over every reactive coordination cycle.
+  // CK does not change its own state — this is purely a routing/observability event.
+  TELEMETRY_PROCESS_INTENTS: {
+    target: () => null, // CK does not change its own state
+    guard: (event, ctx) => {
+      if (_currentState === 'HALTED' || _currentState === 'DEAD') {
+        return { allowed: false, reason: `CK is ${_currentState} — telemetry coordination blocked` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const fsm = _domains.get('telemetry-coordination');
+      if (fsm) {
+        // Forward to FSM — FSM handles PROCESS_INTENTS logic
+        fsm.dispatch({ type: 'PROCESS_INTENTS', source: event.source || 'reactive' }, ctx);
+      }
+      // CK does not emit actions — FSM emits COORDINATION_CYCLE_COMPLETE etc.
+      // which return to CK as normal domain FSM actions.
       return [];
     },
   },

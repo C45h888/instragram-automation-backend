@@ -23,10 +23,11 @@ const metricsSubstrate = require('../../substrates/metrics-substrate');
 const rateLimiter = require('../../substrates/rate-limiter');
 const parsing = require('../../substrates/parsing');
 
-// ── Retry count tracking (per intentId, for engagement signal emission) ──────
-const _retryCounts = new Map(); // intentId → retry count
-
-const MAX_ACQUISITION_RETRIES = 1;
+// ═══════════════════════════════════════════════════════════════════════════════
+// Retry counting is now owned by substrates/retry-cadence (per-substrate policy).
+// This worker classifies outcomes and delegates retry scheduling to retry-cadence.
+// Original comment preserved below for history.
+// ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * Execute a single bounded attempt for one acquisition intent.
@@ -165,17 +166,16 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
       accountId, error: result.error,
     });
   } else if (retryable) {
-    const retryCount = (_retryCounts.get(intentId) || 0) + 1;
-    _retryCounts.set(intentId, retryCount);
-    if (retryCount > MAX_ACQUISITION_RETRIES) {
-      // Retries exhausted → engagement-fsm receives RETRY_EXHAUSTED via CK routing
-      _emitEngagementSignal(governance, 'RETRY_EXHAUSTED', {
-        accountId, domain, intentId, error: 'max_retries_exceeded',
-      });
-      _retryCounts.delete(intentId);
-    } else {
-      _emitEngagementSignal(governance, 'RETRY_COUNT_INCREMENTED', { intentId, retryCount });
-    }
+    // Transient error → delegate retry to retry-cadence substrate.
+    // Retry-cadence owns domain-specific retry policy, counting, backoff, and scheduling.
+    // Emit RETRY_REQUESTED through CK → engagement-fsm → retry-cadence.dispatch().
+    _emitEngagementSignal(governance, 'RETRY_REQUESTED', {
+      accountId, domain, intentId,
+      params,
+      error: result.error,
+      error_category: result.error_category,
+      retryAfterMs: retryAfterMs || null,
+    });
   }
 
   // ── Record outcome to telemetry + metrics ───────────────────────────────

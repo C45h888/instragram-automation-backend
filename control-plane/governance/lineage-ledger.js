@@ -656,6 +656,38 @@ async function markEntryAccepted(ledgerId) {
 }
 
 /**
+ * Mark a ledger entry as FAILED — used when CK dispatch fails after ledger write.
+ * Entry was persisted but CK never received PROJECTION_PERSISTED, so it cannot be
+ * accepted. Marking it FAILED preserves the forensic trail without leaving it in
+ * a permanent PENDING state.
+ *
+ * @param {string} ledgerId — the entry's ledgerId
+ * @returns {Promise<boolean>} true if marked successfully
+ */
+async function markEntryFailed(ledgerId) {
+  const redis = _getRedis();
+  if (!redis || redis.status !== 'ready') return false;
+  try {
+    const entries = await redis.lrange(REDIS_KEY_WORKER, 0, -1);
+    if (!Array.isArray(entries)) return false;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = _parseEntry(entries[i]);
+      if (entry && entry.ledgerId === ledgerId) {
+        entry.raw = entry.raw || {};
+        entry.raw.constitutionalStatus = 'FAILED';
+        entry.raw.failedAt = Date.now();
+        await redis.lset(REDIS_KEY_WORKER, i, JSON.stringify(entry));
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.error('[lineage-ledger] markEntryFailed error:', err.message);
+    return false;
+  }
+}
+
+/**
  * Remove a rejected entry from the canonical ledger.
  * Uses LREM to remove by ledgerId match.
  *
@@ -736,6 +768,7 @@ module.exports = {
   injectTestEntry,
   clearDomainLineage,
   markEntryAccepted,
+  markEntryFailed,
   removeEntry,
   recordAnomaly,
   REDIS_KEY_WORKER,

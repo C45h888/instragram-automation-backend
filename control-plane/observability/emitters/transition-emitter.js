@@ -77,7 +77,7 @@ async function _emitMembraneBypassAnomaly(entry, reason) {
  *     raw: { accountId, domain },
  *   });
  */
-function transition(params) {
+async function transition(params) {
   if (!params || typeof params !== 'object') {
     console.warn('[transition-emitter] transition() called with non-object params:', typeof params);
     return;
@@ -142,7 +142,10 @@ function transition(params) {
     }
 
     // Project into the in-memory state store
-    projection.project(normalized);
+    // Must await — project() now awaits the Redis bounded partition write
+    // before firing onWrite. The reactive coordination race condition is
+    // eliminated by this guarantee: onWrite fires only after entry is in Redis.
+    await projection.project(normalized);
   } catch (err) {
     // Never let observability failures propagate — subsystems must not be disrupted
     console.warn('[transition-emitter] Transition emit error:', err.message);
@@ -159,7 +162,10 @@ function transition(params) {
 function captureSignal(topic, data) {
   try {
     const normalized = normalizer.normalizeSignal(topic, data);
-    projection.project(normalized);
+    // Must await — project() now awaits Redis bounded partition write
+    projection.project(normalized).catch(err => {
+      console.warn('[transition-emitter] Signal capture error:', err.message);
+    });
   } catch (err) {
     console.warn('[transition-emitter] Signal capture error:', err.message);
   }

@@ -31,6 +31,7 @@ const transitionWriters = require('./telemetry-workers/transition-writers');
 const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
 const parsing = require('../substrates/parsing');
+const retryCadence = require('../substrates/retry-cadence');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -101,9 +102,7 @@ async function startAllWorkers() {
   // Writers read from the domain-bounded transition log partition (not the global log).
   transitionWriters.startAll();
 
-  // Phase 2: Start Phase 2 dumb writer — REMOVED.
-  // Transition-writers (above) are the sole write path. phase2-dumb-writer deleted.
-  // phase2-dumb-writer references in CK death/reboot handlers are kept for catastrophic recovery.
+  // Transition-writers are the sole write path.
 
   // Phase 3: Wire namespace projection interpreter to CK.
   // Subscribes to PROJECTION_ACCEPTED actions emitted by FSM after async validation.
@@ -118,6 +117,9 @@ async function startAllWorkers() {
 
   // Wire parsing substrate to CK — workers emit PARSING_COMPLETE events on completion
   parsing.setGovernance(constitutional);
+
+  // Wire retry-cadence substrate to CK — workers emit OBSERVATION + RETRY_EXHAUSTED events
+  retryCadence.setGovernance(constitutional);
 
   // Rehydrate CK from the worker-populated ledger.
   // Prior entries from a previous process lifetime are now available.
@@ -168,8 +170,8 @@ async function startAllWorkers() {
   console.log(`[orchestrator] Reconciliation loop started — tick every ${RECONCILIATION_INTERVAL_MS / 1000}s`);
 
   // ── Telemetry coordination: trigger-driven (Phase 3) ──
-  // No more timer — Phase 2 worker notifies CK via PROJECTION_PERSISTED on every write.
-  // CK validates asynchronously via FSM's PROJECTION_PERSISTED handler.
+  // No more timer — CK validates asynchronously via FSM's PROJECTION_PERSISTED handler.
+  // Telemetry coordination is purely trigger-driven via the onWrite reactive layer.
   console.log('[orchestrator] Telemetry coordination: trigger-driven via Phase 2 worker + CK async validation');
 
   const st = await constitutional.status();
@@ -180,9 +182,8 @@ async function stopAllWorkers() {
   console.log('[orchestrator] Stopping constitutional kernel...');
 
   await telemetryWorkers.stopAll();
-  transitionWriters.stopAll();       // stop 5 event-driven transition writers
-  telemetryCoordinationFsm.stop();  // stop reactive onWrite subscription
-  // phase2-dumb-writer.stop() — REMOVED. phase2 deleted, CK death handler handles it.
+  transitionWriters.stopAll();
+  telemetryCoordinationFsm.stop();
   constitutional.stopLoop();
   syncSubstrate.stop();
   await cadence.stop();

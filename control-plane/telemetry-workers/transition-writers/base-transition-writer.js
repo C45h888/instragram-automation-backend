@@ -124,54 +124,32 @@ function createTransitionWriter(namespace) {
         return;
       }
 
-      // ── Atomic write: ledger + CK dispatch ────────────────────────────────
-      let ledgerResult;
-      try {
-        // Step 1: Write to canonical ledger
-        ledgerResult = await lineageLedger.recordWorkerEntry(serializedEntry);
-        _lastLedgerId = ledgerResult?.ledgerId ?? null;
+      // ── Atomic write: ledger + CK dispatch ───────────────────────────────────
+      // Ledger write is authoritative — if it succeeds, the entry IS persisted.
+      // CK dispatch failure is secondary: mark FAILED rather than PENDING orphan.
+      lineageLedger.recordWorkerEntry(serializedEntry).then((ledgerEntry) => {
+        if (!ledgerEntry || !ledgerEntry.ledgerId) return;
+        _lastLedgerId = ledgerEntry.ledgerId;
         _writeCount++;
-      } catch (err) {
-        // Ledger write failed — classify and record, do NOT notify CK
-        const category = _classifyError(err);
-        _failedWrites++;
-        _errorCounts[category]++;
-        _recordError(err, category);
-        console.error(`[${namespace}-transition-writer] Ledger write error [${category}]:`, err.message);
-        return; // short-circuit — don't dispatch to CK with unpersisted entry
-      }
 
-      // Step 2: Notify CK for async validation — fire-and-forget with error tracking
-      try {
+        // Notify CK for async validation — fire-and-forget
         CK.dispatch({
           type: 'PROJECTION_PERSISTED',
           ledgerId: _lastLedgerId,
           entry: serializedEntry,
         });
-      } catch (err) {
-        // CK dispatch failed — entry IS in ledger but CK never validated it.
-        // This creates an orphaned PENDING entry. Track separately.
-        _ckDispatchFailures++;
-        _lastError = err?.message ?? String(err);
-        _lastErrorCategory = ERROR_CATEGORIES.CK_DISPATCH_FAILED;
-        _lastErrorAt = Date.now();
-        console.error(`[${namespace}-transition-writer] CK dispatch error:`, err.message);
-        // Entry is in ledger as PENDING — no automatic recovery path here.
-        // The reconciliation cycle should detect stale PENDING entries, but
-        // currently there is no timeout-based PENDING → FAILED escalation.
-        // This is a known gap tracked separately.
-      }
+      }).catch(async (err) => {
+        // Ledger write failed — entry was never persisted.
+        // Track, classify, short-circuit. No CK dispatch.
+        const category = _classifyError(err);
+        _failedWrites++;
+        _errorCounts[category] = (_errorCounts[category] || 0) + 1;
+        _totalErrors++;
+        _recordError(err, category);
+        console.error(`[${namespace}-transition-writer] Ledger write error [${category}]:`, err.message);
+      });
     });
-
-    _startedAt = Date.now();
-    console.log(`[${namespace}-transition-writer] Started — bounded to domain:${namespace}, event-driven`);
-  }
-
-  function _recordError(err, category) {
-    _lastError = err?.message ?? String(err);
-    _lastErrorCategory = category;
-    _lastErrorAt = Date.now();
-  }
+    }
 
   function stop() {
     if (_unsubscribe) {

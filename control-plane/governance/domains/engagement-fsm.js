@@ -334,21 +334,37 @@ const TRANSITION_MAP = {
     guard: () => ({ allowed: true }),
     buildActions: (event) => {
       const { accountId, substrate } = event;
-
-      // Only relevant when circuit breaker is active
-      if (_localState !== 'CIRCUIT_OPEN' && _localState !== 'CIRCUIT_COOLING') {
-        return [];
-      }
-
-      // Query: is the entire substrate clear?
+      if (_localState !== 'CIRCUIT_OPEN' && _localState !== 'CIRCUIT_COOLING') return [];
       const state = rateLimiter.getSubstrateState(substrate);
       if (!state.anyLimited) {
-        // All domains in this substrate are clear → advance to cooling
+        return [{ type: 'CIRCUIT_COOLDOWN_ELAPSED', accountId }];
+      }
+      return [];
+    },
+  },
+
+  // ── Retry requested → delegate to retry-cadence substrate ─────────────
+  // retry-cadence owns domain-specific retry policy, counting, backoff, scheduling.
+  // engagement-fsm gates: circuit breaker must not be active.
+  RETRY_REQUESTED: {
+    target: () => _localState,  // no state change
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      const { accountId, domain, intentId, params } = event;
+
+      // Gate: if circuit breaker is open, reject retry
+      const breaker = _circuitBreakers.get(accountId);
+      if (breaker && breaker.until > Date.now()) {
         return [{
-          type: 'CIRCUIT_COOLDOWN_ELAPSED',
-          accountId,
+          type: 'RETRY_EXHAUSTED',
+          accountId, domain, intentId,
+          error: 'circuit_breaker_active',
         }];
       }
+
+      // Delegate to retry-cadence — async, own governance reference
+      const retryCadence = require('../../../substrates/retry-cadence');
+      retryCadence.dispatch(domain, accountId, intentId, params);
 
       return [];
     },
