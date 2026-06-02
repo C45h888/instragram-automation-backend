@@ -18,11 +18,6 @@ const { _setClearAccountsCache } = require('./retry');
 let _accountsCache = { data: [], expiresAt: 0 };
 const ACCOUNTS_CACHE_TTL_MS = 30 * 1000;
 
-const _recentMediaCache = new Map(); // accountId → { data: [], expiresAt: number }
-const _hashtagsCache    = new Map(); // accountId → { data: [], expiresAt: number }
-const RECENT_MEDIA_CACHE_TTL_MS = 60 * 1000;
-const HASHTAGS_CACHE_TTL_MS     = 5 * 60 * 1000;
-
 // Wire retry substrate's cache clear hook
 _setClearAccountsCache(() => { _accountsCache = { data: [], expiresAt: 0 }; });
 
@@ -52,65 +47,8 @@ async function getActiveAccounts() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MEDIA & HASHTAG DISCOVERY
+// MEDIA & HASHTAG DISCOVERY — moved to substrates/db/readers/media.js
 // ═══════════════════════════════════════════════════════════════════════════════
-
-async function getRecentMedia(accountId) {
-  const cached = _recentMediaCache.get(accountId);
-  if (cached && Date.now() < cached.expiresAt) return cached.data;
-
-  const supabase = getSupabaseAdmin();
-  if (!supabase) return [];
-
-  const { data, error } = await supabase
-    .from('instagram_media')
-    .select('instagram_media_id')
-    .eq('business_account_id', accountId)
-    .order('published_at', { ascending: false })
-    .limit(10);
-
-  if (error) {
-    console.warn('[persistence] Failed to fetch recent media:', error.message);
-    return cached?.data || [];
-  }
-
-  const result = data || [];
-  _recentMediaCache.set(accountId, { data: result, expiresAt: Date.now() + RECENT_MEDIA_CACHE_TTL_MS });
-  return result;
-}
-
-async function getMonitoredHashtags(accountId) {
-  const cached = _hashtagsCache.get(accountId);
-  if (cached && Date.now() < cached.expiresAt) return cached.data;
-
-  const supabase = getSupabaseAdmin();
-  if (!supabase) return [];
-
-  const { data, error } = await supabase
-    .from('ugc_monitored_hashtags')
-    .select('hashtag')
-    .eq('business_account_id', accountId)
-    .eq('is_active', true);
-
-  if (error) {
-    console.warn('[persistence] Failed to fetch hashtags:', error.message);
-    return cached?.data || [];
-  }
-
-  const result = (data || []).map(h => h.hashtag);
-  _hashtagsCache.set(accountId, { data: result, expiresAt: Date.now() + HASHTAGS_CACHE_TTL_MS });
-  return result;
-}
-
-function clearRecentMediaCache(accountId) {
-  if (accountId) _recentMediaCache.delete(accountId);
-  else _recentMediaCache.clear();
-}
-
-function clearHashtagsCache(accountId) {
-  if (accountId) _hashtagsCache.delete(accountId);
-  else _hashtagsCache.clear();
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CREDENTIAL RESOLUTION
@@ -463,12 +401,6 @@ async function storeBusinessPosts(businessAccountId, posts) {
 module.exports = {
   // Account discovery
   getActiveAccounts,
-
-  // Per-account caches
-  getRecentMedia,
-  getMonitoredHashtags,
-  clearRecentMediaCache,
-  clearHashtagsCache,
 
   // Credential resolution
   resolveAccountCredentials,

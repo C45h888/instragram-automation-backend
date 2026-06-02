@@ -8,6 +8,7 @@ const transport = require('./transport');
 const parser = require('./parser');
 const { normalizeComment, transformMessage } = require('./normalizer');
 const persistence = require('../persistence');
+const { getRecentMedia } = require('../db/readers');
 
 /**
  * Fetch raw data from Instagram API for an engagement domain.
@@ -31,7 +32,7 @@ async function fetch(accountId, params, credentials) {
   }
   // Comments broad scan: fetch recent media comments
   const maxPosts = params.maxPosts || 5;
-  const recentMedia = await persistence.getRecentMedia(accountId);
+  const recentMedia = await getRecentMedia(accountId);
   const postsToCheck = recentMedia.slice(0, maxPosts);
   if (postsToCheck.length === 0) {
     return { success: true, batches: [], count: 0 };

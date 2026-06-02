@@ -33,6 +33,7 @@ const namespaceProjectionInterpreter = require('./governance/interpreters/namesp
 const parsing = require('../substrates/parsing');
 const retryCadence = require('../substrates/retry-cadence');
 const dbWriters = require('../substrates/db/writers');
+const dbReaders = require('../substrates/db/readers');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -126,6 +127,9 @@ async function startAllWorkers() {
 
   // Wire DB writers substrate to CK — workers emit DB_WRITE_COMPLETE on Supabase upsert
   dbWriters.setGovernance(constitutional);
+
+  // Wire DB readers substrate to CK — emit DB_READ_OBSERVED on every read
+  dbReaders.setGovernance(constitutional);
 
   // Rehydrate CK from the worker-populated ledger.
   // Prior entries from a previous process lifetime are now available.

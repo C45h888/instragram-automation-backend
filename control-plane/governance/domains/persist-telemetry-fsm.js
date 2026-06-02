@@ -63,6 +63,14 @@ const STATE_REGISTRY = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRANSITION_MAP = {
+  DB_READ_OBSERVED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: () => [],
+    // Pure telemetry — no gate, no state change.
+    // DB readers emit this fire-and-forget on every read for observability.
+  },
+
   DB_WRITE_REQUESTED: {
     target: () => {
       if (_inFlight + 1 > BACKPRESSURE_THRESHOLD) return 'BACKPRESSURE';

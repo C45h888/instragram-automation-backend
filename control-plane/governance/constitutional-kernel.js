@@ -207,6 +207,7 @@ const DOMAIN_EVENT_MAP = {
   // Persist-Telemetry domain — governs all DB write operations
   DB_WRITE_REQUESTED: 'persist-telemetry',
   DB_WRITE_COMPLETE: 'persist-telemetry',
+  DB_READ_OBSERVED: 'persist-telemetry',
 
   // Telemetry Coordination domain — deterministic semantic ingress plane
   TELEMETRY_PROCESS_INTENTS: 'telemetry-coordination', // reactive trigger (routes through CK then to FSM)
