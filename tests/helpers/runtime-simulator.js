@@ -211,10 +211,9 @@ class RuntimeSimulator {
       CK.dispatch({ type: 'CADENCE_TICK' });
     });
 
-    // 17. Cadence: reconciliation verification tick — separate from maintenance cadence
-    cadence.every(60 * 1000, () => {
-      CK.triggerReconciliation();
-    });
+    // 17. Reconciliation is reactive — triggered by LOG_DEGRADED (T1), ESCALATION_SIGNAL (T2),
+    //     death (T3), or manual (T5). No periodic cadence.
+    //     CK.triggerReconciliation() is called by domain events, not by a timer.
 
     // Allow worker ingestion to catch up to initial boot state
     await sleep(300);

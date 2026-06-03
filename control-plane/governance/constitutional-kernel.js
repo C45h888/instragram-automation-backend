@@ -563,12 +563,6 @@ function runGeneralGuards(currentState, targetState) {
 let _currentState = 'BOOTING';
 let _stateEnteredAt = Date.now();
 let _loopInterval = null;
-let _reconInProgress = false; // Guard: prevent concurrent reconciliation cycles
-
-// Anti-thrash: minimum interval between reconciliation triggers (ms)
-// Prevents cascading cycles when multiple domains degrade simultaneously.
-let _lastReconTriggeredAt = 0;
-const MIN_RECON_INTERVAL_MS = 30_000;
 
 // Snapshot building moved to reconciliation-substrate.js — CK no longer captures it
 
@@ -587,12 +581,6 @@ let _ingestionLagState = { lag: 0, status: 'CONSISTENT', lastUpdate: 0 };
 // Action subscription
 const _actionSubscribers = new Map(); // actionType → Set<fn>
 let _legacyActionSubscriber = null;
-
-// Reconciliation: _reconInProgress and anti-thrash vars live at lines 561+584
-
-// ── Reconciliation anti-thrash ────────────────────────────────────────────────
-// MIN_RECON_INTERVAL_MS and _lastReconTriggeredAt control trigger cadence.
-// _reconInProgress prevents concurrent cycles.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 5. Action dispatcher
@@ -945,71 +933,115 @@ const reconciliationSubstrate = require('./reconciliation-substrate');
 // Reconciliation substrate owns this — moved to reconciliation-substrate.js
 
 /**
- * Trigger a complete reconciliation cycle.
+ * Ask the reconciliation FSM if a new cycle may be started.
+/**
+ * Ask the reconciliation FSM for trigger evaluation.
  *
- * Lifecycle:
- *   1. Death detection — abort if lineage is already dead
- *   2. Dispatch RECONCILIATION_TICK → FSM transitions IDLE → RECONCILING
- *   3. Substrate runs the cycle and returns the result
- *   4. CK dispatches FSM transitions with the result
- *   5. Return the result to callers
+ * FSM evaluates deterministically: IDLE check, anti-thrash (MIN_INTERVAL),
+ * drift state, trigger type, and escalation criteria. CK applies its own
+ * structural sanity gates on top of FSM's response before dispatch.
  *
- * Constitutional invariant:
- *   The cycle ALWAYS completes. Even on engine failure, RECONCILIATION_RESULTS_RECEIVED
- *   and RECONCILIATION_CYCLE_COMPLETE are dispatched so the FSM returns to IDLE.
+ * Returns the raw FSM result so CK can validate before deciding.
  *
- * @returns {Promise<{ observations, worstSeverity, hash, snapshotHash, elapsedMs }>|null}
+ * @param {{ trigger?: string, forced?: boolean }} options
+ * @returns {{ decision: string, reason: string, retryAt?: number, fsmState: string }}
  */
-async function triggerReconciliation() {
-  // ── Reentrancy guard — prevent concurrent cycles ───────────────────────
-  if (_reconInProgress) {
-    console.warn('[constitutional-kernel] Reconciliation cycle already in progress — rejecting concurrent trigger');
-    return null;
-  }
-  _reconInProgress = true;
-
-  // ── Death detection BEFORE starting — abort if lineage is already dead ──
-  const ledgerSize = await lineageLedger.getSize();
-  const ckpt = checkpointer.getCheckpoint();
-  if (_detectConstitutionalDeath(ledgerSize, ckpt)) {
-    await _triggerConstitutionalDeath(ckpt);
-    _reconInProgress = false;
-    return null;
-  }
-
-  // ── FSM must be IDLE to accept a new cycle ─────────────────────────────
+function _askReconciliationFSM(options = {}) {
+  const { trigger = 'MANUAL', forced = false } = options;
   const reconFsm = _domains.get('reconciliation');
-  if (!reconFsm || reconFsm.getState() !== 'IDLE') {
-    console.warn('[constitutional-kernel] Reconciliation FSM not IDLE — rejecting trigger');
-    _reconInProgress = false;
-    return null;
+  if (!reconFsm || typeof reconFsm.evaluateTriggerCriteria !== 'function') {
+    return { decision: 'DENIED', reason: 'Reconciliation FSM missing evaluateTriggerCriteria()', fsmState: 'UNKNOWN' };
+  }
+  const result = reconFsm.evaluateTriggerCriteria({ trigger, forced });
+  return {
+    decision: result.decision,
+    reason: result.reason,
+    retryAt: result.retryAt,
+    fsmState: reconFsm.getState(),
+  };
+}
+
+/**
+ * CK self-validation: structural sanity gates applied to FSM's response.
+ *
+ * These are NOT a second evaluation of trigger criteria — that is FSM's domain.
+ * These are CK's sovereign sanity checks to ensure the central authority plane
+ * retains control over the dispatch decision.
+ *
+ * G1 — FSM existence and callable interface
+ * G2 — Decision shape sanity (known decision values only)
+ * G3 — FSM state consistency (must be IDLE to accept APPROVED)
+ * G4 — Trigger type sanity (known trigger types only)
+ * G5 — Forced flag non-re-entrancy
+ *
+ * @param {{ decision: string, reason: string, retryAt?: number, fsmState: string }} fsmResult
+ * @param {{ trigger: string, forced: boolean }} options
+ * @returns {{ allowed: boolean, override: boolean, reason: string }}
+ */
+function _ckSelfValidation(fsmResult, options = {}) {
+  const { trigger, forced } = options;
+  const { decision, fsmState } = fsmResult;
+
+  // G1: FSM returned a valid decision shape
+  const validDecisions = ['APPROVED', 'DENIED', 'WAIT'];
+  if (!validDecisions.includes(decision)) {
+    return { allowed: false, override: true, reason: `G1: FSM returned invalid decision "${decision}"` };
   }
 
-  // ── Anti-thrash gate ────────────────────────────────────────────────────
-  const now = Date.now();
-  if (now - _lastReconTriggeredAt < MIN_RECON_INTERVAL_MS) {
-    _reconInProgress = false;
-    return null;
+  // G2: FSM state sanity — APPROVED requires IDLE state
+  // If FSM says APPROVED but is not IDLE, CK overrides and denies
+  if (decision === 'APPROVED' && fsmState !== 'IDLE') {
+    return { allowed: false, override: true, reason: `G2: FSM returned APPROVED but state is "${fsmState}" (expected IDLE)` };
   }
-  _lastReconTriggeredAt = now;
 
-  // ── Dispatch TICK — FSM transitions IDLE → RECONCILING ────────────────
-  // FSM validates via ctx.validate, emits CYCLE_STARTED action
+  // G3: Known trigger types
+  const knownTriggers = ['MANUAL', 'LOG_DEGRADED', 'ESCALATION_SIGNAL', 'INGRESS_LAG'];
+  if (!knownTriggers.includes(trigger)) {
+    return { allowed: false, override: true, reason: `G3: Unknown trigger type "${trigger}"` };
+  }
+
+  // G4: Forced flag non-re-entrancy — CK tracks own in-progress flag
+  if (forced && _reconInProgress) {
+    return { allowed: false, override: true, reason: 'G4: Forced reconciliation already in progress' };
+  }
+
+  // G5: If forced=true, FSM must have approved it (FSM handles anti-thrash bypass internally)
+  // CK does not double-check FSM's forced logic — only structural sanity above
+
+  return { allowed: true, override: false, reason: fsmResult.reason };
+}
+
+/**
+ * Internal: dispatch the full reconciliation cycle.
+ * Called by triggerReconciliation() after FSM approves, or directly for T3 (death).
+ *
+ * @param {{ forced?: boolean }} options
+ */
+function _dispatchReconciliationCycle({ forced = false } = {}) {
+  const reconFsm = _domains.get('reconciliation');
+
+  // ── Dispatch TICK — FSM transitions IDLE → RECONCILING ─────────────────────
   dispatch({ type: 'RECONCILIATION_TICK' });
 
-  // ── Substrate runs the full cycle (snapshot + engine + checkpoint gate) ─
+  // Verify FSM accepted (guard may have denied synchronously)
+  if (reconFsm.getState() === 'IDLE') {
+    console.warn('[CK] FSM rejected RECONCILIATION_TICK — skipping substrate');
+    return;
+  }
+
+  // ── Substrate runs the full cycle (snapshot + engine + checkpoint gate) ─────
   let result;
   try {
-    result = await reconciliationSubstrate.triggerCycle({
+    result = reconciliationSubstrate.triggerCycle({
       fsms: _domains,
       currentState: _currentState,
     });
   } catch (err) {
-    console.error('[constitutional-kernel] Reconciliation substrate error:', err.message);
+    console.error('[CK] Reconciliation substrate error:', err.message);
     result = null;
   }
 
-  // ── Always dispatch results to FSM — cycle MUST complete ──────────────
+  // ── Always complete the cycle — FSM must return to IDLE ────────────────────
   dispatch({
     type: 'RECONCILIATION_RESULTS_RECEIVED',
     observations: result ? result.observations : [],
@@ -1018,9 +1050,57 @@ async function triggerReconciliation() {
   });
 
   dispatch({ type: 'RECONCILIATION_CYCLE_COMPLETE' });
+}
 
-  _reconInProgress = false;
-  return result;
+/**
+ * Trigger a complete reconciliation cycle.
+ *
+ * CK receives a trigger signal (T1/T2/T3/T5), asks FSM for evaluation,
+ * and dispatches only if FSM approves — except T3 (death), which is
+ * non-negotiable and bypasses FSM evaluation entirely.
+ *
+ * T1 — Domain drift:     CK receives LOG_DEGRADED → _askReconciliationFSM({ trigger: 'LOG_DEGRADED' }) → dispatches if approved
+ * T2 — Escalation:        FSM recommends via ctx.dispatchGlobal() → CK's GLOBAL_TRANSITION_MAP triggers → _askReconciliationFSM({ trigger: 'ESCALATION_SIGNAL' }) → dispatches if approved
+ * T3 — Death/corruption:  CK detects → _dispatchReconciliationCycle({ forced: true }) directly, no FSM ask
+ * T5 — Manual/forced:     CK.triggerReconciliation({ forced: true }) → _askReconciliationFSM({ trigger: 'MANUAL', forced: true }) → dispatches
+ *
+ * Constitutional invariant:
+ *   The cycle ALWAYS completes. Even on engine failure, _dispatchReconciliationCycle()
+ *   is called so the FSM returns to IDLE.
+ *
+ * @param {{ forced?: boolean }} options
+ * @returns {Promise<{ observations, worstSeverity, hash, snapshotHash, elapsedMs }>|null}
+ */
+async function triggerReconciliation({ forced = false } = {}) {
+  // ── T3: Death is non-negotiable — CK dispatches directly, no FSM evaluation ─
+  const ledgerSize = await lineageLedger.getSize();
+  const ckpt = checkpointer.getCheckpoint();
+  if (_detectConstitutionalDeath(ledgerSize, ckpt)) {
+    console.log('[CK] Constitutional death detected — dispatching emergency reconciliation');
+    _dispatchReconciliationCycle({ forced: true });
+    return null;
+  }
+
+  // ── Ask FSM for trigger evaluation ─────────────────────────────────────────
+  const fsmResult = _askReconciliationFSM({ trigger: 'MANUAL', forced });
+
+  // ── CK self-validation: sovereign sanity gates ─────────────────────────────
+  const ckValidation = _ckSelfValidation(fsmResult, { trigger: 'MANUAL', forced });
+
+  if (!ckValidation.allowed) {
+    if (ckValidation.override) {
+      console.log(`[CK] Override — ${ckValidation.reason}`);
+    } else if (fsmResult.decision === 'WAIT' && fsmResult.retryAt) {
+      console.log(`[CK] FSM requested wait: ${fsmResult.reason} (retryAt: ${fsmResult.retryAt})`);
+    } else {
+      console.log(`[CK] FSM denied trigger: ${fsmResult.reason}`);
+    }
+    return null;
+  }
+
+  // APPROVED — dispatch the cycle
+  _dispatchReconciliationCycle({ forced });
+  return null;
 }
 
 /**
@@ -1220,6 +1300,38 @@ async function rehydrate() {
     // Fast fail — do not boot with stale/default state if lineage cannot be loaded
     throw err;
   }
+
+  // ── Reactive reconciliation trigger — LOG_DEGRADED subscriber ─────────────────
+  // Initialized here (after rehydrate so all domains are registered) rather than
+  // in triggerReconciliation() hot-path. T1 reactive trigger path.
+  _initReconciliationTrigger();
+}
+
+// ── Reconciliation reactive trigger initialization ──────────────────────────
+
+let _reconciliationTriggerInitialized = false;
+
+/**
+ * Register the LOG_DEGRADED subscriber for reconciliation.
+ * Called once from rehydrate() after all domains are registered.
+ * This is the T1 reactive trigger path — domain drift fires LOG_DEGRADED,
+ * which arrives here, is evaluated by FSM.evaluateTriggerCriteria(), and
+ * CK dispatches only if FSM approves.
+ */
+function _initReconciliationTrigger() {
+  if (_reconciliationTriggerInitialized) return;
+  _reconciliationTriggerInitialized = true;
+
+  subscribeAction('LOG_DEGRADED', (event) => {
+    const fsmResult = _askReconciliationFSM({ trigger: 'LOG_DEGRADED', forced: false });
+    const ckValidation = _ckSelfValidation(fsmResult, { trigger: 'LOG_DEGRADED', forced: false });
+    if (ckValidation.allowed) {
+      _dispatchReconciliationCycle({ forced: false });
+    } else if (ckValidation.override) {
+      console.log(`[CK] LOG_DEGRADED override — ${ckValidation.reason}`);
+    }
+    // DENIED or WAIT — reconciliation deferred, domain continues without CK intervention
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

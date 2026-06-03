@@ -45,6 +45,7 @@ function _obs() {
 const ESCALATION_THRESHOLD = 3;       // consecutive substrate-drift epochs before signaling HSM
 const RECOVERY_CONVERGENCE_MIN = 2;   // consecutive converged epochs needed to signal recovery
 const MULTI_DOMAIN_DRIFT_MIN = 2;     // minimum drifted domains for multi-domain escalation
+const MIN_RECON_INTERVAL_MS = 30_000; // minimum interval between reconciliation triggers (FSM-owned, moved from CK)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
@@ -84,6 +85,7 @@ const TRANSITION_MAP = {
       _cycleObservations = [];
       _cycleWorstSeverity = 0;
       _cycleDriftedDomains = [];
+      _lastReconTriggeredAt = Date.now();
 
       return [{
         type: 'RECONCILIATION_CYCLE_STARTED',
@@ -235,6 +237,7 @@ let _epochCount = 0;
 let _consecutiveConverged = 0;
 let _consecutiveDrifted = 0;
 let _escalationSignaled = false;
+let _lastReconTriggeredAt = null;
 
 // ── Cycle-local slate (reset on RECONCILIATION_TICK) ─────────────────────────
 let _cycleObservations = [];
@@ -444,6 +447,53 @@ function getLastTransitionedAt() {
   return _lastTransitionedAt;
 }
 
+/**
+ * Deterministic trigger evaluation — the FSM's cognitive interface to CK's dispatch membrane.
+ * CK calls this before dispatching RECONCILIATION_TICK for every trigger condition.
+ *
+ * @param {{ trigger: string, forced?: boolean }} params
+ * @returns {{ decision: 'APPROVED'|'DENIED'|'WAIT', reason: string, retryAt?: number }}
+ */
+function evaluateTriggerCriteria({ trigger = 'MANUAL', forced = false } = {}) {
+  // Gate 1: State — cycle already in progress
+  if (_localState !== 'IDLE') {
+    return { decision: 'DENIED', reason: `FSM not IDLE (${_localState})` };
+  }
+
+  // Gate 2: Anti-thrash (bypassed when forced=true)
+  if (!forced) {
+    const now = Date.now();
+    const elapsed = _lastReconTriggeredAt ? now - _lastReconTriggeredAt : null;
+    if (elapsed !== null && elapsed < MIN_RECON_INTERVAL_MS) {
+      const waitMs = MIN_RECON_INTERVAL_MS - elapsed;
+      return { decision: 'WAIT', reason: `Anti-thrash active (${waitMs}ms remaining)`, retryAt: now + waitMs };
+    }
+  }
+
+  // Gate 3: Escalation signal — mandatory (anti-thrash does not apply)
+  if (trigger === 'ESCALATION_SIGNAL') {
+    return { decision: 'APPROVED', reason: 'Escalation threshold reached — mandatory reconciliation' };
+  }
+
+  // Gate 4: Forced manual override — anti-thrash does not apply
+  if (trigger === 'MANUAL' && forced) {
+    return { decision: 'APPROVED', reason: 'Operator forced trigger' };
+  }
+
+  // Gate 5: Domain drift (LOG_DEGRADED) — approve
+  if (trigger === 'LOG_DEGRADED') {
+    return { decision: 'APPROVED', reason: 'Domain drift detected — reconciliation required' };
+  }
+
+  // Gate 6: Ingress lag — approve
+  if (trigger === 'INGRESS_LAG') {
+    return { decision: 'APPROVED', reason: 'Ingress lag breach — reconciliation required' };
+  }
+
+  // Default: approve for any recognized trigger
+  return { decision: 'APPROVED', reason: `Trigger ${trigger} approved` };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 7. Internal helpers
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -464,6 +514,8 @@ module.exports = {
   getEpochCount,
   getEscalationState,
   getLastTransitionedAt,
+  evaluateTriggerCriteria,
   ESCALATION_THRESHOLD,
   RECOVERY_CONVERGENCE_MIN,
+  MIN_RECON_INTERVAL_MS,
 };

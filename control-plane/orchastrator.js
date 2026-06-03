@@ -173,11 +173,10 @@ async function startAllWorkers() {
     constitutional.dispatch({ type: 'CADENCE_TICK' });
   });
 
-  // ── Reconciliation tick — independent constitutional verification cadence ──
-  cadence.every(RECONCILIATION_INTERVAL_MS, () => {
-    constitutional.triggerReconciliation();
-  });
-  console.log(`[orchestrator] Reconciliation loop started — tick every ${RECONCILIATION_INTERVAL_MS / 1000}s`);
+  // ── Reconciliation is reactive — triggered by LOG_DEGRADED (T1), ESCALATION_SIGNAL (T2),
+  //     death (T3), or manual (T5). No periodic cadence.
+  //     CK.triggerReconciliation() is called by domain events, not by a timer.
+  //     RECONCILIATION_INTERVAL_MS (60s) is deprecated.
 
   // ── Telemetry coordination: trigger-driven (Phase 3) ──
   // No more timer — CK validates asynchronously via FSM's PROJECTION_PERSISTED handler.
