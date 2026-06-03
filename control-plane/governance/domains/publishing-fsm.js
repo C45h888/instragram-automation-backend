@@ -1,8 +1,9 @@
 // control-plane/governance/domains/publishing-fsm.js
 // Publishing Domain FSM: federated state machine governing publishing lifecycle.
 //
-// Owns: signal buffering → evaluation → emission pipeline lifecycle,
+// Owns: deterministic trigger intake (via cognition scanner) → evaluation → emission lifecycle,
 //        backpressure detection, emission health.
+//
 // Does NOT own: evaluation policy (publishing policy), dedup logic,
 //               intent construction, emission mechanics — those are
 //               implementation concerns of the evaluation/emission modules.
@@ -13,6 +14,15 @@
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Membranes ↓  → actions returned to constitutional for emission to orchestrators
+//
+// Awakening model (Phase 6c):
+//   The SOLE trigger for this FSM is COGNITION_COMPLETE from the cognition-scanner
+//   substrate. No buffer, no cadence ticker, no signal bus. The FSM is awakened
+//   only when the cognition loop has completed processing on a publishable post.
+//
+// Local states:
+//   IDLE       — waiting for cognition-complete trigger
+//   EVALUATING — evaluating cognition-completed events against publishing policy
 
 // Lazy import to avoid circular dependency
 let _observability = null;
@@ -23,16 +33,6 @@ function _obs() {
   }
   return _observability;
 }
-//   Lineage      → ctx.recordLineage() writes to authoritative ledger (via CK mediation)
-//
-// Domain FSMs CANNOT directly access the lineage ledger.
-// The constitutional kernel mediates all lineage writes.
-//
-// Local states:
-//   IDLE       — no publishing events in flight
-//   BUFFERING  — accumulating signal events in buffer
-//   EVALUATING — evaluating buffered events against publishing policy
-//   EMITTING   — emitting publishing intents to Redis queues
 
 const crypto = require('crypto');
 
@@ -42,19 +42,10 @@ const crypto = require('crypto');
 
 const STATE_REGISTRY = {
   IDLE: {
-    description: 'No publishing events in flight — ready for signal intake',
-  },
-  BUFFERING: {
-    description: 'Accumulating signal events in buffer',
+    description: 'Waiting for cognition-complete trigger — ready to evaluate',
   },
   EVALUATING: {
-    description: 'Evaluating buffered events against publishing policy',
-  },
-  EMITTING: {
-    description: 'Emitting publishing intents to Redis queues',
-  },
-  PUBLISHING: {
-    description: 'DB scan emitted intents — mutation substrate applying APPROVED→PUBLISHING transition',
+    description: 'Running evaluation pipeline against publishing policy',
   },
 };
 
@@ -63,24 +54,15 @@ const STATE_REGISTRY = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRANSITION_MAP = {
-  // ── Signal ingested → begin buffering ──────────────────────────────────
-  BUFFER_EVENT_INGESTED: {
-    target: 'BUFFERING',
-    guard: (event) => {
-      if (!['IDLE', 'BUFFERING'].includes(_localState)) {
-        return { allowed: false, reason: `Cannot buffer from ${_localState}` };
-      }
-      return { allowed: true };
-    },
-    buildActions: () => [],
-  },
-
-  // ── Buffer full → begin evaluation ─────────────────────────────────────
-  BUFFER_FLUSH_READY: {
+  // ── Cognition scanner triggered → begin evaluation ──────────────────────
+  COGNITION_COMPLETE: {
     target: 'EVALUATING',
     guard: (event) => {
-      if (!['IDLE', 'BUFFERING'].includes(_localState)) {
+      if (_localState !== 'IDLE') {
         return { allowed: false, reason: `Cannot evaluate from ${_localState}` };
+      }
+      if (!event?.events || !Array.isArray(event.events) || event.events.length === 0) {
+        return { allowed: false, reason: 'COGNITION_COMPLETE requires non-empty events array' };
       }
       return { allowed: true };
     },
@@ -91,14 +73,12 @@ const TRANSITION_MAP = {
     }],
   },
 
-  // ── Emission result observed ───────────────────────────────────────────
+  // ── Emission result observed ────────────────────────────────────────────
   EMISSION_OBSERVATION: {
-    target: (event) => {
-      return 'IDLE'; // always return to IDLE — error state collapses to idle
-    },
+    target: 'IDLE',
     guard: (event) => {
-      if (!['EVALUATING', 'EMITTING'].includes(_localState)) {
-        return { allowed: false };
+      if (_localState !== 'EVALUATING') {
+        return { allowed: false, reason: `Cannot complete emission from ${_localState}` };
       }
       return { allowed: true };
     },
@@ -111,74 +91,6 @@ const TRANSITION_MAP = {
       }
       return [{ type: 'START_INTENT_DISCOVERY' }];
     },
-  },
-
-  // ── DB scan emitted intent → apply APPROVED→PUBLISHING mutation ─────────
-  // Scanner emits DB_SCAN_EMITTED after LPUSHing intent to Redis.
-  // This transition authorizes the DB status update via mutation-substrate.
-  DB_SCAN_EMITTED: {
-    target: 'PUBLISHING',
-    guard: (event) => {
-      // Guard: event must have required fields for mutation
-      if (!event?.target || !event?.recordId) {
-        return { allowed: false, reason: 'DB_SCAN_EMITTED requires target and recordId' };
-      }
-      // Guard: target must be a known value — reject corrupted events silently
-      const validTargets = ['scheduled_post', 'post_queue'];
-      if (!validTargets.includes(event.target)) {
-        return { allowed: false, reason: `DB_SCAN_EMITTED: unknown target "${event.target}" — expected one of ${validTargets.join(', ')}` };
-      }
-      return { allowed: true };
-    },
-    buildActions: (event) => {
-      const { target, recordId, accountId, actionType, currentStatus } = event;
-
-      if (target === 'scheduled_post') {
-        // scheduled_posts: APPROVED → PUBLISHING
-        return [{
-          type: 'APPLY_MUTATION',
-          table: 'scheduled_posts',
-          recordId,
-          accountId,
-          updates: { status: 'publishing' },
-          expectedPriorStatus: 'approved',
-          reason: `Scanner emitted intent for scheduled_post ${recordId}`,
-        }];
-      }
-
-      if (target === 'post_queue') {
-        // post_queue: (pending|failed) → processing
-        return [{
-          type: 'APPLY_MUTATION',
-          table: 'post_queue',
-          recordId,
-          accountId,
-          updates: { status: 'processing' },
-          expectedPriorStatus: currentStatus || 'pending',
-          reason: `Scanner emitted intent for post_queue row ${recordId}`,
-        }];
-      }
-
-      return [];
-    },
-  },
-
-  // ── Conversations stored by persistence substrate ───────────────────────
-  // Persistence emits this after storing raw conversation records.
-  // No state change — FSM simply acknowledges receipt and records lineage.
-  CONVERSATION_STORED: {
-    target: (event) => _localState, // no state change
-    guard: (event) => {
-      if (!event?.conversations || !Array.isArray(event.conversations)) {
-        return { allowed: false, reason: 'CONVERSATION_STORED requires conversations array' };
-      }
-      return { allowed: true };
-    },
-    buildActions: (event) => [{
-      type: 'PROCESS_CONVERSATIONS',
-      conversations: event.conversations,
-      accountId: event.accountId,
-    }],
   },
 };
 
@@ -269,7 +181,7 @@ function dispatch(event, ctx) {
  * Initialize the domain FSM with rehydrated state from lineage.
  * Called by the constitutional kernel after rehydrate() completes on boot.
  *
- * @param {string} rehydratedState — the domain state to restore (e.g., 'BUFFERING', 'IDLE')
+ * @param {string} rehydratedState — the domain state to restore (e.g., 'EVALUATING', 'IDLE')
  */
 function init(rehydratedState) {
   if (rehydratedState && typeof rehydratedState === 'string') {
@@ -359,7 +271,7 @@ function exportState() {
 }
 
 function getHealth() {
-  return { ok: _localState !== 'EMITTING', signals: { state: _localState } };
+  return { ok: _localState !== 'EVALUATING', signals: { state: _localState } };
 }
 
 function getLastTransitionedAt() {

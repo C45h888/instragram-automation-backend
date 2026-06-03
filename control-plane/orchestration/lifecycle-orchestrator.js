@@ -11,7 +11,6 @@
 // It never decides which accounts to keep or remove.
 
 const lifecycle = require('../runtime/lifecycle');
-const buffer = require('../runtime/buffer');
 const { clearCredentialCache } = require('../../helpers/agent-helpers');
 
 /**
@@ -21,11 +20,6 @@ const { clearCredentialCache } = require('../../helpers/agent-helpers');
  * @param {object} governance — governance kernel module
  */
 function wire(governance) {
-  // ── Account removal → buffer cleanup ───────────────────────────────────
-  lifecycle.onRemove((accountId) => {
-    buffer.destroy(accountId);
-  });
-
   // ── DISCONNECT_ACCOUNT → lifecycle module (governance-ordered) ─────────
   governance.subscribeAction('DISCONNECT_ACCOUNT', (action) => {
     console.warn(`[lifecycle-orchestrator] Governance ordered disconnect for ${action.accountId}: ${action.reason}`);

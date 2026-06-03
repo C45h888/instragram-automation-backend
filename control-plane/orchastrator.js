@@ -19,7 +19,6 @@ const constitutional = require('./governance/constitutional-kernel');
 const executionBridge = require('./execution-bridge');
 const metricsSubstrate = require('../substrates/metrics-substrate');
 const { getRedisClient } = require('../config/redis');
-const buffer = require('./runtime/buffer');
 const cadence = require('./runtime/cadence');
 const lifecycle = require('./runtime/lifecycle');
 const persistence = require('../substrates/persistence');
@@ -34,6 +33,7 @@ const parsing = require('../substrates/parsing');
 const retryCadence = require('../substrates/retry-cadence');
 const dbWriters = require('../substrates/db/writers');
 const dbReaders = require('../substrates/db/readers');
+const cognitionScanner = require('../substrates/db/cognition-scanner');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('./governance/domains/acquisition-fsm');
@@ -49,20 +49,16 @@ const persistTelemetryFsm = require('./governance/domains/persist-telemetry-fsm'
 const cadenceOrchestrator     = require('./orchestration/cadence-orchestrator');
 const acquisitionOrchestrator = require('./orchestration/acquisition-orchestrator');
 const emissionOrchestrator    = require('./orchestration/emission-orchestrator');
-const signalOrchestrator      = require('./orchestration/signal-orchestrator');
 const lifecycleOrchestrator   = require('./orchestration/lifecycle-orchestrator');
 const degradationOrchestrator = require('./orchestration/degradation-orchestrator');
 
 const REFRESH_INTERVAL_MS = 90 * 1000; // 90s cadence
 const RECONCILIATION_INTERVAL_MS = 60 * 1000; // 60s reconciliation cadence — separate from maintenance
-const DEBOUNCE_MS = 500;
 const GOVERNANCE_TICK_MS = 10_000; // 10s watchdog tick
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
 
 function _wire() {
-  buffer.setDebounceMs(DEBOUNCE_MS);
-
   // Register domain FSMs — must happen before wiring membranes
   constitutional.registerDomain(acquisitionFsm);
   constitutional.registerDomain(publishingFsm);
@@ -80,7 +76,6 @@ function _wire() {
   cadenceOrchestrator.wire(constitutional);
   acquisitionOrchestrator.wire(constitutional, acquisitionFsm);
   emissionOrchestrator.wire(constitutional);
-  signalOrchestrator.wire(constitutional);
   lifecycleOrchestrator.wire(constitutional);
   degradationOrchestrator.wire(constitutional);
 }
@@ -137,10 +132,12 @@ async function startAllWorkers() {
 
   await metricsSubstrate.init();
 
-  await signalOrchestrator.start(constitutional);
-
   await lifecycle.refresh();
   const accounts = await persistence.getActiveAccounts();
+
+  // Start cognition scanner — sole deterministic trigger for publishing FSM
+  await cognitionScanner.start(constitutional, accounts, publishingFsm);
+
   constitutional.dispatch({ type: 'LIFECYCLE_REFRESHED', accountIds: accounts.map(a => a.id) });
 
   constitutional.dispatch({ type: 'BOOT_COMPLETE' });
@@ -195,9 +192,8 @@ async function stopAllWorkers() {
   telemetryCoordinationFsm.stop();
   constitutional.stopLoop();
   syncSubstrate.stop();
+  await cognitionScanner.stop();
   await cadence.stop();
-  await signalOrchestrator.stop();
-  buffer.destroyAll();
   lifecycle.stopAll();
 
   // Shutdown observability plane — persist final snapshot
