@@ -1,7 +1,7 @@
 // control-plane/governance/domains/publishing-fsm.js
 // Publishing Domain FSM: federated state machine governing publishing lifecycle.
 //
-// Owns: deterministic trigger intake (via cognition scanner) → evaluation → emission lifecycle,
+// Owns: deterministic trigger intake (via cognition scanner) → governed read → evaluation → emission,
 //        backpressure detection, emission health.
 //
 // Does NOT own: evaluation policy (publishing policy), dedup logic,
@@ -15,14 +15,19 @@
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Membranes ↓  → actions returned to constitutional for emission to orchestrators
 //
-// Awakening model (Phase 6c):
-//   The SOLE trigger for this FSM is COGNITION_COMPLETE from the cognition-scanner
-//   substrate. No buffer, no cadence ticker, no signal bus. The FSM is awakened
-//   only when the cognition loop has completed processing on a publishable post.
+// Trigger protocol (pull-based, reader-driven):
+//   1. Cognition scanner detects Realtime UPDATE → dispatches PUBLISHING_DATA_AVAILABLE
+//   2. FSM transitions IDLE → FETCHING, emits GOVERNED_READ actions
+//   3. GOVERNED_READ → CK → persist-telemetry-fsm → reading-substrate → post-queue-worker
+//   4. post-queue-worker queries Supabase for pending post_queue + approved scheduled_posts
+//   5. Result returns as READ_RESULT_AVAILABLE → FSM transitions FETCHING → EVALUATING
+//   6. EVALUATE action → emission-orchestrator → evaluator → emitter
+//   7. EMISSION_OBSERVATION → IDLE → cognition scanner flushes next batch
 //
 // Local states:
-//   IDLE       — waiting for cognition-complete trigger
-//   EVALUATING — evaluating cognition-completed events against publishing policy
+//   IDLE       — waiting for cognition-scanner trigger
+//   FETCHING   — governed DB read in flight (reading post_queue + scheduled_posts)
+//   EVALUATING — evaluating fetched events against publishing policy
 
 // Lazy import to avoid circular dependency
 let _observability = null;
@@ -42,7 +47,10 @@ const crypto = require('crypto');
 
 const STATE_REGISTRY = {
   IDLE: {
-    description: 'Waiting for cognition-complete trigger — ready to evaluate',
+    description: 'Waiting for cognition-scanner trigger — ready to fetch',
+  },
+  FETCHING: {
+    description: 'Governed DB read in flight — pulling post_queue + scheduled_posts',
   },
   EVALUATING: {
     description: 'Running evaluation pipeline against publishing policy',
@@ -54,23 +62,69 @@ const STATE_REGISTRY = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRANSITION_MAP = {
-  // ── Cognition scanner triggered → begin evaluation ──────────────────────
-  COGNITION_COMPLETE: {
-    target: 'EVALUATING',
+  // ── Cognition scanner triggered → begin governed read ───────────────────
+  PUBLISHING_DATA_AVAILABLE: {
+    target: 'FETCHING',
     guard: (event) => {
       if (_localState !== 'IDLE') {
-        return { allowed: false, reason: `Cannot evaluate from ${_localState}` };
+        return { allowed: false, reason: `Cannot fetch from ${_localState}` };
       }
-      if (!event?.events || !Array.isArray(event.events) || event.events.length === 0) {
-        return { allowed: false, reason: 'COGNITION_COMPLETE requires non-empty events array' };
+      if (!event?.accountId) {
+        return { allowed: false, reason: 'PUBLISHING_DATA_AVAILABLE requires accountId' };
       }
       return { allowed: true };
     },
-    buildActions: (event) => [{
-      type: 'EVALUATE',
-      accountId: event.accountId,
-      events: event.events,
-    }],
+    buildActions: (event) => {
+      const { accountId } = event;
+      const readId = crypto.randomUUID();
+      // Issue two governed reads: post_queue (pending/failed) + scheduled_posts (approved)
+      // persist-telemetry-fsm gates these through DB_READ_REQUESTED
+      return [
+        {
+          type: 'GOVERNED_READ',
+          readDomain: 'db.post-queue',
+          accountId,
+          readId: `${readId}:pq`,
+          params: { accountId, query: 'getPendingPostQueue' },
+        },
+        {
+          type: 'GOVERNED_READ',
+          readDomain: 'db.scheduled-posts',
+          accountId,
+          readId: `${readId}:sp`,
+          params: { accountId, query: 'getApprovedScheduledPosts' },
+        },
+      ];
+    },
+  },
+
+  // ── Governed read completed → begin evaluation ─────────────────────────
+  READ_RESULT_AVAILABLE: {
+    target: 'EVALUATING',
+    guard: (event) => {
+      if (_localState !== 'FETCHING') {
+        return { allowed: false, reason: `Cannot evaluate from ${_localState}` };
+      }
+      if (!event?.accountId) {
+        return { allowed: false, reason: 'READ_RESULT_AVAILABLE requires accountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { accountId, readDomain, data } = event;
+      // Transform DB rows into evaluator-compatible { table, record } events.
+      // readDomain tells us which table the data came from.
+      const table = readDomain === 'db.scheduled-posts' ? 'scheduled_posts' : 'post_queue';
+      const events = (data && Array.isArray(data))
+        ? data.map(record => ({ table, record }))
+        : [];
+
+      return [{
+        type: 'EVALUATE',
+        accountId,
+        events,
+      }];
+    },
   },
 
   // ── Emission result observed ────────────────────────────────────────────
@@ -86,10 +140,10 @@ const TRANSITION_MAP = {
       if (event.status === 'error') {
         return [
           { type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: event.metadata?.reason || 'Emission failed' },
-          { type: 'STOP_INTENT_DISCOVERY' },
         ];
       }
-      return [{ type: 'START_INTENT_DISCOVERY' }];
+      // Return to IDLE — cognition-scanner will flush next batch on EMISSION_OBSERVATION
+      return [];
     },
   },
 };
@@ -99,7 +153,8 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
-let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
+let _lastTransitionedAt = null;
+let _pendingReads = new Map(); // readId → { domain, accountId } — tracks in-flight governed reads
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
@@ -142,6 +197,14 @@ function dispatch(event, ctx) {
     }
   }
 
+  // ── Track in-flight governed reads ──────────────────────────────────────
+  if (event.type === 'PUBLISHING_DATA_AVAILABLE') {
+    // Reads will be tracked when GOVERNED_READ actions are processed
+  }
+  if (event.type === 'READ_RESULT_AVAILABLE' && event.readId) {
+    _pendingReads.delete(event.readId);
+  }
+
   _localState = target;
   _lastTransitionedAt = Date.now();
 
@@ -156,7 +219,7 @@ function dispatch(event, ctx) {
         previousState: from,
         nextState: target,
         authority: 'publishing-fsm',
-        raw: { intent: event.type, accountId: event.accountId || null, eventCount: event.eventCount || null },
+        raw: { intent: event.type, accountId: event.accountId || null },
       });
     }
   } catch (_) {}
@@ -181,7 +244,7 @@ function dispatch(event, ctx) {
  * Initialize the domain FSM with rehydrated state from lineage.
  * Called by the constitutional kernel after rehydrate() completes on boot.
  *
- * @param {string} rehydratedState — the domain state to restore (e.g., 'EVALUATING', 'IDLE')
+ * @param {string} rehydratedState — the domain state to restore (e.g., 'IDLE', 'FETCHING', 'EVALUATING')
  */
 function init(rehydratedState) {
   if (rehydratedState && typeof rehydratedState === 'string') {
@@ -267,11 +330,11 @@ function getState() {
 }
 
 function exportState() {
-  return { state: _localState };
+  return { state: _localState, pendingReads: _pendingReads.size };
 }
 
 function getHealth() {
-  return { ok: _localState !== 'EVALUATING', signals: { state: _localState } };
+  return { ok: _localState !== 'EVALUATING', signals: { state: _localState, pendingReads: _pendingReads.size } };
 }
 
 function getLastTransitionedAt() {

@@ -8,10 +8,6 @@ const WORKER_MAP = {
   batch_upsert_posts:               './content-writer',
   batch_upsert_insights:            './content-writer',
   batch_upsert_ugc:                 './ugc-writer',
-  mark_post_queue_sent:             './publishing-writer',
-  mark_scheduled_post_published:    './publishing-writer',
-  mark_ugc_permission_reposted:     './publishing-writer',
-  mark_account_disconnected:        './publishing-writer',
 };
 
 function getWriter(operation) {

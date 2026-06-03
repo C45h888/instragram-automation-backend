@@ -188,6 +188,27 @@ function wire(governance) {
     executeEvaluationPipeline(governance, action.accountId, action.events);
   });
 
+  // ── GOVERNED_READ: publishing-fsm → CK → persist-telemetry-fsm → reading-substrate ──
+  // Issued by publishing-fsm on PUBLISHING_DATA_AVAILABLE (FETCHING state).
+  // Dispatches DB_READ_REQUESTED through governance. persist-telemetry-fsm gates
+  // the read, reading-substrate delegates to post-queue-worker, result returns
+  // as READ_RESULT_AVAILABLE back to publishing-fsm.
+  governance.subscribeAction('GOVERNED_READ', (action) => {
+    const { readDomain, accountId, readId, params } = action;
+    if (!readDomain || !accountId || !readId) {
+      console.warn('[emission-orchestrator] GOVERNED_READ rejected: missing required fields', action);
+      return;
+    }
+    // Route through CK → persist-telemetry-fsm gate → reading-substrate → worker
+    governance.dispatch({
+      type: 'DB_READ_REQUESTED',
+      readDomain,
+      accountId,
+      readId,
+      params: params || { accountId },
+    });
+  });
+
   // ── APPLY_MUTATION: DB scan emitted → mutation substrate ──────────────────
   // Handles DB_SCAN_EMITTED transition's buildActions output.
   // Calls mutation-substrate with idempotent .eq() guards.

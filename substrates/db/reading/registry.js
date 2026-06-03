@@ -6,7 +6,9 @@
 // Add new read domains here — no other file changes needed.
 
 const WORKER_MAP = {
-  'db.media': './workers/media-worker',
+  'db.media':            './workers/media-worker',
+  'db.post-queue':       './workers/post-queue-worker',
+  'db.scheduled-posts':  './workers/post-queue-worker',
 };
 
 function getWorker(domain) {

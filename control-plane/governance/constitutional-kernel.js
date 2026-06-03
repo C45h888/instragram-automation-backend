@@ -182,8 +182,8 @@ const DOMAIN_EVENT_MAP = {
   RETRY_REQUESTED: 'engagement',
 
   // Publishing domain
-  BUFFER_EVENT_INGESTED: 'publishing',
-  BUFFER_FLUSH_READY: 'publishing',
+  PUBLISHING_DATA_AVAILABLE: 'publishing',
+  READ_RESULT_AVAILABLE: 'publishing',
   EMISSION_OBSERVATION: 'publishing',
   DB_SCAN_EMITTED: 'publishing',
 

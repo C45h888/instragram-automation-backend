@@ -9,7 +9,7 @@
 //
 // Trigger protocol (no timers, no race conditions):
 //   1. Realtime UPDATE arrives → push to per-account FIFO queue
-//   2. If publishing-fsm is IDLE → flush queue immediately as COGNITION_COMPLETE
+//   2. If publishing-fsm is IDLE → flush queue immediately as PUBLISHING_DATA_AVAILABLE
 //   3. If publishing-fsm is not IDLE → events queue until EMISSION_OBSERVATION fires
 //   4. On EMISSION_OBSERVATION → flush any pending events for that account
 //
@@ -36,8 +36,7 @@ let _started = false;
 // ── Pending queue management ────────────────────────────────────────────────
 
 /**
- * Flush the pending queue for an account. Dispatches COGNITION_COMPLETE
- * with all accumulated events. Returns true if events were flushed.
+ * Flush the pending queue for an account. Dispatches PUBLISHING_DATA_AVAILABLE.
  * Deterministic — no timers, synchronous.
  */
 function _flushQueue(accountId) {
@@ -47,9 +46,8 @@ function _flushQueue(accountId) {
   _pending.delete(accountId);
 
   _governance.dispatch({
-    type: 'COGNITION_COMPLETE',
+    type: 'PUBLISHING_DATA_AVAILABLE',
     accountId,
-    events,
   });
   return true;
 }
