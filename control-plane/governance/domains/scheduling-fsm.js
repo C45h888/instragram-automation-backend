@@ -65,7 +65,6 @@ const TRANSITION_MAP = {
     target: () => _localState, // no state change — sequences actions
     guard: () => ({ allowed: true }),
     buildActions: () => [
-      { type: 'SCAN_DATABASE' },
       { type: 'REFRESH_LIFECYCLE' },
       { type: 'CHECK_SAFETY' },
       { type: 'REPORT_METRICS' },
@@ -74,12 +73,6 @@ const TRANSITION_MAP = {
   },
 
   // ── Maintenance acknowledgements ────────────────────────────────────────
-  DATABASE_SCANNED: {
-    target: () => _localState,
-    guard: () => ({ allowed: true }),
-    buildActions: () => [],
-  },
-
   LIFECYCLE_REFRESHED: {
     target: () => _localState,
     guard: () => ({ allowed: true }),

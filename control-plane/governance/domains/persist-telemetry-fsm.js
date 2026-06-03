@@ -25,6 +25,13 @@ function _obs() {
 
 const db = require('../../../substrates/db/writers');
 
+// Lazy reading-substrate reference — set by CK after instantiation
+let _readingSubstrate = null;
+
+function setReadingSubstrate(substrate) {
+  _readingSubstrate = substrate;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 0. Governance Policy Constants
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -41,6 +48,19 @@ const VALID_TABLES = new Set([
 ]);
 
 const BACKPRESSURE_THRESHOLD = 10;
+const READ_BACKPRESSURE_THRESHOLD = 20;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0b. Read Domain Whitelist — which callers are permitted to read which domains
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const READ_DOMAIN_WHITELIST = new Set([
+  'db.media',
+  'ig.content',
+  'ig.engagement',
+  'ig.insights',
+  'ig.ugc',
+]);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
@@ -48,10 +68,13 @@ const BACKPRESSURE_THRESHOLD = 10;
 
 const STATE_REGISTRY = {
   IDLE: {
-    description: 'No writes in flight',
+    description: 'No writes or reads in flight',
   },
   WRITING: {
     description: 'One or more writes in progress',
+  },
+  READ_EXECUTING: {
+    description: 'One or more governed reads in progress',
   },
   BACKPRESSURE: {
     description: 'Write queue exceeds threshold — degradation',
@@ -70,6 +93,128 @@ const TRANSITION_MAP = {
     // Pure telemetry — no gate, no state change.
     // DB readers emit this fire-and-forget on every read for observability.
   },
+
+  // ── Governed Reads ──────────────────────────────────────────────────────
+  DB_READ_REQUESTED: {
+    target: () => {
+      if (_readsInFlight + 1 > READ_BACKPRESSURE_THRESHOLD) {
+        return _localState === 'IDLE' ? 'READ_EXECUTING' : _localState;
+      }
+      return _localState === 'IDLE' ? 'READ_EXECUTING' : _localState;
+    },
+    guard: (event) => {
+      const { readDomain } = event;
+      if (!readDomain || !READ_DOMAIN_WHITELIST.has(readDomain)) {
+        return { allowed: false, reason: `read domain not whitelisted: ${readDomain}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const { readDomain, accountId, readId, params } = event;
+
+      // Track in-flight
+      _readsInFlight++;
+
+      // Delegate to reading-substrate — async, non-blocking
+      if (_readingSubstrate) {
+        const readPromise = _readingSubstrate.executeRead(readDomain, params, readId);
+        // Fire completion back through governance when done
+        readPromise.then((result) => {
+          if (ctx && ctx.dispatchGlobal) {
+            ctx.dispatchGlobal({
+              type: 'DB_READ_COMPLETE',
+              readDomain,
+              accountId,
+              readId,
+              success: result.success,
+              data: result.data,
+              error: result.error,
+              latencyMs: result.latencyMs,
+              cached: result.cached || false,
+            });
+          }
+        }).catch((err) => {
+          if (ctx && ctx.dispatchGlobal) {
+            ctx.dispatchGlobal({
+              type: 'DB_READ_COMPLETE',
+              readDomain,
+              accountId,
+              readId,
+              success: false,
+              data: null,
+              error: err.message,
+              latencyMs: 0,
+            });
+          }
+        });
+      } else {
+        // No reading substrate wired — fail fast
+        _readsInFlight = Math.max(0, _readsInFlight - 1);
+        return [{
+          type: 'DB_READ_COMPLETE',
+          readDomain,
+          accountId,
+          readId,
+          success: false,
+          error: 'reading_substrate_unavailable',
+          latencyMs: 0,
+        }];
+      }
+
+      if (_readsInFlight > READ_BACKPRESSURE_THRESHOLD) {
+        return [{
+          type: 'LOG_DEGRADED',
+          substate: 'READ_BACKPRESSURE',
+          reason: `Read queue at ${_readsInFlight} (threshold ${READ_BACKPRESSURE_THRESHOLD})`,
+        }];
+      }
+
+      return [];
+    },
+  },
+
+  DB_READ_COMPLETE: {
+    target: () => {
+      if (_readsInFlight === 0 && _writesInFlight === 0) return 'IDLE';
+      if (_readsInFlight > 0) return 'READ_EXECUTING';
+      return _localState;
+    },
+    guard: () => {
+      if (_readsInFlight <= 0) {
+        return { allowed: false, reason: 'No reads in flight — cannot complete read' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const { readDomain, accountId, readId, success, data, error, latencyMs } = event;
+      _readsInFlight = Math.max(0, _readsInFlight - 1);
+
+      if (error) {
+        return [{
+          type: 'LOG_DEGRADED',
+          substate: 'READ_FAILURE',
+          reason: `Read failed for ${readDomain}/${accountId}: ${error}`,
+        }];
+      }
+
+      // Forward read result to calling domain
+      const actions = [];
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'READ_RESULT_AVAILABLE',
+          accountId,
+          readDomain,
+          readId,
+          data,
+          latencyMs,
+        });
+      }
+
+      return actions;
+    },
+  },
+
+  // ── Writes ──────────────────────────────────────────────────────────────
 
   DB_WRITE_REQUESTED: {
     target: () => {
@@ -159,7 +304,8 @@ const TRANSITION_MAP = {
 
 let _localState = 'IDLE';
 let _lastTransitionedAt = null;
-let _inFlight = 0;
+let _inFlight = 0;        // writes in flight
+let _readsInFlight = 0;   // reads in flight
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
@@ -230,8 +376,8 @@ function init(rehydratedState) {
 }
 
 function getState() { return _localState; }
-function exportState() { return { state: _localState, inFlight: _inFlight }; }
-function getHealth() { return { ok: _inFlight < BACKPRESSURE_THRESHOLD, signals: { inFlight: _inFlight } }; }
+function exportState() { return { state: _localState, writesInFlight: _inFlight, readsInFlight: _readsInFlight }; }
+function getHealth() { return { ok: _inFlight < BACKPRESSURE_THRESHOLD && _readsInFlight < READ_BACKPRESSURE_THRESHOLD, signals: { writesInFlight: _inFlight, readsInFlight: _readsInFlight } }; }
 
 module.exports = {
   name: 'persist-telemetry',
@@ -240,4 +386,5 @@ module.exports = {
   getState,
   exportState,
   getHealth,
+  setReadingSubstrate,
 };

@@ -32,6 +32,7 @@
 const lineageLedger = require('./lineage-ledger');
 const checkpointer = require('./lineage-checkpointer');
 const ingressSubstrate = require('./ingress-consistency/substrate');
+const readingSubstrate = require('./domains/reading-substrate');
 
 // Lazy import to avoid circular dependency at module load time
 let _observabilityTransition = null;
@@ -189,7 +190,6 @@ const DOMAIN_EVENT_MAP = {
   // Scheduling domain
   CADENCE_TICK: 'scheduling',
   WORKER_METRICS_REPORTED: 'scheduling',
-  DATABASE_SCANNED: 'scheduling',
   LIFECYCLE_REFRESHED: 'scheduling',
   SAFETY_CHECK_COMPLETE: 'scheduling',
 
@@ -204,10 +204,12 @@ const DOMAIN_EVENT_MAP = {
   RECONCILIATION_RESULTS_RECEIVED: 'reconciliation',
   RECONCILIATION_CYCLE_COMPLETE: 'reconciliation',
 
-  // Persist-Telemetry domain — governs all DB write operations
+  // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',
   DB_WRITE_COMPLETE: 'persist-telemetry',
   DB_READ_OBSERVED: 'persist-telemetry',
+  DB_READ_REQUESTED: 'persist-telemetry',
+  DB_READ_COMPLETE: 'persist-telemetry',
 
   // Telemetry Coordination domain — deterministic semantic ingress plane
   TELEMETRY_PROCESS_INTENTS: 'telemetry-coordination', // reactive trigger (routes through CK then to FSM)
@@ -710,6 +712,16 @@ function registerDomain(fsm) {
     throw new Error('[constitutional-kernel] registerDomain requires a valid domain FSM');
   }
   _domains.set(fsm.name, fsm);
+
+  // ── Wire reading-substrate when persist-telemetry FSM registers ────────
+  if (fsm.name === 'persist-telemetry' && typeof fsm.setReadingSubstrate === 'function') {
+    readingSubstrate.init({
+      governance: module.exports,
+      fsm,
+    });
+    fsm.setReadingSubstrate(readingSubstrate);
+    console.log('[constitutional-kernel] Reading substrate wired to persist-telemetry FSM');
+  }
 
   // Initialize domain FSM with rehydrated state from lineage (if available)
   if (_rehydratedDomainStates && typeof fsm.init === 'function') {
@@ -1423,6 +1435,63 @@ function clearCircuitBreaker(accountId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// 15b. Governed Read — convenience wrapper for callers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Execute a governed read through CK → persist-telemetry FSM → reading-substrate.
+ * Returns a Promise that resolves with the read result.
+ *
+ * @param {string} readDomain  — 'db.media', 'ig.content', 'ig.engagement', 'ig.insights', 'ig.ugc'
+ * @param {object} params      — { accountId, query, limit, ...domain-specific }
+ * @param {number} [timeoutMs] — max wait time (default 15000ms)
+ * @returns {Promise<{success: boolean, data?, error?, latencyMs: number}>}
+ */
+function governedRead(readDomain, params = {}, timeoutMs = 15000) {
+  const readId = require('crypto').randomUUID();
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Governed read timed out after ${timeoutMs}ms: ${readDomain}`));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      // No unsubscribe needed — subscriber receives one event per readId
+    };
+
+    // Subscribe to read result for this specific readId
+    const resultHandler = (action) => {
+      if (action.readId !== readId) return; // ignore other reads
+      cleanup();
+      resolve({
+        success: action.error ? false : true,
+        data: action.data || null,
+        error: action.error || null,
+        latencyMs: action.latencyMs || 0,
+      });
+    };
+
+    subscribeAction('READ_RESULT_AVAILABLE', resultHandler);
+
+    // Dispatch the read request
+    const dispatchResult = dispatch({
+      type: 'DB_READ_REQUESTED',
+      readDomain,
+      accountId: params.accountId,
+      readId,
+      params,
+    });
+
+    if (!dispatchResult.allowed) {
+      cleanup();
+      resolve({ success: false, data: null, error: dispatchResult.reason || 'read rejected by governance', latencyMs: 0 });
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // 15. Module initialization
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1463,4 +1532,6 @@ module.exports = {
   SIGNAL_CLASS,
   getTransitionWriterHealth,
   getIngressState,
+  getReadingSubstrate: () => readingSubstrate,
+  governedRead,
 };

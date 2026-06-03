@@ -9,7 +9,9 @@
 // It mechanically dispatches maintenance work and forwards results upward.
 // It NEVER interprets runtime meaning.
 
-const dbScanner = require('../runtime/db-scanner');
+// NOTE: db-scanner removed — legacy coupled module deleted.
+// SCAN_DATABASE action removed from scheduling-fsm.
+
 const lifecycle = require('../runtime/lifecycle');
 const safety = require('../runtime/operational-safety');
 const metricsSubstrate = require('../../substrates/metrics-substrate');
@@ -23,19 +25,6 @@ const persistence = require('../../substrates/persistence');
  * @param {object} governance — governance kernel module
  */
 function wire(governance) {
-  // ── SCAN_DATABASE → dbScanner ──────────────────────────────────────────
-  governance.subscribeAction('SCAN_DATABASE', (action) => {
-    dbScanner.runScan(governance).then(r => {
-      if (r.totalEmitted > 0) {
-        console.log(`[cadence-orchestrator] DB scanner emitted ${r.totalEmitted} intents`);
-      }
-      governance.dispatch({ type: 'DATABASE_SCANNED', intentCount: r.totalEmitted });
-    }).catch(err => {
-      console.error('[cadence-orchestrator] DB scanner error:', err.message);
-      governance.dispatch({ type: 'DATABASE_SCANNED', intentCount: 0 });
-    });
-  });
-
   // ── REFRESH_LIFECYCLE → lifecycle → persistence ────────────────────────
   governance.subscribeAction('REFRESH_LIFECYCLE', (action) => {
     lifecycle.refresh().then(() => {

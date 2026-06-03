@@ -6,6 +6,10 @@
 //
 // Reads are direct — no CK routing. DB_READ_OBSERVED is emitted as
 // fire-and-forget telemetry for observability only.
+//
+// For governed reads, use CK.governedRead('db.media', { accountId, query }).
+// The reading-substrate (control-plane/governance/domains/reading-substrate.js)
+// wraps these raw methods under persist-telemetry FSM governance.
 
 const { getSupabaseAdmin } = require('../../../config/supabase');
 
@@ -17,6 +21,25 @@ const HASHTAGS_TTL_MS     = 5 * 60 * 1000;
 let _governance = null;
 
 function setGovernance(gov) { _governance = gov; }
+
+/**
+ * Governed read wrapper — routes through CK → persist-telemetry FSM → reading-substrate.
+ * Preferred path for new callers. Falls back to direct read if governance not wired.
+ *
+ * @param {string} query — 'getRecentMedia' | 'getMonitoredHashtags'
+ * @param {string} accountId
+ * @returns {Promise<object>} { success, data, error }
+ */
+async function governedRead(query, accountId) {
+  if (_governance && typeof _governance.governedRead === 'function') {
+    return _governance.governedRead('db.media', { accountId, query });
+  }
+  // Fallback: direct read (ungoverned)
+  const data = query === 'getMonitoredHashtags'
+    ? await getMonitoredHashtags(accountId)
+    : await getRecentMedia(accountId);
+  return { success: true, data, error: null, latencyMs: 0 };
+}
 
 // ── Recent Media ─────────────────────────────────────────────────────────────
 
@@ -118,6 +141,7 @@ function _emitObserved(query, accountId, latencyMs, error = null) {
 module.exports = {
   getRecentMedia,
   getMonitoredHashtags,
+  governedRead,
   clearRecentMediaCache,
   clearHashtagsCache,
   setGovernance,
