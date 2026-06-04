@@ -3,7 +3,8 @@
 // Extracted from routes/agent-proxy.js to keep route files lean.
 
 const { getSupabaseAdmin, logApiRequest, logAudit, shouldLog } = require('../config/supabase');
-const { retrievePageToken } = require('../services/tokens/pat');
+const verdictGate = require('../substrates/graph-capability/verdict-gate');
+const vault = require('../substrates/vault');
 const { clearCredentialCache: _clearCredentialCacheRaw, getFromCache, setInCache } = require('./credential-cache');
 
 const GRAPH_API_BASE = 'https://graph.facebook.com/v25.0';
@@ -227,7 +228,16 @@ async function resolveAccountCredentials(businessAccountId) {
     const igUserId = account.instagram_business_id;
     const userId = account.user_id;
 
-    const pageToken = await retrievePageToken(userId, businessAccountId);
+    // Capability gate first — deny if FSM verdict is not AUTHORIZED/LIMITED/DEGRADED with required scopes
+    const verdict = await verdictGate.requireCapability(userId, businessAccountId, [
+      'instagram_basic',
+      'pages_read_engagement'
+    ]);
+    if (!verdict.allowed) {
+      throw new Error(`CAPABILITY_DENIED: ${verdict.reason} (state=${verdict.state})`);
+    }
+
+    const pageToken = await vault.pat.retrieve({ userId, businessAccountId });
 
     if (!pageToken) {
       throw new Error('Failed to retrieve access token');

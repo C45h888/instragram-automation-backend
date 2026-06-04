@@ -3,21 +3,15 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const {
-  exchangeForPageToken,
-  storePageToken,
-  retrievePageToken,
-  storeUserToken,
-  refreshUserToken,
-  detectTokenType,
-  fetchDynamicScope,
-  GRAPH_API_BASE,
-} = require('../../services/tokens');
+const vault = require('../../substrates/vault');
+const triggerBridge = require('../../substrates/graph-capability/trigger-bridge');
+const constitutionalKernel = require('../../control-plane/governance/constitutional-kernel');
 const { getSupabaseAdmin, logAudit: logAuditService, fireAndForgetInsert } = require('../../config/supabase');
 const { clearCredentialCache } = require('../../helpers/credential-cache');
 
 const logAudit = logAuditService;
 const GRAPH_API_VERSION = 'v23.0';
+const { GRAPH_API_BASE } = require('../../substrates/vault/api-surface');
 
 // ==========================================
 // HELPER FUNCTIONS
@@ -96,7 +90,7 @@ router.post('/exchange-token', async (req, res) => {
       }
 
       console.log('🔄 Starting token exchange and IG account discovery...');
-      const exchangeResult = await exchangeForPageToken(userAccessToken);
+      const exchangeResult = await vault.pat.exchange({ userAccessToken });
 
       if (!exchangeResult.success) {
         console.error('❌ Token exchange failed:', exchangeResult.error);
@@ -178,7 +172,7 @@ router.post('/exchange-token', async (req, res) => {
     let uatDetected = false;
 
     if (finalUAT) {
-      const uatInfo = await detectTokenType(finalUAT);
+      const uatInfo = await vault.uat.detect({ token: finalUAT });
       if (uatInfo && uatInfo.isValid) {
         uatDetected = true;
         uatScopes = uatInfo.scopes || [];
@@ -213,18 +207,19 @@ router.post('/exchange-token', async (req, res) => {
     }
 
     // ===== STEP 5: Detect PAT scopes via /debug_token =====
-    const patScopes = await fetchDynamicScope(pageAccessToken, supabaseAdmin);
+    const patScopes = await vault.scope.detectDynamic({ token: pageAccessToken, supabase: supabaseAdmin });
 
     // ===== STEP 6: Store PAT in vault =====
     console.log('💾 Storing PAT and creating business account record...');
 
-    const storeResult = await storePageToken({
+    const storeResult = await vault.pat.store({
       userId,
       igBusinessAccountId: discoveredBusinessAccountId,
       pageAccessToken,
       pageId,
       pageName,
-      scope: patScopes
+      scope: patScopes,
+      triggerBridge,        // substrate emits NEW_ACCOUNT_CONNECTED on success
     });
 
     if (!storeResult.success) {
@@ -253,12 +248,12 @@ router.post('/exchange-token', async (req, res) => {
     // ===== STEP 7: Store UAT in split vault =====
     if (uatDetected && finalUAT) {
       // Re-detect after potential extension to get data_access_expires_at
-      const finalUatInfo = await detectTokenType(finalUAT);
+      const finalUatInfo = await vault.uat.detect({ token: finalUAT });
       const dataAccessExpiresAt = finalUatInfo?.dataAccessExpiresAt
         ? new Date(finalUatInfo.dataAccessExpiresAt * 1000).toISOString()
         : null;
 
-      const uatResult = await storeUserToken({
+      const uatResult = await vault.uat.store({
         userId,
         businessAccountId: storeResult.businessAccountId,
         userAccessToken: finalUAT,
@@ -410,7 +405,7 @@ router.post('/refresh-token', async (req, res) => {
     if (hasUAT) {
       console.log('[Token] UAT detected — attempting fb_exchange_token refresh');
       try {
-        const result = await refreshUserToken(userId, businessAccountId);
+        const result = await vault.uat.refresh({ userId, businessAccountId, triggerBridge });
 
         // Success notification
         await supabase.from('system_alerts').insert({
@@ -519,7 +514,7 @@ router.post('/validate-token', async (req, res) => {
       }
 
       // Detect token type via /debug_token before storing
-      const tokenInfo = await detectTokenType(pageAccessToken);
+      const tokenInfo = await vault.uat.detect({ token: pageAccessToken });
 
       if (!tokenInfo || !tokenInfo.isValid) {
         try {
@@ -549,7 +544,7 @@ router.post('/validate-token', async (req, res) => {
       if (detectedType === 'USER') {
         // UAT imported — auto-exchange for PAT, store both
         console.log('🔄 UAT detected in import — auto-exchanging for PAT...');
-        const exchangeResult = await exchangeForPageToken(pageAccessToken);
+        const exchangeResult = await vault.pat.exchange({ userAccessToken: pageAccessToken });
 
         if (!exchangeResult.success) {
           return res.status(400).json({
@@ -570,16 +565,17 @@ router.post('/validate-token', async (req, res) => {
         }
 
         // Detect PAT scopes
-        const patScopes = await fetchDynamicScope(exchangeResult.pageAccessToken, supabase);
+        const patScopes = await vault.scope.detectDynamic({ token: exchangeResult.pageAccessToken, supabase });
 
         // Store PAT
-        storeResult = await storePageToken({
+        storeResult = await vault.pat.store({
           userId,
           igBusinessAccountId: exchangeResult.igBusinessAccountId,
           pageAccessToken: exchangeResult.pageAccessToken,
           pageId: exchangeResult.pageId,
           pageName: exchangeResult.pageName || pageName || 'Imported Account',
-          scope: patScopes
+          scope: patScopes,
+          triggerBridge,
         });
 
         tokensStored.push('page');
@@ -593,7 +589,7 @@ router.post('/validate-token', async (req, res) => {
           const uatDataAccessExpiresAt = tokenInfo.dataAccessExpiresAt
             ? new Date(tokenInfo.dataAccessExpiresAt * 1000).toISOString()
             : null;
-          await storeUserToken({
+          await vault.uat.store({
             userId,
             businessAccountId: storeResult.businessAccountId,
             userAccessToken: pageAccessToken,
@@ -606,15 +602,16 @@ router.post('/validate-token', async (req, res) => {
 
       } else {
         // PAGE token imported — store directly
-        detectedScope = await fetchDynamicScope(pageAccessToken, supabase);
+        detectedScope = await vault.scope.detectDynamic({ token: pageAccessToken, supabase });
 
-        storeResult = await storePageToken({
+        storeResult = await vault.pat.store({
           userId,
           igBusinessAccountId: instagramBusinessId,
           pageAccessToken,
           pageId: pageId || instagramBusinessId,
           pageName: pageName || 'Imported Account',
-          scope: detectedScope
+          scope: detectedScope,
+          triggerBridge,
         });
 
         tokensStored.push('page');

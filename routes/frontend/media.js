@@ -3,7 +3,8 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const { retrievePageToken } = require('../../services/tokens');
+const verdictGate = require('../../substrates/graph-capability/verdict-gate');
+const vault = require('../../substrates/vault');
 const { logAudit: logAuditService } = require('../../config/supabase');
 const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
 const { getSupabaseAdmin } = require('../../config/supabase');
@@ -182,9 +183,30 @@ router.get('/profile/:id', async (req, res) => {
       });
     }
 
+    // Capability gate first — deny if FSM verdict is not AUTHORIZED/LIMITED/DEGRADED with required scopes
+    const verdict = await verdictGate.requireCapability(userId, businessAccountId, [
+      'instagram_basic',
+      'pages_read_engagement'
+    ]);
+    if (!verdict.allowed) {
+      console.error('❌ Capability denied for profile fetch:', verdict.reason);
+      await logAudit('capability_denied', userId, {
+        action: 'fetch_profile',
+        business_account_id: businessAccountId,
+        reason: verdict.reason,
+        state: verdict.state,
+      });
+      return res.status(401).json({
+        success: false,
+        error: 'Capability denied. Please reconnect your Instagram account.',
+        code: 'CAPABILITY_DENIED',
+        state: verdict.state,
+      });
+    }
+
     let pageToken;
     try {
-      pageToken = await retrievePageToken(userId, businessAccountId);
+      pageToken = await vault.pat.retrieve({ userId, businessAccountId });
     } catch (tokenError) {
       console.error('❌ Token retrieval failed:', tokenError.message);
 

@@ -1,8 +1,8 @@
 // backend.api/helpers/credential-cache.js
 // Singleton in-memory credential cache.
 // Extracted from agent-helpers.js to break the circular dependency:
-//   services/tokens/pat.js → agent-helpers → services/tokens/pat.js
-// Both agent-helpers.js and services/tokens/{pat,uat}.js import from here.
+//   vault substrate workers → agent-helpers → vault substrate workers
+// Both helpers/agent-helpers.js and substrates/vault/**/workers/* import from here.
 
 const _credentialCache = new Map();
 const CREDENTIAL_TTL_MS = 5 * 60 * 1000; // 5 minutes

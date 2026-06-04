@@ -17,6 +17,10 @@ const {
 // Token health + heartbeat failover (operational, no cron)
 const { runStartupHealthChecks } = require('./services/sync');
 
+// Graph Capability Plane — constitutional substrate (FSM + workers + verdict-gate)
+const graphCapabilityWiring = require('./substrates/graph-capability/wiring');
+const constitutionalKernel = require('./control-plane/governance/constitutional-kernel');
+
 // Redis-driven AcquisitionWorker — primary data acquisition pipeline
 // Governed acquisition pipeline — all acquisition flows through HSM + execution-bridge
 // (no more BRPOP worker loops; governance discovers intents from Redis directly)
@@ -614,6 +618,14 @@ async function startServer() {
     console.log('✅ All domain workers started');
   } catch (workerErr) {
     console.error('[AcquisitionWorker] Failed to start:', workerErr.message);
+  }
+
+  // Install Graph Capability Plane — wires FSM to substrate, starts capability cadence loops
+  try {
+    graphCapabilityWiring.install({ ck: constitutionalKernel });
+    console.log('✅ Graph Capability Plane installed');
+  } catch (capabilityErr) {
+    console.error('[GraphCapability] Wiring install failed:', capabilityErr.message);
   }
 
   // Start Express server

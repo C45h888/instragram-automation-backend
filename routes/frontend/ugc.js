@@ -2,7 +2,7 @@
 // UGC management routes: visitor-posts, feature toggle, permission requests
 const express = require('express');
 const router = express.Router();
-const { validateTokenScopes } = require('../../services/tokens');
+const verdictGate = require('../../substrates/graph-capability/verdict-gate');
 const { logAudit: logAuditService } = require('../../config/supabase');
 const { getSupabaseAdmin } = require('../../config/supabase');
 
@@ -36,23 +36,23 @@ router.get('/visitor-posts', async (req, res) => {
       });
     }
 
-    const scopeCheck = await validateTokenScopes(userId, businessAccountId, [
+    const verdict = await verdictGate.requireCapability(userId, businessAccountId, [
       'instagram_basic',
       'pages_read_user_content'
     ]);
 
-    if (!scopeCheck.valid) {
+    if (!verdict.allowed) {
       await logAudit('scope_check_failed', userId, {
         endpoint: '/visitor-posts',
-        missing: scopeCheck.missing,
+        missing: verdict.missingScopes,
         business_account_id: businessAccountId
       });
 
       return res.status(403).json({
         success: false,
-        error: `Missing required permissions: ${scopeCheck.missing.join(', ')}`,
+        error: `Missing required permissions: ${verdict.missingScopes.join(', ')}`,
         code: 'MISSING_SCOPES',
-        missing: scopeCheck.missing
+        missing: verdict.missingScopes
       });
     }
 

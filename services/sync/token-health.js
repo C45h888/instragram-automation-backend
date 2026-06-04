@@ -15,15 +15,9 @@
 // NO import from ./helpers — this file is intentionally isolated.
 
 const { getSupabaseAdmin, logAudit, fireAndForgetInsert } = require('../../config/supabase');
-const {
-  retrievePageToken,
-  detectTokenType,
-  retrieveUserToken,
-  exchangeForPageToken,
-  storePageToken,
-  fetchDynamicScope,
-  refreshUserToken,            // promoted from lazy require inside runUATRefreshCheck
-} = require('../tokens');
+const vault = require('../../substrates/vault');
+const triggerBridge = require('../../substrates/graph-capability/trigger-bridge');
+const constitutionalKernel = require('../../control-plane/governance/constitutional-kernel');
 const { clearCredentialCache } = require('../../helpers/credential-cache');
 
 // Private delay — not importing from ./helpers to keep this file fully independent
@@ -79,39 +73,52 @@ async function runTokenHealthCheck() {
         }
       }
 
-      // Use service layer to retrieve decrypted token
+      // Use vault substrate to retrieve decrypted token
       let token;
       try {
-        token = await retrievePageToken(cred.user_id, cred.business_account_id);
+        token = await vault.pat.retrieve({ userId: cred.user_id, businessAccountId: cred.business_account_id });
       } catch (retrieveErr) {
         console.warn(`[TokenHealthCheck] Could not retrieve token for cred ${cred.id}:`, retrieveErr.message);
         skipped++;
         continue;
       }
 
-      // Call /debug_token via detectTokenType
+      // Call /debug_token via vault.uat.detect
       try {
-        const tokenInfo = await detectTokenType(token);
+        const tokenInfo = await vault.uat.detect({ token });
 
         if (!tokenInfo || !tokenInfo.isValid) {
           // ── Attempt silent PAT recovery via stored UAT ──
           let recovered = false;
 
           try {
-            const uatData = await retrieveUserToken(cred.user_id, cred.business_account_id);
-            const exchangeResult = await exchangeForPageToken(uatData.token);
+            const uatData = await vault.uat.retrieve({ userId: cred.user_id, businessAccountId: cred.business_account_id });
+            const exchangeResult = await vault.pat.exchange({ userAccessToken: uatData.token });
 
             if (exchangeResult.success && !exchangeResult.requiresSelection) {
-              const newScope = await fetchDynamicScope(exchangeResult.pageAccessToken, supabase);
-              await storePageToken({
+              const newScope = await vault.scope.detectDynamic({
+                token: exchangeResult.pageAccessToken,
+                supabase,
+                credentialId: cred.id,
+              });
+              await vault.pat.store({
                 userId:               cred.user_id,
                 igBusinessAccountId:  exchangeResult.igBusinessAccountId,
                 pageAccessToken:      exchangeResult.pageAccessToken,
                 pageId:               exchangeResult.pageId,
                 pageName:             exchangeResult.pageName,
                 scope:                newScope,
+                triggerBridge,        // substrate emits NEW_ACCOUNT_CONNECTED on success
               });
               clearCredentialCache(cred.business_account_id);
+
+              // Emit capability evaluate trigger so FSM transitions post-recovery
+              triggerBridge.emitCapabilityEvaluate({
+                businessAccountId: cred.business_account_id,
+                userId: cred.user_id,
+                source: 'TOKEN_HEALTH_RECOVERY',
+                ck: constitutionalKernel,
+              }).catch(() => {});
 
               const { error: alertErr1 } = await fireAndForgetInsert(supabase.from('system_alerts').insert({
                 alert_type:          'pat_auto_recovered',
@@ -263,7 +270,7 @@ async function runUATRefreshCheck() {
     console.log(`[UATRefresh] UAT ${uat.id}: ${daysLeft} days remaining`);
 
     try {
-      const result = await refreshUserToken(uat.user_id, uat.business_account_id);
+      const result = await vault.uat.refresh({ userId: uat.user_id, businessAccountId: uat.business_account_id, triggerBridge });
       console.log(`[UATRefresh] UAT refreshed, new expiry: ${result.expiresAt}`);
 
       const { error: alertErr3 } = await fireAndForgetInsert(supabase.from('system_alerts').insert({
