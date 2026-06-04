@@ -1,28 +1,32 @@
 // substrates/insights/index.js
-// Insights substrate: full pipeline for account insights and media insights.
+// Insights substrate: factory-creates worker → bounded IG API read.
 //
-// Owns: fetch → parse → normalize → persist for insights domain.
-// Does NOT own: retry logic, error classification, orchestration, credential resolution.
+// Owns: worker factory + transport bridge. Pure delegation plane.
+// Does NOT own: retry, error classification, orchestration, credential resolution.
+//
+// Worker: InsightsWorker — 2-step: media feed → insights batch.
+// Persist: routes to persistence substrate (called by parsing workers asynchronously).
 
-const transport = require('./transport');
+const InsightsWorker = require('./workers/insights');
 const persistence = require('../persistence');
 
 /**
  * Fetch raw data from Instagram API for insights domain.
- * Two-step: media feed → insights batch.
+ * Factory-creates an InsightsWorker and delegates the bounded call.
+ *
+ * @param {string} accountId
+ * @param {object} params — { since?, until? }
+ * @param {object} credentials — pre-resolved
+ * @returns {Promise<object>} raw transport response
  */
 async function fetch(accountId, params, credentials) {
-  const sevenDaysAgo = params.since || Math.floor((Date.now() - 7 * 24 * 3600000) / 1000);
-  const now = params.until || Math.floor(Date.now() / 1000);
-  const feedResult = await transport.fetchMediaInsightsBatch ?
-    null : transport.fetchMediaFeed(accountId, sevenDaysAgo, now, credentials);
-  if (!feedResult || !feedResult.success) return feedResult || { success: false };
-  const insights = await transport.fetchMediaInsightsBatch(feedResult.mediaList, credentials.pageToken);
-  return { success: true, insights, mediaList: feedResult.mediaList, _usagePct: feedResult._usagePct };
+  const worker = new InsightsWorker();
+  return worker.execute(accountId, params, credentials);
 }
 
 /**
  * Persist raw insights data to Supabase. Normalizes internally.
+ * Called by parsing workers asynchronously.
  */
 async function persist(accountId, rawData) {
   if (!rawData.insights || rawData.insights.length === 0) return { count: 0 };
