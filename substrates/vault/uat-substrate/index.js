@@ -3,30 +3,13 @@
 // Does NOT do I/O — workers do.
 //
 // Constitutional wiring:
-//   Every successful worker call emits a trigger event via trigger-bridge → ck → FSM.
+//   Every successful worker call emits a trigger event via signal-dispatch → trigger-bridge → ck → FSM.
 
 const StoreWorker = require('./workers/store-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
 const RefreshWorker = require('./workers/refresh-worker');
 const DetectWorker = require('./workers/detect-worker');
-
-/**
- * Helper: emit a CAPABILITY_EVALUATE trigger on success.
- * Substrate is the mutation plane — it owns the signal dispatch.
- * @param {{ triggerBridge?: object, businessAccountId?: string, userId?: string, source: string }} params
- */
-function _emitEvaluate({ triggerBridge, businessAccountId, userId, source }) {
-  if (!triggerBridge) return;
-  try {
-    triggerBridge.emitCapabilityEvaluate({
-      businessAccountId: businessAccountId || null,
-      userId: userId || null,
-      source,
-    });
-  } catch (emitErr) {
-    console.warn('⚠️ trigger-bridge emitCapabilityEvaluate failed:', emitErr.message);
-  }
-}
+const signalDispatch = require('../signal-dispatch');
 
 /**
  * Store a UAT credential row.
@@ -40,7 +23,12 @@ async function store(input) {
   const worker = new StoreWorker();
   const result = await worker.execute(workerInput);
   if (result.success) {
-    _emitEvaluate({ triggerBridge, businessAccountId: workerInput.businessAccountId, userId: workerInput.userId, source: 'vault.uat.store' });
+    signalDispatch.emitEvaluate({
+      triggerBridge,
+      businessAccountId: workerInput.businessAccountId,
+      userId: workerInput.userId,
+      source: 'vault.uat.store',
+    });
   }
   return result;
 }
@@ -55,7 +43,12 @@ async function retrieve({ triggerBridge, userId, businessAccountId }) {
   }
   const worker = new RetrieveWorker();
   const result = await worker.execute({ userId, businessAccountId });
-  _emitEvaluate({ triggerBridge, businessAccountId, userId, source: 'vault.uat.retrieve' });
+  signalDispatch.emitEvaluate({
+    triggerBridge,
+    businessAccountId,
+    userId,
+    source: 'vault.uat.retrieve',
+  });
   return result;
 }
 
@@ -69,12 +62,12 @@ async function refresh({ triggerBridge, ...input }) {
   }
   const worker = new RefreshWorker();
   const result = await worker.execute(input);
-  if (result.success && triggerBridge) {
-    try {
-      triggerBridge.emitTokenRefreshed({ userId: input.userId, businessAccountId: input.businessAccountId });
-    } catch (emitErr) {
-      console.warn('⚠️ trigger-bridge emitTokenRefreshed failed:', emitErr.message);
-    }
+  if (result.success) {
+    signalDispatch.emitTokenRefreshed({
+      triggerBridge,
+      businessAccountId: input.businessAccountId,
+      userId: input.userId,
+    });
   }
   return result;
 }
@@ -88,7 +81,12 @@ async function detect({ triggerBridge, businessAccountId, userId, token }) {
   const worker = new DetectWorker();
   const result = await worker.execute({ token });
   if (result && result.isValid) {
-    _emitEvaluate({ triggerBridge, businessAccountId, userId, source: 'vault.uat.detect' });
+    signalDispatch.emitEvaluate({
+      triggerBridge,
+      businessAccountId,
+      userId,
+      source: 'vault.uat.detect',
+    });
   }
   return result;
 }

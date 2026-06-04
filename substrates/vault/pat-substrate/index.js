@@ -7,30 +7,13 @@
 //   Worker    = executor plane (one bounded I/O call, no state)
 //
 // Constitutional wiring:
-//   Every successful worker call emits a trigger event via trigger-bridge → ck → FSM.
-//   The FSM transitions update the canonical capability verdict.
+//   Every successful worker call emits a trigger event via signal-dispatch → trigger-bridge → ck → FSM.
+//   signal-dispatch is the single source of truth for vault signal emission (substrates/vault/signal-dispatch.js).
 
 const ExchangeWorker = require('./workers/exchange-worker');
 const StoreWorker = require('./workers/store-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
-
-/**
- * Helper: emit a CAPABILITY_EVALUATE trigger on success.
- * Substrate is the mutation plane — it owns the signal dispatch.
- * @param {{ triggerBridge?: object, businessAccountId?: string, userId?: string, source: string }} params
- */
-function _emitEvaluate({ triggerBridge, businessAccountId, userId, source }) {
-  if (!triggerBridge) return;
-  try {
-    triggerBridge.emitCapabilityEvaluate({
-      businessAccountId: businessAccountId || null,
-      userId: userId || null,
-      source,
-    });
-  } catch (emitErr) {
-    console.warn('⚠️ trigger-bridge emitCapabilityEvaluate failed:', emitErr.message);
-  }
-}
+const signalDispatch = require('../signal-dispatch');
 
 /**
  * Exchange a user access token for a page access token + IG business account discovery.
@@ -44,9 +27,12 @@ async function exchange({ userAccessToken, triggerBridge }) {
   const worker = new ExchangeWorker();
   const result = await worker.execute({ userAccessToken });
 
-  // On success, the vault state has changed — emit CAPABILITY_EVALUATE so FSM re-evaluates.
   if (result.success) {
-    _emitEvaluate({ triggerBridge, businessAccountId: result.igBusinessAccountId, source: 'vault.pat.exchange' });
+    signalDispatch.emitEvaluate({
+      triggerBridge,
+      businessAccountId: result.igBusinessAccountId,
+      source: 'vault.pat.exchange',
+    });
   }
   return result;
 }
@@ -64,17 +50,12 @@ async function store(input) {
   const worker = new StoreWorker();
   const result = await worker.execute(workerInput);
 
-  // On success, emit NEW_ACCOUNT_CONNECTED so the capability FSM can evaluate.
-  // Substrate is the mutation plane — it owns the signal dispatch.
-  if (result.success && triggerBridge) {
-    try {
-      triggerBridge.emitNewAccountConnected({
-        businessAccountId: result.businessAccountId || businessAccountId,
-        userId: workerInput.userId || userId_,
-      });
-    } catch (emitErr) {
-      console.warn('⚠️ trigger-bridge emitNewAccountConnected failed:', emitErr.message);
-    }
+  if (result.success) {
+    signalDispatch.emitNewAccountConnected({
+      triggerBridge,
+      businessAccountId: result.businessAccountId || businessAccountId,
+      userId: workerInput.userId || userId_,
+    });
   }
   return result;
 }
@@ -91,7 +72,12 @@ async function retrieve({ triggerBridge, userId, businessAccountId }) {
   }
   const worker = new RetrieveWorker();
   const result = await worker.execute({ userId, businessAccountId });
-  _emitEvaluate({ triggerBridge, businessAccountId, userId, source: 'vault.pat.retrieve' });
+  signalDispatch.emitEvaluate({
+    triggerBridge,
+    businessAccountId,
+    userId,
+    source: 'vault.pat.retrieve',
+  });
   return result;
 }
 
