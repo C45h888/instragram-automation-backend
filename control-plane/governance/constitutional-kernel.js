@@ -184,7 +184,10 @@ const DOMAIN_EVENT_MAP = {
   // Publishing domain
   PUBLISHING_DATA_AVAILABLE: 'publishing',
   READ_RESULT_AVAILABLE: 'publishing',
+  PUBLISHING_OBSERVATION: 'publishing',
   EMISSION_OBSERVATION: 'publishing',
+  RETRY_PUBLISH: 'publishing',
+  PUBLISH_FAILURE: 'publishing',
   DB_SCAN_EMITTED: 'publishing',
 
   // Scheduling domain

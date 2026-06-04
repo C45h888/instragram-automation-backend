@@ -1,12 +1,13 @@
 // control-plane/governance/domains/publishing-fsm.js
 // Publishing Domain FSM: federated state machine governing publishing lifecycle.
 //
-// Owns: deterministic trigger intake (via cognition scanner) → governed read → evaluation → emission,
-//        backpressure detection, emission health.
+// Owns: deterministic trigger intake (via cognition scanner) → governed read →
+//        content-type classification → substrate dispatch → observation,
+//        retry delegation to engagement-fsm via CK membrane.
 //
-// Does NOT own: evaluation policy (publishing policy), dedup logic,
-//               intent construction, emission mechanics — those are
-//               implementation concerns of the evaluation/emission modules.
+// Does NOT own: evaluation policy (done by publishing policy in runtime/evaluation.js),
+//               substrate execution, retry cadence (engagement-fsm domain),
+//               credential resolution, IG API mechanics.
 //
 // Reports to: constitutional kernel for transition validation + global observability.
 //
@@ -19,15 +20,18 @@
 //   1. Cognition scanner detects Realtime UPDATE → dispatches PUBLISHING_DATA_AVAILABLE
 //   2. FSM transitions IDLE → FETCHING, emits GOVERNED_READ actions
 //   3. GOVERNED_READ → CK → persist-telemetry-fsm → reading-substrate → post-queue-worker
-//   4. post-queue-worker queries Supabase for pending post_queue + approved scheduled_posts
-//   5. Result returns as READ_RESULT_AVAILABLE → FSM transitions FETCHING → EVALUATING
-//   6. EVALUATE action → emission-orchestrator → evaluator → emitter
-//   7. EMISSION_OBSERVATION → IDLE → cognition scanner flushes next batch
+//   4. Result returns as READ_RESULT_AVAILABLE → FSM transitions FETCHING → EVALUATING
+//   5. EVALUATING classifies content type → EXECUTING with EXECUTE_CONTENT or EXECUTE_ENGAGEMENT
+//   6. Orchestrator executes via bounded substrate, signals back PUBLISHING_OBSERVATION
+//   7. PUBLISHING_OBSERVATION → IDLE
 //
-// Local states:
+// States:
 //   IDLE       — waiting for cognition-scanner trigger
-//   FETCHING   — governed DB read in flight (reading post_queue + scheduled_posts)
-//   EVALUATING — evaluating fetched events against publishing policy
+//   FETCHING   — governed DB read in flight
+//   EVALUATING — classifying content type, dispatching to orchestrator
+//   EXECUTING  — bounded substrate execution in flight (worker → IG API)
+
+const crypto = require('crypto');
 
 // Lazy import to avoid circular dependency
 let _observability = null;
@@ -38,8 +42,6 @@ function _obs() {
   }
   return _observability;
 }
-
-const crypto = require('crypto');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
@@ -53,13 +55,46 @@ const STATE_REGISTRY = {
     description: 'Governed DB read in flight — pulling post_queue + scheduled_posts',
   },
   EVALUATING: {
-    description: 'Running evaluation pipeline against publishing policy',
+    description: 'Classifying content type — dispatching substrate action',
+  },
+  EXECUTING: {
+    description: 'Bounded substrate execution in flight — calling IG Graph API',
   },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. Domain Transition Map
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Classify a row from the read result into (domain, worker, actionType).
+ * post_queue.action_type determines engagement vs content.
+ * scheduled_posts always map to content.
+ */
+function _classify(row) {
+  const { table, record } = row;
+  const actionType = record?.action_type;
+  const mediaType = record?.media_type;
+
+  // scheduled_posts → content (posts worker)
+  if (table === 'scheduled_posts') {
+    return { domain: 'content', worker: 'posts', actionType: 'publish_post' };
+  }
+
+  // post_queue → classify by action_type
+  if (actionType === 'reply_comment') {
+    return { domain: 'engagement', worker: 'comments', actionType };
+  }
+  if (actionType === 'reply_dm' || actionType === 'send_dm') {
+    return { domain: 'engagement', worker: 'messages', actionType };
+  }
+  if (actionType === 'publish_post' || actionType === 'repost_ugc') {
+    return { domain: 'content', worker: 'posts', actionType };
+  }
+
+  // fallback: treat as content
+  return { domain: 'content', worker: 'posts', actionType: actionType || 'publish_post' };
+}
 
 const TRANSITION_MAP = {
   // ── Cognition scanner triggered → begin governed read ───────────────────
@@ -77,8 +112,6 @@ const TRANSITION_MAP = {
     buildActions: (event) => {
       const { accountId } = event;
       const readId = crypto.randomUUID();
-      // Issue two governed reads: post_queue (pending/failed) + scheduled_posts (approved)
-      // persist-telemetry-fsm gates these through DB_READ_REQUESTED
       return [
         {
           type: 'GOVERNED_READ',
@@ -98,9 +131,9 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Governed read completed → begin evaluation ─────────────────────────
+  // ── Governed read completed → classify content type → dispatch ─────────
   READ_RESULT_AVAILABLE: {
-    target: 'EVALUATING',
+    target: 'EXECUTING',
     guard: (event) => {
       if (_localState !== 'FETCHING') {
         return { allowed: false, reason: `Cannot evaluate from ${_localState}` };
@@ -112,38 +145,110 @@ const TRANSITION_MAP = {
     },
     buildActions: (event) => {
       const { accountId, readDomain, data } = event;
-      // Transform DB rows into evaluator-compatible { table, record } events.
-      // readDomain tells us which table the data came from.
       const table = readDomain === 'db.scheduled-posts' ? 'scheduled_posts' : 'post_queue';
-      const events = (data && Array.isArray(data))
-        ? data.map(record => ({ table, record }))
-        : [];
+      const rows = data && Array.isArray(data) ? data : [];
 
-      return [{
-        type: 'EVALUATE',
-        accountId,
-        events,
-      }];
+      // Classify each row into domain + worker + actionType
+      const contentActions = [];
+      const engagementActions = [];
+
+      for (const record of rows) {
+        const classification = _classify({ table, record });
+
+        if (classification.domain === 'engagement') {
+          engagementActions.push({ ...classification, record, accountId });
+        } else {
+          contentActions.push({ ...classification, record, accountId });
+        }
+      }
+
+      const actions = [];
+
+      if (contentActions.length > 0) {
+        actions.push({
+          type: 'EXECUTE_CONTENT',
+          accountId,
+          items: contentActions.map(a => ({
+            worker: a.worker,
+            actionType: a.actionType,
+            record: a.record,
+          })),
+        });
+      }
+
+      if (engagementActions.length > 0) {
+        actions.push({
+          type: 'EXECUTE_ENGAGEMENT',
+          accountId,
+          items: engagementActions.map(a => ({
+            worker: a.worker,
+            actionType: a.actionType,
+            record: a.record,
+          })),
+        });
+      }
+
+      return actions;
     },
   },
 
-  // ── Emission result observed ────────────────────────────────────────────
-  EMISSION_OBSERVATION: {
+  // ── Substrate execution completed → idle ────────────────────────────────
+  PUBLISHING_OBSERVATION: {
     target: 'IDLE',
     guard: (event) => {
-      if (_localState !== 'EVALUATING') {
-        return { allowed: false, reason: `Cannot complete emission from ${_localState}` };
+      if (_localState !== 'EXECUTING') {
+        return { allowed: false, reason: `Cannot observe publishing from ${_localState}` };
       }
       return { allowed: true };
     },
     buildActions: (event) => {
       if (event.status === 'error') {
-        return [
-          { type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE', reason: event.metadata?.reason || 'Emission failed' },
-        ];
+        return [{
+          type: 'LOG_DEGRADED',
+          substate: 'PUBLISH_FAILURE',
+          reason: event.metadata?.reason || 'Publishing failed',
+        }];
       }
-      // Return to IDLE — cognition-scanner will flush next batch on EMISSION_OBSERVATION
       return [];
+    },
+  },
+
+  // ── Retry from engagement-fsm ───────────────────────────────────────────
+  RETRY_PUBLISH: {
+    target: 'EXECUTING',
+    guard: (event) => {
+      if (_localState !== 'EXECUTING' && _localState !== 'IDLE') {
+        return { allowed: false, reason: `Cannot retry publish from ${_localState}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      // Re-issue the same execute action with the original classification
+      const { accountId, domain, actionType, worker, record } = event;
+      const actionTypeKey = domain === 'engagement' ? 'EXECUTE_ENGAGEMENT' : 'EXECUTE_CONTENT';
+      return [{
+        type: actionTypeKey,
+        accountId,
+        items: [{ worker, actionType, record }],
+      }];
+    },
+  },
+
+  // ── Permanent failure from engagement-fsm ───────────────────────────────
+  PUBLISH_FAILURE: {
+    target: 'IDLE',
+    guard: (event) => {
+      if (_localState !== 'EXECUTING') {
+        return { allowed: false, reason: `Cannot fail publish from ${_localState}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      return [{
+        type: 'LOG_DEGRADED',
+        substate: 'RETRY_EXHAUSTED',
+        reason: event.reason || 'Publishing failed permanently',
+      }];
     },
   },
 };
@@ -154,13 +259,9 @@ const TRANSITION_MAP = {
 
 let _localState = 'IDLE';
 let _lastTransitionedAt = null;
-let _pendingReads = new Map(); // readId → { domain, accountId } — tracks in-flight governed reads
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
-//
-// Domain FSMs emit state transitions through the observability plane.
-// Lineage authority is held by the lineage worker (Phase 2).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function dispatch(event, ctx) {
@@ -197,18 +298,10 @@ function dispatch(event, ctx) {
     }
   }
 
-  // ── Track in-flight governed reads ──────────────────────────────────────
-  if (event.type === 'PUBLISHING_DATA_AVAILABLE') {
-    // Reads will be tracked when GOVERNED_READ actions are processed
-  }
-  if (event.type === 'READ_RESULT_AVAILABLE' && event.readId) {
-    _pendingReads.delete(event.readId);
-  }
-
   _localState = target;
   _lastTransitionedAt = Date.now();
 
-  // Emit observability transition for domain FSM state change
+  // Emit observability transition
   try {
     const obs = _obs();
     if (obs) {
@@ -237,15 +330,9 @@ function dispatch(event, ctx) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. Initialization — called by constitutional kernel on boot with rehydrated state
+// 5. Initialization
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Initialize the domain FSM with rehydrated state from lineage.
- * Called by the constitutional kernel after rehydrate() completes on boot.
- *
- * @param {string} rehydratedState — the domain state to restore (e.g., 'IDLE', 'FETCHING', 'EVALUATING')
- */
 function init(rehydratedState) {
   if (rehydratedState && typeof rehydratedState === 'string') {
     _localState = rehydratedState;
@@ -255,26 +342,10 @@ function init(rehydratedState) {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 6. Messaging Window Policy
-//
-// Pure policy function: computes 24h customer messaging window from last customer
-// message timestamp. Called by governance-layer callers to derive window state
-// from raw timestamps stored by the persistence substrate.
-//
-// Policy constants:
-//   - Window duration: 24 hours
-//   - When window is open: customer messaged within the last 24 hours
-//   - Template required: when window is closed (cannot freely message)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const MESSAGING_WINDOW_HOURS = 24;
 
-/**
- * Computes the 24h customer messaging window state from the last customer
- * message timestamp.
- *
- * @param {string|null} lastCustomerMessageAt - ISO8601 timestamp of customer's last message
- * @returns {{ is_open: boolean, hours_remaining: number|null, window_expires_at: string|null, can_send_messages: boolean, requires_template: boolean }}
- */
 function computeMessagingWindow(lastCustomerMessageAt) {
   if (!lastCustomerMessageAt) {
     return {
@@ -330,11 +401,11 @@ function getState() {
 }
 
 function exportState() {
-  return { state: _localState, pendingReads: _pendingReads.size };
+  return { state: _localState };
 }
 
 function getHealth() {
-  return { ok: _localState !== 'EVALUATING', signals: { state: _localState, pendingReads: _pendingReads.size } };
+  return { ok: _localState !== 'EXECUTING', signals: { state: _localState } };
 }
 
 function getLastTransitionedAt() {

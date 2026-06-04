@@ -3,10 +3,11 @@
 //
 // Owns: routing EVALUATE actions downward through the
 //        evaluation → mutation → emission pipeline,
-//        forwarding EMISSION_OBSERVATION upward,
+//        executing EXECUTE_CONTENT / EXECUTE_ENGAGEMENT via bounded substrates,
+//        forwarding PUBLISHING_OBSERVATION upward,
 //        bridging dedup FSM governance with async evaluation.
 // Does NOT own: evaluation policy, publishing rules, intent construction,
-//               dedup logic, emission mechanics.
+//               dedup logic, emission mechanics, retry policy, circuit breaker.
 //
 // Constitutional purity: this orchestrator mechanically sequences
 // evaluator → emitter without understanding what evaluation means.
@@ -21,6 +22,9 @@ const evaluator = require('../runtime/evaluation');
 const emitter = require('../runtime/emission');
 const dedupSubstrate = require('../../substrates/dedup-substrate');
 const mutationSubstrate = require('../mutation-substrate');
+const contentSubstrate = require('../../substrates/publishing/content');
+const engagementSubstrate = require('../../substrates/publishing/engagement');
+const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
 
 const MUTATION_POLICY = {
   scheduled_posts: {
@@ -59,18 +63,12 @@ function _validateApplyMutationAction(action) {
  * Execute the evaluation → mutation → emission pipeline for a single account.
  * Pure mechanical sequencing — no policy interpretation.
  * After execution, reports EMISSION_OBSERVATION back to governance.
- *
- * @param {object} governance — governance kernel module
- * @param {string} accountId
- * @param {Array} events
  */
 async function executeEvaluationPipeline(governance, accountId, events) {
   const startTime = Date.now();
 
-  // Observability: evaluation pipeline state transition
   _emitTransition(accountId, 'IDLE', 'RUNNING');
 
-  // ── Dedup FSM: open batch governance window ────────────────────────────
   governance.dispatch({
     type: 'DEDUP_BATCH_BEGIN',
     accountId,
@@ -80,7 +78,6 @@ async function executeEvaluationPipeline(governance, accountId, events) {
   try {
     const result = await evaluator.evaluate(accountId, events);
 
-    // ── Dedup FSM: report mark counts to governance ──────────────────────
     const { dedup: dedupMeta } = result;
     if (dedupMeta) {
       for (let i = 0; i < dedupMeta.marks; i++) {
@@ -101,10 +98,8 @@ async function executeEvaluationPipeline(governance, accountId, events) {
       }
     }
 
-    // ── Mechanical: clear dedup identity cache after governance dispatch ──
     dedupSubstrate.clearTick();
 
-    // ── Dedup FSM: close batch governance window ─────────────────────────
     governance.dispatch({
       type: 'DEDUP_BATCH_END',
       accountId,
@@ -132,19 +127,13 @@ async function executeEvaluationPipeline(governance, accountId, events) {
       },
     });
 
-    // Observability: evaluation pipeline complete
     _emitTransition(accountId, 'RUNNING', pipelineState);
   } catch (err) {
     console.error(`[emission-orchestrator] Evaluation pipeline error for ${accountId}:`, err.message);
 
-    // ── Dedup FSM: close batch even on error (graceful degradation) ──────
     dedupSubstrate.clearTick();
-    governance.dispatch({
-      type: 'DEDUP_BATCH_END',
-      accountId,
-    });
+    governance.dispatch({ type: 'DEDUP_BATCH_END', accountId });
 
-    // Observability: evaluation pipeline error
     _emitTransition(accountId, 'RUNNING', 'ERROR');
     governance.dispatch({
       type: 'EMISSION_OBSERVATION',
@@ -159,6 +148,12 @@ async function executeEvaluationPipeline(governance, accountId, events) {
     });
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Bounded publish execution — thin delegate to substrate
+// Substrate owns: worker factory, rate limiter, error→CK signal routing.
+// Orchestrator owns: credential resolution, mechanical delegation.
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function _emitTransition(accountId, previousState, nextState) {
   try {
@@ -180,8 +175,6 @@ function _emitTransition(accountId, previousState, nextState) {
 /**
  * Wire this orchestrator to the governance kernel.
  * Registers per-action-type subscribers for emission actions.
- *
- * @param {object} governance — governance kernel module
  */
 function wire(governance) {
   governance.subscribeAction('EVALUATE', (action) => {
@@ -189,17 +182,12 @@ function wire(governance) {
   });
 
   // ── GOVERNED_READ: publishing-fsm → CK → persist-telemetry-fsm → reading-substrate ──
-  // Issued by publishing-fsm on PUBLISHING_DATA_AVAILABLE (FETCHING state).
-  // Dispatches DB_READ_REQUESTED through governance. persist-telemetry-fsm gates
-  // the read, reading-substrate delegates to post-queue-worker, result returns
-  // as READ_RESULT_AVAILABLE back to publishing-fsm.
   governance.subscribeAction('GOVERNED_READ', (action) => {
     const { readDomain, accountId, readId, params } = action;
     if (!readDomain || !accountId || !readId) {
       console.warn('[emission-orchestrator] GOVERNED_READ rejected: missing required fields', action);
       return;
     }
-    // Route through CK → persist-telemetry-fsm gate → reading-substrate → worker
     governance.dispatch({
       type: 'DB_READ_REQUESTED',
       readDomain,
@@ -209,9 +197,39 @@ function wire(governance) {
     });
   });
 
+  // ── EXECUTE_CONTENT: publishing-fsm → bounded content substrate → IG API ──
+  governance.subscribeAction('EXECUTE_CONTENT', async (action) => {
+    const { accountId, items } = action;
+    if (!accountId || !items || !Array.isArray(items)) {
+      console.warn('[emission-orchestrator] EXECUTE_CONTENT rejected: missing fields', action);
+      return;
+    }
+    try {
+      const credentials = await resolveAccountCredentials(accountId);
+      await contentSubstrate.execute(accountId, items, governance, credentials);
+    } catch (err) {
+      console.error('[emission-orchestrator] EXECUTE_CONTENT error:', err.message);
+      governance.dispatch({ type: 'PUBLISH_FAILURE', accountId, reason: err.message });
+    }
+  });
+
+  // ── EXECUTE_ENGAGEMENT: publishing-fsm → bounded engagement substrate → IG API ──
+  governance.subscribeAction('EXECUTE_ENGAGEMENT', async (action) => {
+    const { accountId, items } = action;
+    if (!accountId || !items || !Array.isArray(items)) {
+      console.warn('[emission-orchestrator] EXECUTE_ENGAGEMENT rejected: missing fields', action);
+      return;
+    }
+    try {
+      const credentials = await resolveAccountCredentials(accountId);
+      await engagementSubstrate.execute(accountId, items, governance, credentials);
+    } catch (err) {
+      console.error('[emission-orchestrator] EXECUTE_ENGAGEMENT error:', err.message);
+      governance.dispatch({ type: 'PUBLISH_FAILURE', accountId, reason: err.message });
+    }
+  });
+
   // ── APPLY_MUTATION: DB scan emitted → mutation substrate ──────────────────
-  // Handles DB_SCAN_EMITTED transition's buildActions output.
-  // Calls mutation-substrate with idempotent .eq() guards.
   governance.subscribeAction('APPLY_MUTATION', async (action) => {
     const { table, recordId, updates, expectedPriorStatus, reason } = action;
     const validation = _validateApplyMutationAction(action);
