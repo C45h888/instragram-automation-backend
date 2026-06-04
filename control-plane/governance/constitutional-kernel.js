@@ -215,6 +215,9 @@ const DOMAIN_EVENT_MAP = {
   CAPABILITY_PARTIAL: 'graph-capability',
   CAPABILITY_FAILED: 'graph-capability',
   CAPABILITY_REEVALUATE: 'graph-capability',
+  NEW_ACCOUNT_CONNECTED: 'graph-capability',
+  TOKEN_REFRESHED: 'graph-capability',
+  REPEATED_GRAPH_FAILURE: 'graph-capability',
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',
