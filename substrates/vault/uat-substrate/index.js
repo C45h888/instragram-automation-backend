@@ -1,6 +1,9 @@
 // substrates/vault/uat-substrate/index.js
 // UAT substrate façade: factory-creates workers, owns pre-flight + signal dispatch.
 // Does NOT do I/O — workers do.
+//
+// Constitutional wiring:
+//   Every successful worker call emits a trigger event via trigger-bridge → ck → FSM.
 
 const StoreWorker = require('./workers/store-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
@@ -8,27 +11,52 @@ const RefreshWorker = require('./workers/refresh-worker');
 const DetectWorker = require('./workers/detect-worker');
 
 /**
+ * Helper: emit a CAPABILITY_EVALUATE trigger on success.
+ * Substrate is the mutation plane — it owns the signal dispatch.
+ * @param {{ triggerBridge?: object, businessAccountId?: string, userId?: string, source: string }} params
+ */
+function _emitEvaluate({ triggerBridge, businessAccountId, userId, source }) {
+  if (!triggerBridge) return;
+  try {
+    triggerBridge.emitCapabilityEvaluate({
+      businessAccountId: businessAccountId || null,
+      userId: userId || null,
+      source,
+    });
+  } catch (emitErr) {
+    console.warn('⚠️ trigger-bridge emitCapabilityEvaluate failed:', emitErr.message);
+  }
+}
+
+/**
  * Store a UAT credential row.
- * @param {{ userId: string, businessAccountId: string, userAccessToken: string, scope?: string[], expiresAt?: string|null, dataAccessExpiresAt?: string|null }} input
+ * @param {{ userId: string, businessAccountId: string, userAccessToken: string, scope?: string[], expiresAt?: string|null, dataAccessExpiresAt?: string|null, triggerBridge?: object }} input
  */
 async function store(input) {
-  if (!input.userId || !input.businessAccountId || !input.userAccessToken) {
+  const { triggerBridge, ...workerInput } = input;
+  if (!workerInput.userId || !workerInput.businessAccountId || !workerInput.userAccessToken) {
     return { success: false, error: 'userId, businessAccountId, userAccessToken are required' };
   }
   const worker = new StoreWorker();
-  return worker.execute(input);
+  const result = await worker.execute(workerInput);
+  if (result.success) {
+    _emitEvaluate({ triggerBridge, businessAccountId: workerInput.businessAccountId, userId: workerInput.userId, source: 'vault.uat.store' });
+  }
+  return result;
 }
 
 /**
  * Retrieve a UAT (decrypt + expiry check). Throws on failure.
- * @param {{ userId: string, businessAccountId: string }} input
+ * @param {{ userId: string, businessAccountId: string, triggerBridge?: object }} input
  */
-async function retrieve({ userId, businessAccountId }) {
+async function retrieve({ triggerBridge, userId, businessAccountId }) {
   if (!userId || !businessAccountId) {
     throw new Error('userId and businessAccountId are required');
   }
   const worker = new RetrieveWorker();
-  return worker.execute({ userId, businessAccountId });
+  const result = await worker.execute({ userId, businessAccountId });
+  _emitEvaluate({ triggerBridge, businessAccountId, userId, source: 'vault.uat.retrieve' });
+  return result;
 }
 
 /**
@@ -53,12 +81,16 @@ async function refresh({ triggerBridge, ...input }) {
 
 /**
  * Detect a UAT/PAT token type via /debug_token. Returns null on failure.
- * @param {{ token: string }} input
+ * @param {{ token: string, triggerBridge?: object, businessAccountId?: string, userId?: string }} input
  */
-async function detect({ token }) {
+async function detect({ triggerBridge, businessAccountId, userId, token }) {
   if (!token) return null;
   const worker = new DetectWorker();
-  return worker.execute({ token });
+  const result = await worker.execute({ token });
+  if (result && result.isValid) {
+    _emitEvaluate({ triggerBridge, businessAccountId, userId, source: 'vault.uat.detect' });
+  }
+  return result;
 }
 
 module.exports = { store, retrieve, refresh, detect };

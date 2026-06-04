@@ -1,20 +1,42 @@
 // substrates/vault/scope-substrate/index.js
 // Scope substrate façade: factory-creates workers, owns pre-flight.
 // Does NOT do I/O — workers do.
+//
+// Constitutional wiring:
+//   On success, emits a CAPABILITY_EVALUATE trigger via trigger-bridge → ck → FSM.
 
 const DetectDynamicWorker = require('./workers/detect-dynamic-worker');
 
 /**
+ * Helper: emit a CAPABILITY_EVALUATE trigger on success.
+ * @param {{ triggerBridge?: object, businessAccountId?: string, userId?: string, source: string }} params
+ */
+function _emitEvaluate({ triggerBridge, businessAccountId, userId, source }) {
+  if (!triggerBridge) return;
+  try {
+    triggerBridge.emitCapabilityEvaluate({
+      businessAccountId: businessAccountId || null,
+      userId: userId || null,
+      source,
+    });
+  } catch (emitErr) {
+    console.warn('⚠️ trigger-bridge emitCapabilityEvaluate failed:', emitErr.message);
+  }
+}
+
+/**
  * Detect live scopes for a token via /debug_token with 7-day DB cache.
- * @param {{ token: string, supabase?: object, credentialId?: string|null }} input
+ * @param {{ token: string, supabase?: object, credentialId?: string|null, triggerBridge?: object, businessAccountId?: string, userId?: string }} input
  * @returns {Promise<string[]>}
  */
-async function detectDynamic({ token, supabase, credentialId = null }) {
+async function detectDynamic({ triggerBridge, businessAccountId, userId, token, supabase, credentialId = null }) {
   if (!token) {
     throw new Error('token is required');
   }
   const worker = new DetectDynamicWorker();
-  return worker.execute({ token, supabase, credentialId });
+  const result = await worker.execute({ token, supabase, credentialId });
+  _emitEvaluate({ triggerBridge, businessAccountId, userId, source: 'vault.scope.detectDynamic' });
+  return result;
 }
 
 module.exports = { detectDynamic };
