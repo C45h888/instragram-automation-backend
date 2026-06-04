@@ -64,6 +64,7 @@ const MEMBRANE_AUTHORITY_MAP = {
   'telemetry-worker':    ['telemetry'],
   'reconciliation-fsm':  ['reconciliation'],
   'scheduling-fsm':      ['scheduling'],
+  'graph-capability-fsm': ['graph-capability'],
   'governance-kernel':   ['governance', 'execution', 'acquisition', 'publishing',
                           'scheduling', 'telemetry', 'reconciliation', 'projection'],
 };
@@ -206,6 +207,14 @@ const DOMAIN_EVENT_MAP = {
   RECONCILIATION_TICK: 'reconciliation',
   RECONCILIATION_RESULTS_RECEIVED: 'reconciliation',
   RECONCILIATION_CYCLE_COMPLETE: 'reconciliation',
+
+  // Graph Capability domain — capability validation + degradation lifecycle
+  CAPABILITY_EVALUATE: 'graph-capability',
+  CAPABILITY_OBSERVATION: 'graph-capability',
+  CAPABILITY_OK: 'graph-capability',
+  CAPABILITY_PARTIAL: 'graph-capability',
+  CAPABILITY_FAILED: 'graph-capability',
+  CAPABILITY_REEVALUATE: 'graph-capability',
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',

@@ -1,23 +1,32 @@
 // substrates/content/index.js
-// Content substrate: full pipeline for business media posts.
+// Content substrate: factory-creates worker → bounded IG API read.
 //
-// Owns: fetch → parse → normalize → persist for content domain.
-// Does NOT own: retry logic, error classification, orchestration, credential resolution.
+// Owns: worker factory + transport bridge. Pure delegation plane.
+// Does NOT own: retry, error classification, orchestration, credential resolution.
+//
+// Worker: PostsWorker — one bounded fetchPosts() call.
+// Persist: routes to persistence substrate (called by parsing workers asynchronously).
 
-const transport = require('./transport');
+const PostsWorker = require('./workers/posts');
 const persistence = require('../persistence');
 
 /**
  * Fetch raw data from Instagram API for content domain.
- * Pure transport — no parsing, no persistence.
+ * Factory-creates a PostsWorker and delegates the bounded call.
+ *
+ * @param {string} accountId
+ * @param {object} params — { limit?, since?, until?, maxPosts? }
+ * @param {object} credentials — pre-resolved { igUserId, pageToken, userId }
+ * @returns {Promise<object>} raw transport response
  */
 async function fetch(accountId, params, credentials) {
-  return transport.fetchPosts(accountId, params.limit || 50, credentials);
+  const worker = new PostsWorker();
+  return worker.execute(accountId, params, credentials);
 }
 
 /**
  * Persist raw business post data to Supabase.
- * Handles normalization internally.
+ * Called by parsing workers asynchronously — not by the retry worker.
  */
 async function persist(accountId, rawData) {
   if (!rawData.posts || rawData.posts.length === 0) return { count: 0 };
