@@ -1,4 +1,4 @@
-// control-plane/governance/domains/engagement-fsm.js
+// retry-cadence-kernel/fsm.js
 // Engagement Domain FSM: federated state machine governing engagement lifecycle.
 //
 // Owns: circuit breaker lifecycle (OPEN/COOLING/CLOSED),
@@ -33,13 +33,13 @@
 let _observability = null;
 function _obs() {
   if (!_observability) {
-    try { _observability = require('../../observability/emitters/transition-emitter'); }
+    try { _observability = require('../control-plane/observability/emitters/transition-emitter'); }
     catch (_) { _observability = null; }
   }
   return _observability;
 }
 
-const rateLimiter = require('../../../substrates/rate-limiter');
+const rateLimiter = require('../substrates/rate-limiter');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 0. Governance Policy Constants — domain-owned thresholds
@@ -363,7 +363,7 @@ const TRANSITION_MAP = {
       }
 
       // Delegate to retry-cadence — async, own governance reference
-      const retryCadence = require('../../../substrates/retry-cadence');
+      const retryCadence = require('./index');
       retryCadence.dispatch(domain, accountId, intentId, params);
 
       return [];

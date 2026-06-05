@@ -166,7 +166,14 @@ function backoffMs(retryCount) {
 let _clearAccountsCacheFn = null;
 function _setClearAccountsCache(fn) { _clearAccountsCacheFn = fn; }
 function clearAccountsCacheAndQuota() {
-  if (_clearAccountsCacheFn) _clearAccountsCacheFn();
+  if (_clearAccountsCacheFn) {
+    _clearAccountsCacheFn();
+    return;
+  }
+  // Fallback: route through reading kernel public API
+  try {
+    require('./db/reading').invalidateCache('db.accounts');
+  } catch (_) {}
 }
 
 module.exports = {
@@ -178,4 +185,5 @@ module.exports = {
   handleFetchError,
   backoffMs,
   _setClearAccountsCache,
+  clearAccountsCacheAndQuota,
 };

@@ -30,17 +30,18 @@ const transitionWriters = require('./telemetry-workers/transition-writers');
 const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
 const parsing = require('../substrates/parsing');
-const retryCadence = require('../substrates/retry-cadence');
+const retryCadence = require('../retry-cadence-kernel/index');
 const dbWriters = require('../substrates/db/writers');
 const dbReaders = require('../substrates/db/readers');
 const cognitionScanner = require('../substrates/db/cognition-scanner');
+const orphanMessageRepair = require('../substrates/reconciliation/orphan-message-repair');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('../acquisition-kernel/fsm');
 const publishingFsm = require('../publishing-kernel/fsm');
 const schedulingFsm = require('./governance/domains/scheduling-fsm');
 const dedupFsm = require('./governance/domains/dedup-fsm');
-const engagementFsm = require('./governance/domains/engagement-fsm');
+const engagementFsm = require('../retry-cadence-kernel/fsm');
 const reconciliationFsm = require('../reconciliation-kernel/fsm');
 const telemetryCoordinationFsm = require('./governance/domains/telemetry-coordination-fsm');
 const persistTelemetryFsm = require('./governance/domains/persist-telemetry-fsm');
@@ -125,6 +126,10 @@ async function startAllWorkers() {
 
   // Wire DB readers substrate to CK — emit DB_READ_OBSERVED on every read
   dbReaders.setGovernance(constitutional);
+
+  // Start orphan message repair — subscribes to DB_WRITE_COMPLETE on instagram_dm_messages
+  // Runs async, idempotent, non-blocking.
+  orphanMessageRepair.start(constitutional);
 
   // Rehydrate CK from the worker-populated ledger.
   // Prior entries from a previous process lifetime are now available.

@@ -14,7 +14,7 @@
 const { getRedisClient } = require('../config/redis');
 const substrateRegistry = require('./substrate-registry');
 const retryWorker = require('./retry-worker');
-const persistence = require('../substrates/persistence');
+const { resolveAccountCredentials } = require('../helpers/agent-helpers');
 const syncSubstrate = require('../substrates/sync-substrate');
 const retrySubstrate = require('../substrates/retry');
 const rateLimiter = require('../substrates/rate-limiter');
@@ -45,11 +45,12 @@ async function executeAcquisition(gov, accountId, domain, intentId, params) {
   // retry-worker handles error classification, engagement signals, telemetry.
   const wiredRouting = {
     fetch: async (acctId, execParams) => {
-      const creds = await persistence.resolveAccountCredentials(acctId);
+      const creds = await resolveAccountCredentials(acctId);
       return substrate.fetch(acctId, execParams, creds);
     },
     persist: async (acctId, rawData, execParams) => {
-      return substrate.persist(acctId, rawData, execParams);
+      // Pipe governance through so hydrators can use governedRead
+      return substrate.persist(acctId, rawData, { ...execParams, _governance: gov });
     },
   };
 

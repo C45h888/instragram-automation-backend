@@ -14,11 +14,11 @@
 //   - Media feed step fails → retry whole pipeline
 //   - Insights batch step fails → retry from batch step only
 
-const retry = require('../../retry');
+const retry = require('../../substrates/retry');
 const { getPolicy } = require('../policy');
-const insightsTransport = require('../../insights/transport');
-const { resolveAccountCredentials } = require('../../../helpers/agent-helpers');
-const parsing = require('../../parsing');
+const insightsTransport = require('../../acquisition-kernel/substrates/insights/transport');
+const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
+const parsing = require('../../substrates/parsing');
 
 /**
  * Schedule a retry for the insights domain.

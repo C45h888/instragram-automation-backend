@@ -14,6 +14,8 @@ const transport = require('./transport');
 const { getRecentMedia } = require('../../../substrates/db/readers');
 const { normalizeComment, transformMessage } = require('./normalizer');
 const dispatchWrite = require('../../../substrates/db/writers').dispatchWrite;
+const conversationHydrator = require('./hydrators/conversation-hydrator');
+const mediaHydrator = require('./hydrators/media-hydrator');
 
 /**
  * Fetch raw data from Instagram API for engagement domain.
@@ -82,11 +84,40 @@ async function fetch(accountId, params, credentials) {
 async function persist(accountId, rawData, extra = {}) {
   if (rawData.batches) {
     // Comments from media batches: { batches: [{ mediaId, comments }] }
+    const governance = extra._governance;
+
+    // Phase 3B: hydrate Instagram media IDs → DB UUIDs BEFORE normalization
+    const mediaIds = [...new Set(rawData.batches.map(b => b.mediaId).filter(Boolean))];
+    let mediaUUIDMap = new Map(); // igId → uuid
+
+    if (governance && mediaIds.length > 0) {
+      const { resolved, missing } = await mediaHydrator.hydrate(accountId, mediaIds, governance);
+      mediaUUIDMap = resolved;
+
+      // Create stubs for any missing media IDs
+      if (missing.size > 0) {
+        const stubs = [...missing].map(igId => ({
+          instagram_media_id: igId,
+          business_account_id: accountId,
+        }));
+        dispatchWrite('batch_upsert_media_stubs', {
+          domain: 'media', accountId, intentId: null, table: 'instagram_media',
+          rows: stubs,
+        });
+        // Assume stubs will be created — the comment writer will resolve FKs
+        // on upsert. For stub rows, use Instagram ID as fallback (writer handles).
+        for (const igId of missing) {
+          mediaUUIDMap.set(igId, igId); // fallback: pass through Instagram ID
+        }
+      }
+    }
+
     const allRecords = [];
     for (const { mediaId, comments } of rawData.batches) {
+      const uuid = mediaUUIDMap.get(mediaId) || mediaId;
       for (const c of comments) {
         if (!c.id) continue;
-        allRecords.push(normalizeComment(c, mediaId, accountId));
+        allRecords.push(normalizeComment(c, uuid, accountId));
       }
     }
     if (allRecords.length === 0) return { count: 0 };
@@ -160,11 +191,19 @@ async function persist(accountId, rawData, extra = {}) {
     const { parseConversations } = require('./parser');
     const { records } = parseConversations(rawData.rawConversations, igUserId, pageId);
     if (records.length === 0) return { count: 0 };
+
+    // Phase 3A: hydrate customer_user_id via governedRead BEFORE writer dispatch
+    const governance = extra._governance;
+    if (governance) {
+      await conversationHydrator.hydrate(records, governance);
+    }
+
     const rows = records.map(r => ({
       instagram_thread_id: r.id,
       customer_instagram_id: r.customer_instagram_id,
       customer_username: r.customer_username,
       business_account_id: accountId,
+      customer_user_id: r.customer_user_id || null,
       last_message_at: r.updated_time,
       last_user_message_at: r.last_customer_message_at,
       message_count: r.message_count,

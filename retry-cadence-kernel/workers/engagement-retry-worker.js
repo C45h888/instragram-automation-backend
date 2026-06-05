@@ -12,11 +12,11 @@
 //   - ETIMEDOUT / 5xx: retry 2x, 30s base
 //   - auth_failure / permanent: no retry → exhaust immediately
 
-const retry = require('../../retry');
+const retry = require('../../substrates/retry');
 const { getPolicy } = require('../policy');
-const engagementTransport = require('../../engagement/transport');
-const { resolveAccountCredentials } = require('../../../helpers/agent-helpers');
-const parsing = require('../../parsing');
+const engagementTransport = require('../../acquisition-kernel/substrates/engagement/transport');
+const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
+const parsing = require('../../substrates/parsing');
 
 // Engagement-specific: IG code → override base delay
 const IG_CODE_DELAY_OVERRIDES = {

@@ -20,30 +20,39 @@ const { getSupabaseAdmin } = require('../../../../config/supabase');
 // ── Per-worker cache ────────────────────────────────────────────────────────
 const _cache = new Map(); // key → { data, expiresAt }
 
+const crypto = require('crypto');
+
 const CACHE_TTL_MS = {
   getActiveAccounts: 30_000,  // 30s (matches legacy persistence.js behavior)
+  igIdToUserId:     30_000,  // 30s — per-igIds-set
 };
 
-function _cacheKey(query) {
+function _cacheKey(query, context = null) {
+  // 'igIdToUserId' is parameterized by the set of IG IDs — use sorted hash
+  if (context) return `${query}:${context}`;
   return `${query}:null`;  // global query, no accountId dimension
 }
 
-function _getCached(query) {
-  const key = _cacheKey(query);
+function _sortedHash(arr) {
+  return crypto.createHash('sha256').update([...arr].sort().join(',')).digest('hex').slice(0, 16);
+}
+
+function _getCached(query, context = null) {
+  const key = _cacheKey(query, context);
   const entry = _cache.get(key);
   if (entry && Date.now() < entry.expiresAt) return entry.data;
   if (entry) _cache.delete(key);
   return null;
 }
 
-function _setCache(query, data) {
+function _setCache(query, data, context = null) {
   const ttl = CACHE_TTL_MS[query] || 30_000;
-  const key = _cacheKey(query);
+  const key = _cacheKey(query, context);
   _cache.set(key, { data, expiresAt: Date.now() + ttl });
 }
 
-function _getStale(query) {
-  const entry = _cache.get(_cacheKey(query));
+function _getStale(query, context = null) {
+  const entry = _cache.get(_cacheKey(query, context));
   return entry ? entry.data : null;
 }
 
@@ -57,16 +66,59 @@ function _getStale(query) {
  * @returns {Promise<{success: boolean, data?, error?, latencyMs: number, cached?: boolean, stale?: boolean}>}
  */
 async function execute(params, governance) {
-  const { query } = params;
+  const { query, igIds } = params;
   const startTime = Date.now();
 
-  if (query !== 'getActiveAccounts') {
+  const VALID_QUERIES = ['getActiveAccounts', 'igIdToUserId'];
+  if (!VALID_QUERIES.includes(query)) {
     const elapsed = Date.now() - startTime;
     _emitObserved(governance, query, elapsed, `unknown_query: ${query}`);
     return { success: false, data: null, error: `unknown_query: ${query}`, latencyMs: elapsed };
   }
 
-  // ── Cache hit ────────────────────────────────────────────────────────────
+  // ── igIdToUserId: batch-resolve instagram_business_id → user_id ──────────
+  if (query === 'igIdToUserId') {
+    const sorted = [...new Set(igIds || [])].sort();
+    if (sorted.length === 0) {
+      return { success: true, data: [], error: null, latencyMs: Date.now() - startTime, cached: false };
+    }
+    const hashCtx = _sortedHash(sorted);
+
+    // Cache hit
+    const cached = _getCached(query, hashCtx);
+    if (cached !== null) {
+      _emitObserved(governance, query, Date.now() - startTime, null, true);
+      return { success: true, data: cached, error: null, latencyMs: Date.now() - startTime, cached: true };
+    }
+
+    const supabase = getSupabaseAdmin();
+    if (!supabase) {
+      const elapsed = Date.now() - startTime;
+      _emitObserved(governance, query, elapsed, 'supabase_unavailable');
+      return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('instagram_business_accounts')
+        .select('instagram_business_id, user_id')
+        .in('instagram_business_id', sorted);
+
+      if (error) throw error;
+
+      const result = data || [];
+      const elapsed = Date.now() - startTime;
+      _setCache(query, result, hashCtx);
+      _emitObserved(governance, query, elapsed);
+      return { success: true, data: result, error: null, latencyMs: elapsed };
+    } catch (err) {
+      const elapsed = Date.now() - startTime;
+      _emitObserved(governance, query, elapsed, err.message);
+      return { success: false, data: null, error: err.message, latencyMs: elapsed };
+    }
+  }
+
+  // ── getActiveAccounts ──────────────────────────────────────────────────
   const cached = _getCached(query);
   if (cached !== null) {
     _emitObserved(governance, query, Date.now() - startTime, null, true);
