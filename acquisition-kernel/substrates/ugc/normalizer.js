@@ -29,7 +29,7 @@ function mapRawPostToUgcContent(post, businessAccountId, source, sourceHashtag =
   return {
     business_account_id: businessAccountId,
     visitor_post_id:     post.id,
-    author_id:           post.owner_id || null,
+    author_id:           post.owner?.id || post.owner_id || null,
     author_username:     post.username || null,
     message:             (post.caption || '').slice(0, 2000),
     media_type:          normaliseMediaType(post.media_type),
