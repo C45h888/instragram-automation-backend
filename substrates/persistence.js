@@ -1,24 +1,16 @@
-// substrates/persistence.js
-// LEGACY SUBSTRATE — retained for account discovery only during migration.
+// substrates/o
+// Bounded substrate: canonical Supabase persistence.
 //
-// Everything else has been migrated:
-//   - Batch writers (store*Batch) → substrates/db/writers/ via dispatchWrite
-//   - Normalizers (normalize*, transform*) → caller substrates (engagement, insights, content)
-//   - syncHashtagsFromCaptions → deferred to Phase 4 enrichment membrane
-//   - ensureConversationRows → deferred to Phase 4 repair membrane
-//
-// Remaining consumers of THIS FILE:
-//   - control-plane/runtime/signal-intake.js     (getActiveAccounts)
-//   - control-plane/runtime/lifecycle.js         (getActiveAccounts)
-//   - control-plane/orchestration/cadence-orchestrator.js (getActiveAccounts)
-//   - control-plane/orchastrator.js              (getActiveAccounts)
-//   - control-plane/orchestration/acquisition-orchestrator.js (resolveAccountCredentials re-export)
-//
-// All of the above migrate to db kernel in Phase 2.
-// This file is deleted after Phase 2.
+// Owns: batch upserts to Supabase domain tables, credential resolution,
+//        account/media/hashtag discovery with TTL caching.
+// Does NOT own: Instagram API calls, retry decisions, schema normalization,
+//               orchestration, telemetry.
 
 const { getSupabaseAdmin } = require('../config/supabase');
-const { resolveAccountCredentials } = require('../helpers/agent-helpers');
+const { resolveAccountCredentials, ensureConversationRows, ensureMediaRecord, syncHashtagsFromCaptions } = require('../helpers/agent-helpers');
+const { transformMessage, normalizeComment } = require('./engagement/normalizer');
+const { parseConversations } = require('./engagement/parser');
+const { logWithDomain } = require('./telemetry');
 const { _setClearAccountsCache } = require('./retry');
 
 // ── TTL Caches ───────────────────────────────────────────────────────────────
@@ -27,20 +19,12 @@ let _accountsCache = { data: [], expiresAt: 0 };
 const ACCOUNTS_CACHE_TTL_MS = 30 * 1000;
 
 // Wire retry substrate's cache clear hook
-if (_setClearAccountsCache) {
-  _setClearAccountsCache(() => { _accountsCache = { data: [], expiresAt: 0 }; });
-}
+_setClearAccountsCache(() => { _accountsCache = { data: [], expiresAt: 0 }; });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNT DISCOVERY
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Returns active business accounts from DB, with 30s TTL cache.
- * Used by runtime bootstrap and lifecycle refresh.
- *
- * Migrates to: substrates/db/reading/workers/accounts-worker.js (Phase 2)
- */
 async function getActiveAccounts() {
   if (Date.now() < _accountsCache.expiresAt) return _accountsCache.data;
 
@@ -63,16 +47,369 @@ async function getActiveAccounts() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CREDENTIAL RESOLUTION — re-export
+// MEDIA & HASHTAG DISCOVERY — moved to substrates/db/readers/media.js
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Authority is substrates/vault. Re-export kept for backward compatibility
-// during migration. All consumers migrate to vault directly in Phase 2.
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREDENTIAL RESOLUTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Re-export for single import surface
 module.exports.resolveAccountCredentials = resolveAccountCredentials;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMMENTS — BATCH WRITER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Batch-writes comment records from multiple media posts in a single DB round-trip.
+ *
+ * @param {string} businessAccountId
+ * @param {Array<{mediaId: string, comments: Array}>} batches
+ * @returns {Promise<{count: number}>}
+ */
+async function storeCommentBatches(businessAccountId, batches) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !batches.length) return { count: 0 };
+
+  const mediaIds = [...new Set(batches.map(b => b.mediaId))];
+
+  // Batch-resolve existing media UUIDs in one SELECT
+  const { data: existingMedia } = await supabase
+    .from('instagram_media')
+    .select('id, instagram_media_id')
+    .in('instagram_media_id', mediaIds);
+
+  const mediaUUIDMap = {};
+  for (const row of existingMedia || []) {
+    mediaUUIDMap[row.instagram_media_id] = row.id;
+  }
+
+  // Upsert any missing media stubs in one call
+  const missingIds = mediaIds.filter(id => !mediaUUIDMap[id]);
+  if (missingIds.length > 0) {
+    const stubs = missingIds.map(id => ({
+      instagram_media_id: id,
+      business_account_id: businessAccountId,
+    }));
+    const { data: created } = await supabase
+      .from('instagram_media')
+      .upsert(stubs, { onConflict: 'instagram_media_id' })
+      .select('id, instagram_media_id');
+    for (const row of created || []) {
+      mediaUUIDMap[row.instagram_media_id] = row.id;
+    }
+  }
+
+  // Build flat comment records across all batches
+  const allRecords = [];
+  for (const { mediaId, comments } of batches) {
+    const mediaUUID = mediaUUIDMap[mediaId];
+    if (!mediaUUID) continue;
+    for (const c of comments) {
+      if (!c.id) continue;
+      allRecords.push(normalizeComment(c, mediaUUID, businessAccountId));
+    }
+  }
+
+  if (allRecords.length === 0) return { count: 0 };
+
+  const { error: upsertErr } = await supabase
+    .from('instagram_comments')
+    .upsert(allRecords, { onConflict: 'instagram_comment_id', ignoreDuplicates: false });
+
+  if (upsertErr) {
+    await logWithDomain('messaging', {
+      endpoint: '/post-comments/upsert', method: 'SYSTEM', success: false,
+      business_account_id: businessAccountId,
+      error: upsertErr.message,
+      details: { action: 'db_upsert_failed', table: 'instagram_comments', count_attempted: allRecords.length },
+    });
+    throw upsertErr;
+  }
+
+  return { count: allRecords.length };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONVERSATIONS — BATCH WRITER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Batch-writes conversation records in a single DB round-trip.
+ * Raw timestamps only — no derived messaging window policy.
+ * The 24h messaging window (is_open, hours_remaining, requires_template,
+ * can_send_messages) is computed by the engagement-fsm from raw timestamps
+ * using governance policy constants.
+ *
+ * @param {string} businessAccountId
+ * @param {Array} rawConversations - Raw API conversations array
+ * @param {string} igUserId - Business IG User ID
+ * @param {string|null} pageId - Facebook Page ID
+ * @returns {Promise<{count: number, conversations: Array}>}
+ */
+async function storeConversationBatches(businessAccountId, rawConversations, igUserId, pageId) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !rawConversations.length) return { count: 0, conversations: [] };
+
+  const { records: parsedRecords, shaped: shapedConversations } = parseConversations(rawConversations, igUserId, pageId);
+
+  if (parsedRecords.length === 0) return { count: 0, conversations: shapedConversations };
+
+  // Map parsed records to DB row shape (conversation normalization)
+  const convRecords = parsedRecords.map(r => ({
+    instagram_thread_id: r.id,
+    customer_instagram_id: r.customer_instagram_id,
+    customer_username: r.customer_username,
+    business_account_id: businessAccountId,
+    last_message_at: r.updated_time,
+    last_user_message_at: r.last_customer_message_at,
+    message_count: r.message_count,
+    conversation_status: 'active',
+  }));
+
+  // Batch-resolve customer_user_id
+  const igIds = convRecords.map(r => r.customer_instagram_id).filter(Boolean);
+  if (igIds.length > 0) {
+    const { data: knownAccounts } = await supabase
+      .from('instagram_business_accounts')
+      .select('instagram_business_id, user_id')
+      .in('instagram_business_id', igIds);
+    const igIdToUserId = {};
+    for (const a of knownAccounts || []) igIdToUserId[a.instagram_business_id] = a.user_id;
+    for (const r of convRecords) {
+      if (r.customer_instagram_id) r.customer_user_id = igIdToUserId[r.customer_instagram_id] || null;
+    }
+  }
+
+  const { error: upsertErr } = await supabase
+    .from('instagram_dm_conversations')
+    .upsert(convRecords, { onConflict: 'instagram_thread_id', ignoreDuplicates: false });
+
+  if (upsertErr) {
+    await logWithDomain('messaging', {
+      endpoint: '/conversations/upsert', method: 'SYSTEM', success: false,
+      business_account_id: businessAccountId,
+      error: upsertErr.message,
+      details: { action: 'db_upsert_failed', table: 'instagram_dm_conversations', count_attempted: convRecords.length },
+    });
+    throw upsertErr;
+  }
+
+  return { count: convRecords.length, conversations: shapedConversations };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MESSAGES — BATCH WRITER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Batch-writes message records from multiple conversations in a single DB round-trip.
+ * Never silently drops messages — calls ensureConversationRows for unknown conversations.
+ *
+ * @param {string} businessAccountId
+ * @param {Array<{conversationId: string, rawMessages: Array}>} batches
+ * @param {string} igUserId
+ * @param {string|null} pageId
+ * @param {object|null} [credentials] - { pageToken, igUserId, pageId }
+ * @returns {Promise<{count: number}>}
+ */
+async function storeMessageBatches(businessAccountId, batches, igUserId, pageId, credentials = null) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase || !batches.length) return { count: 0 };
+
+  // Batch-resolve conversation UUIDs + customer IDs
+  const threadIds = batches.map(b => b.conversationId);
+  const { data: convRows } = await supabase
+    .from('instagram_dm_conversations')
+    .select('id, instagram_thread_id, customer_instagram_id')
+    .in('instagram_thread_id', threadIds);
+
+  const convMap = {};
+  for (const row of convRows || []) {
+    convMap[row.instagram_thread_id] = { uuid: row.id, customerIgId: row.customer_instagram_id };
+  }
+
+  // Recover any missing conversations — never silently drop messages
+  const missingThreadIds = threadIds.filter(id => !convMap[id]);
+  if (missingThreadIds.length > 0) {
+    await ensureConversationRows(supabase, businessAccountId, missingThreadIds, igUserId, credentials?.pageToken || null, pageId);
+
+    const { data: newRows } = await supabase
+      .from('instagram_dm_conversations')
+      .select('id, instagram_thread_id, customer_instagram_id')
+      .in('instagram_thread_id', missingThreadIds);
+    for (const row of newRows || []) {
+      convMap[row.instagram_thread_id] = { uuid: row.id, customerIgId: row.customer_instagram_id };
+    }
+  }
+
+  // Transform each message
+  const allMsgRecords = [];
+  for (const { conversationId, rawMessages } of batches) {
+    const conv = convMap[conversationId];
+    if (!conv) continue;
+    for (const m of rawMessages) {
+      if (!m.id) continue;
+      allMsgRecords.push(transformMessage(m, conv.uuid, businessAccountId, igUserId, pageId, conv.customerIgId));
+    }
+  }
+
+  if (allMsgRecords.length === 0) return { count: 0 };
+
+  const { error: upsertErr } = await supabase
+    .from('instagram_dm_messages')
+    .upsert(allMsgRecords, { onConflict: 'instagram_message_id', ignoreDuplicates: true });
+
+  if (upsertErr) {
+    await logWithDomain('messaging', {
+      endpoint: '/conversation-messages/upsert', method: 'SYSTEM', success: false,
+      business_account_id: businessAccountId,
+      error: upsertErr.message,
+      details: { action: 'db_upsert_failed', table: 'instagram_dm_messages', count_attempted: allMsgRecords.length },
+    });
+    throw upsertErr;
+  }
+
+  // Parallel orphan repair
+  const messageIdsByConv = {};
+  for (const r of allMsgRecords) {
+    if (!r.conversation_id) continue;
+    if (!messageIdsByConv[r.conversation_id]) messageIdsByConv[r.conversation_id] = [];
+    messageIdsByConv[r.conversation_id].push(r.instagram_message_id);
+  }
+
+  const repairPromises = Object.entries(messageIdsByConv).map(([convUUID, msgIds]) =>
+    supabase
+      .from('instagram_dm_messages')
+      .update({ conversation_id: convUUID, business_account_id: businessAccountId })
+      .in('instagram_message_id', msgIds)
+      .is('conversation_id', null)
+      .select('instagram_message_id')
+      .then(({ data: repaired }) => {
+        if (repaired?.length) {
+          logWithDomain('messaging', {
+            endpoint: '/messaging/orphan_repair', method: 'SYSTEM', success: true,
+            business_account_id: businessAccountId,
+            details: { action: 'orphan_repair', messages_repaired: repaired.length, conversation_id: convUUID },
+          }).catch(() => {});
+        }
+      })
+  );
+  await Promise.allSettled(repairPromises);
+
+  return { count: allMsgRecords.length };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UGC — BATCH WRITER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function storeUgcContentBatch(ugcRecords) {
+  if (!ugcRecords || ugcRecords.length === 0) return { count: 0 };
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return { count: 0 };
+
+  const businessAccountId = ugcRecords[0]?.business_account_id || null;
+
+  const { error: upsertErr } = await supabase
+    .from('ugc_content')
+    .upsert(ugcRecords, { onConflict: 'business_account_id,visitor_post_id', ignoreDuplicates: false });
+
+  if (upsertErr) {
+    await logWithDomain('ugc', {
+      endpoint: '/ugc-content/upsert', method: 'SYSTEM', success: false,
+      business_account_id: businessAccountId,
+      error: upsertErr.message,
+      details: { action: 'db_upsert_failed', table: 'ugc_content', count_attempted: ugcRecords.length },
+    });
+    throw upsertErr;
+  }
+
+  return { count: ugcRecords.length };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MEDIA INSIGHTS — BATCH WRITER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function storeMediaInsightsBatch(businessAccountId, mediaInsights, captions) {
+  if (!mediaInsights.length) return { count: 0 };
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return { count: 0 };
+
+  const { normalizeMediaInsight } = require('./insights/normalizer');
+  const mediaRecords = mediaInsights.map(m => normalizeMediaInsight(m, businessAccountId));
+
+  const { error: mediaErr } = await supabase
+    .from('instagram_media')
+    .upsert(mediaRecords, { onConflict: 'instagram_media_id', ignoreDuplicates: false });
+
+  if (mediaErr) {
+    await logWithDomain('media', {
+      endpoint: '/media-insights/upsert', method: 'SYSTEM', success: false,
+      business_account_id: businessAccountId,
+      error: mediaErr.message,
+      details: { action: 'db_upsert_failed', table: 'instagram_media', count_attempted: mediaRecords.length },
+    });
+    throw mediaErr;
+  }
+
+  if (captions.length > 0) {
+    await syncHashtagsFromCaptions(supabase, businessAccountId, captions);
+  }
+
+  return { count: mediaRecords.length };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BUSINESS POSTS — BATCH WRITER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function storeBusinessPosts(businessAccountId, posts) {
+  if (!posts.length) return { count: 0 };
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return { count: 0 };
+
+  const { normalizeBusinessPost } = require('./content/normalizer');
+  const mediaRecords = posts.map(p => normalizeBusinessPost(p, businessAccountId));
+
+  const { error: upsertErr } = await supabase
+    .from('instagram_media')
+    .upsert(mediaRecords, { onConflict: 'instagram_media_id', ignoreDuplicates: false });
+
+  if (upsertErr) {
+    await logWithDomain('media', {
+      endpoint: '/sync/posts/upsert', method: 'SYSTEM', success: false,
+      business_account_id: businessAccountId,
+      error: upsertErr.message,
+      details: { action: 'db_upsert_failed', table: 'instagram_media', count_attempted: mediaRecords.length },
+    });
+    throw upsertErr;
+  }
+
+  const captions = posts.map(p => p.caption).filter(Boolean);
+  if (captions.length > 0) {
+    await syncHashtagsFromCaptions(supabase, businessAccountId, captions);
+  }
+
+  return { count: mediaRecords.length };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 
 module.exports = {
+  // Account discovery
   getActiveAccounts,
-  resolveAccountCredentials,  // re-export
+
+  // Credential resolution
+  resolveAccountCredentials,
+
+  // Batch writers
+  storeCommentBatches,
+  storeConversationBatches,
+  storeMessageBatches,
+  storeUgcContentBatch,
+  storeMediaInsightsBatch,
+  storeBusinessPosts,
 };

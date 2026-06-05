@@ -11,13 +11,13 @@
 // retry worker. It NEVER interprets what a domain means.
 // All execution intelligence lives in governance + substrate registry.
 
-const { getRedisClient } = require('../../config/redis');
+const { getRedisClient } = require('../config/redis');
 const substrateRegistry = require('./substrate-registry');
 const retryWorker = require('./retry-worker');
-const persistence = require('../../substrates/persistence');
-const syncSubstrate = require('../../substrates/sync-substrate');
-const retrySubstrate = require('../../substrates/retry');
-const rateLimiter = require('../../substrates/rate-limiter');
+const persistence = require('../substrates/persistence');
+const syncSubstrate = require('../substrates/sync-substrate');
+const retrySubstrate = require('../substrates/retry');
+const rateLimiter = require('../substrates/rate-limiter');
 
 /**
  * Execute a single bounded acquisition attempt via retry worker.
@@ -171,7 +171,7 @@ function wire(gov, acquisitionFsm) {
 
 function _emitTransition(params) {
   try {
-    const observability = require('../../control-plane/observability/emitters/transition-emitter');
+    const observability = require('../control-plane/observability/emitters/transition-emitter');
     observability.transition(params);
   } catch (err) {
     console.warn('[acquisition-orchestrator] Observability transition error:', err.message);

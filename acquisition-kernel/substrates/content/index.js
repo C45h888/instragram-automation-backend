@@ -8,7 +8,7 @@
 // Persist: routes to persistence substrate (called by parsing workers asynchronously).
 
 const PostsWorker = require('./workers/posts');
-const dispatchWrite = require('../../../../substrates/db/writers').dispatchWrite;
+const dispatchWrite = require('../../../substrates/db/writers').dispatchWrite;
 
 /**
  * Fetch raw data from Instagram API for content domain.

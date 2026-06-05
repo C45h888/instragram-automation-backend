@@ -15,7 +15,7 @@ const {
   buildErrorResponse,
   extractUsage,
   logTelemetry,
-} = require('../../../../substrates/transport/_shared');
+} = require('../../../substrates/transport/_shared');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BUSINESS POSTS (merged with media feed)

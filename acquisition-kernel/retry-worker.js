@@ -16,12 +16,12 @@
 //   RETRY_COUNT_INCREMENTED, RETRY_EXHAUSTED) emitted directly to CK by this worker
 //   CK routes via DOMAIN_EVENT_MAP to engagement-fsm — no acquisition-fsm involvement
 
-const retry = require('../../substrates/retry');
-const quota = require('../../substrates/quota');
-const telemetry = require('../../substrates/telemetry');
-const metricsSubstrate = require('../../substrates/metrics-substrate');
-const rateLimiter = require('../../substrates/rate-limiter');
-const parsing = require('../../substrates/parsing');
+const retry = require('../substrates/retry');
+const quota = require('../substrates/quota');
+const telemetry = require('../substrates/telemetry');
+const metricsSubstrate = require('../substrates/metrics-substrate');
+const rateLimiter = require('../substrates/rate-limiter');
+const parsing = require('../substrates/parsing');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Retry counting is now owned by substrates/retry-cadence (per-substrate policy).
@@ -215,7 +215,7 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
  */
 function _emitTransition(intentId, previousState, nextState, extraRaw = {}) {
   try {
-    const observability = require('../../control-plane/observability/emitters/transition-emitter');
+    const observability = require('../control-plane/observability/emitters/transition-emitter');
     observability.transition({
       domain: 'execution',
       entity: 'attempt',

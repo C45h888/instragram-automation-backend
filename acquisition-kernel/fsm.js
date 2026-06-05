@@ -17,7 +17,7 @@
 let _observability = null;
 function _obs() {
   if (!_observability) {
-    try { _observability = require('../../control-plane/observability/emitters/transition-emitter'); }
+    try { _observability = require('../control-plane/observability/emitters/transition-emitter'); }
     catch (_) { _observability = null; }
   }
   return _observability;
