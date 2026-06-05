@@ -9,12 +9,12 @@
 //
 // Architectural identity:
 //   This writer is a DUMB MECHANICAL PIPE. It receives FSM-coordinated output
-//   (SEMANTIC_PROJECTION_TRANSITION with coordinatedBy === 'telemetry-coordination-fsm')
+//   (SEMANTIC_PROJECTION_TRANSITION with raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION')
 //   and appends it to the canonical ledger. It does not interpret, validate, or derive.
 //
 // Trigger model: event-driven via observability.onWrite() — zero timers.
 //   onWrite fires synchronously on every _transitionLog.push().
-//   Writer filters: coordinatedBy === 'telemetry-coordination-fsm' AND domain === <namespace>
+//   Writer filters: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === <namespace>
 //   → recordWorkerEntry() → CK.dispatch(PROJECTION_PERSISTED)
 //   → returns immediately — never blocks on CK validation.
 //
@@ -72,7 +72,7 @@ function _classifyError(err) {
 /**
  * Creates a transition writer for a given namespace.
  * Each writer subscribes to observability.onWrite() and filters for:
- *   1. transition.raw?.coordinatedBy === 'telemetry-coordination-fsm'
+ *   1. transition.raw?.entryType === 'SEMANTIC_PROJECTION_TRANSITION'
  *   2. transition.domain === namespace
  *
  * @param {string} namespace — bounded domain: runtime | integrity | authority | health | systemic
@@ -113,9 +113,10 @@ function createTransitionWriter(namespace) {
     const CK = require('../../governance/constitutional-kernel');
 
     _unsubscribe = observability.onWrite(async (transition) => {
-      // Gate 1: Coordinated filter — FSM is the sole coordinator
-      // Skip all entries without the coordinatedBy marker (PROJECTION_INTENT entries are uncoordinated)
-      if (transition.raw?.coordinatedBy !== 'telemetry-coordination-fsm') return;
+      // Gate 1: Structural filter — only FSM output (SEMANTIC_PROJECTION_TRANSITION) is consumed.
+      // PROJECTION_INTENT entries (raw.entryType undefined or 'PROJECTION_INTENT') are skipped.
+      // This structural check replaces the coordinatedBy flag — no split gate.
+      if (transition.raw?.entryType !== 'SEMANTIC_PROJECTION_TRANSITION') return;
 
       // Gate 2: Domain filter — bounded to this writer's namespace
       if (transition.domain !== namespace) return;

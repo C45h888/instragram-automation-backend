@@ -1,5 +1,6 @@
-// substrates/graph-capability/wiring.js
+// graph-capability-kernel/substrates/graph-capability/wiring.js
 // Boot-time wiring. Runs once on server boot to make the substrate operationally live.
+// Migrated from substrates/graph-capability/wiring.js
 //
 // Architecture:
 //   server.js → wiring.install({ck}) → resolves FSM → builds CK context → substrate.bindFsm() → substrate.start()
@@ -14,7 +15,7 @@
 //     started — boolean, whether substrate.start() succeeded
 
 const substrate = require('./index');
-const fsm = require('../../control-plane/governance/domains/graph-capability-fsm');
+const fsm = require('../../fsm');
 
 let _installed = false;
 let _fsmRef = null;

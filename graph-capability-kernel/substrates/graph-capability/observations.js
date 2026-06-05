@@ -1,12 +1,13 @@
-// substrates/graph-capability/observations.js
+// graph-capability-kernel/substrates/graph-capability/observations.js
 // Observation envelope normalizer for the Graph Capability substrate.
+// Migrated from substrates/graph-capability/observations.js
 //
 // Workers emit raw observations. The façade aggregates and normalizes them
 // into a single canonical capability observation that the FSM consumes.
 //
 // Canonical states: AUTHORIZED | LIMITED | DEGRADED | UNAUTHORIZED | UNKNOWN
 
-const { REQUIRED_SCOPES } = require('../../control-plane/governance/domains/graph-capability-fsm');
+const { REQUIRED_SCOPES } = require('../../fsm');
 
 /**
  * Normalize a set of worker observations into a single canonical observation.

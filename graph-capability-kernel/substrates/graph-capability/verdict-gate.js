@@ -1,5 +1,6 @@
-// substrates/graph-capability/verdict-gate.js
+// graph-capability-kernel/substrates/graph-capability/verdict-gate.js
 // Read-side capability gate. Pure read. No state mutation. No dispatch.
+// Migrated from substrates/graph-capability/verdict-gate.js
 //
 // Architecture:
 //   Consumer (route/helper) → verdictGate.requireCapability() → fsm.getCapabilityVerdict() → decision
@@ -18,7 +19,7 @@
 //   UNAUTHORIZED     → allowed=false
 //   UNKNOWN          → allowed=false, reason='capability not yet evaluated' (consumer may trigger evaluate)
 
-const fsm = require('../../control-plane/governance/domains/graph-capability-fsm');
+const fsm = require('../../fsm');
 
 const FRESH_OBSERVATION_MS = 30 * 60 * 1000; // 30 min — matches FSM's OBSERVATION_FRESHNESS_MS
 

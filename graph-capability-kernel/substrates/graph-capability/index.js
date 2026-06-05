@@ -1,17 +1,18 @@
-// substrates/graph-capability/index.js
+// graph-capability-kernel/substrates/graph-capability/index.js
 // Graph Capability substrate façade. PURE BINDING — no workers, no cadence, no I/O.
+// Migrated from substrates/graph-capability/index.js
 //
 // Constitutional rule (enforced):
 //   Graph-capability = pure governance plane.
-//     - FSM (in control-plane/governance/domains/graph-capability-fsm.js)
-//     - Verdict-gate (read surface, substrates/graph-capability/verdict-gate.js)
-//     - Trigger-bridge (event ingress, substrates/graph-capability/trigger-bridge.js)
-//     - Wiring (boot-time install, substrates/graph-capability/wiring.js)
-//     - Observations normalizer (pure function, substrates/graph-capability/observations.js)
+//     - FSM (in graph-capability-kernel/fsm.js)
+//     - Verdict-gate (read surface, graph-capability-kernel/substrates/graph-capability/verdict-gate.js)
+//     - Trigger-bridge (event ingress, graph-capability-kernel/substrates/graph-capability/trigger-bridge.js)
+//     - Wiring (boot-time install, graph-capability-kernel/substrates/graph-capability/wiring.js)
+//     - Observations normalizer (pure function, graph-capability-kernel/substrates/graph-capability/observations.js)
 //     - This façade (binds FSM to substrate index, exposes start/stop/isStarted)
 //
 //   No workers. No setInterval. No aggregation loop. No state.
-//   The canonical workers live in substrates/vault/<domain>/workers/ (Phase 5).
+//   The canonical workers live in graph-capability-kernel/substrates/vault/<domain>/workers/
 //   They are event-driven. When a vault worker call succeeds, the substrate façade
 //   emits a trigger → trigger-bridge → ck → FSM. The FSM transitions.
 //   This façade does not own that flow — it just binds the FSM into the runtime.

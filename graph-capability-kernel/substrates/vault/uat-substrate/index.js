@@ -1,6 +1,7 @@
-// substrates/vault/uat-substrate/index.js
+// graph-capability-kernel/substrates/vault/uat-substrate/index.js
 // UAT substrate façade: factory-creates workers, owns pre-flight + signal dispatch.
 // Does NOT do I/O — workers do.
+// Migrated from substrates/vault/uat-substrate/index.js
 //
 // Constitutional wiring:
 //   Every successful worker call emits a trigger event via signal-dispatch → trigger-bridge → ck → FSM.

@@ -2,7 +2,7 @@
 // Runtime Transition Writer: bounded append for runtime namespace FSM output.
 //
 // Domain: runtime
-// Filter: coordinatedBy === 'telemetry-coordination-fsm' AND domain === 'runtime'
+// Filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === 'runtime'
 // Write: lineage:ledger:entries (canonical ledger)
 // Dispatch: CK.dispatch(PROJECTION_PERSISTED)
 //

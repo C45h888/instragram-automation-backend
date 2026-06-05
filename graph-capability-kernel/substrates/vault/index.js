@@ -1,5 +1,6 @@
-// substrates/vault/index.js
+// graph-capability-kernel/substrates/vault/index.js
 // Vault root façade. The only public entry point consumers should use.
+// Migrated from substrates/vault/index.js
 //
 // Pattern:
 //   const vault = require('./substrates/vault');

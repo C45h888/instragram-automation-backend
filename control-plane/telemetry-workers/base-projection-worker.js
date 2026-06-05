@@ -1,8 +1,9 @@
 // control-plane/telemetry-workers/base-projection-worker.js
 // Base Projection Worker: shared infrastructure for bounded telemetry projection.
 //
-// Owns: polling cadence, cursor tracking, projection versioning, replay determinism,
-//        deterministic projection synthesis from raw telemetry signals.
+// Owns: event-driven tick scheduling, cursor tracking, projection versioning,
+//        deterministic projection synthesis from raw telemetry signals,
+//        replay determinism.
 //
 // Does NOT own: governance decisions, lineage persistence, FSM semantics,
 //               interpreter namespace filtering.
@@ -23,11 +24,14 @@
 //   same signals + same version = same projection (always)
 //   projection synthesis NEVER depends on: runtime timing, worker execution order,
 //   transient memory, async race conditions
-
-// TODO(architecture): Replace setInterval polling with observability stream consumer.
-// Polling introduces temporal aliasing and missed state edges. Long-term direction:
-// observability stream → projection stream processor (event-driven, not periodic sampling).
-// Do NOT harden polling as permanent architecture.
+//
+// Trigger model (event-driven, not periodic sampling):
+//   Workers subscribe to the observability stream via onWrite(). When a new
+//   transition lands in the worker's domain partition, a debounced tick is
+//   scheduled. This eliminates temporal aliasing and missed state edges that
+//   setInterval polling introduces. The debounce interval (pollIntervalMs)
+//   prevents excessive ticks on rapid write bursts while ensuring no state
+//   edge is missed — every write event is a scheduling signal.
 
 const crypto = require('crypto');
 const monotonicClock = require('../runtime/monotonic-clock');
@@ -46,7 +50,9 @@ class BaseProjectionWorker {
 
     this.workerName = workerName;
     this.pollIntervalMs = pollIntervalMs;
-    this._pollTimer = null;
+    this._unsubscribeOnWrite = null;   // onWrite unsubscribe handle
+    this._tickPending = false;         // debounce gate: true when a tick is scheduled
+    this._tickTimer = null;            // setTimeout handle for debounced tick
     this._running = false;
     this._startedAt = null;
     this._lastTick = null;
@@ -214,7 +220,10 @@ class BaseProjectionWorker {
       this._consecutiveFailures = 0;
 
       // Emit the projection to the observability plane
-      this._emitProjectionTransition(projection);
+      // Awaited — ensures the transition is written to Redis bounded partition
+      // before the next tick starts. This eliminates the fire-and-forget race
+      // where setImmediate(PROCESS_INTENTS) fires before rpush completes.
+      await this._emitProjectionTransition(projection);
 
     } catch (err) {
       this._consecutiveFailures++;
@@ -234,11 +243,11 @@ class BaseProjectionWorker {
    *
    * @param {object} projection — the projection output contract
    */
-  _emitProjectionTransition(projection) {
+  async _emitProjectionTransition(projection) {
     try {
       // eslint-disable-next-line global-require
       const observability = require('../observability/emitters/transition-emitter');
-      observability.transition({
+      await observability.transition({
         domain: this._domain,
         entity: 'projection_intent',
         entityId: this._projectType,
@@ -277,9 +286,15 @@ class BaseProjectionWorker {
 
   /**
    * Start the projection worker.
-   * Runs an immediate tick, then schedules the polling loop.
+   * Runs an immediate tick, then subscribes to the observability stream for
+   * event-driven scheduling — no setInterval polling.
    *
-   * @param {number} [pollIntervalMs] — override default poll interval
+   * Each write event in this worker's domain triggers a debounced tick:
+   * if a tick is not already pending, one is scheduled after pollIntervalMs.
+   * Rapid write bursts are batched into a single tick. An immediate tick runs
+   * on start to establish the baseline projection.
+   *
+   * @param {number} [pollIntervalMs] — override default debounce interval
    */
   async start(pollIntervalMs) {
     if (this._running) {
@@ -290,18 +305,54 @@ class BaseProjectionWorker {
     this._running = true;
     this._startedAt = Date.now();
 
-    // Run initial tick immediately
+    const interval = pollIntervalMs || this.pollIntervalMs;
+    const domain = this._domain;
+
+    // Subscribe to observability stream — event-driven trigger
+    try {
+      // eslint-disable-next-line global-require
+      const observability = require('../observability');
+      this._unsubscribeOnWrite = observability.onWrite((transition) => {
+        // Only react to entries landing in this worker's domain
+        if (transition.domain !== domain) return;
+        this._scheduleTick(interval);
+      });
+    } catch (err) {
+      console.error(`[${this.workerName}] Failed to subscribe to onWrite, falling back to polling:`, err.message);
+      // Fallback: setInterval polling if onWrite subscription fails
+      this._tickTimer = setInterval(() => {
+        if (this._running) {
+          this._tick().catch(e => console.error(`[${this.workerName}] Tick error:`, e.message));
+        }
+      }, interval);
+      this._tickTimer.unref();
+    }
+
+    // Run initial tick immediately to establish baseline projection
     await this._tick();
 
-    const interval = pollIntervalMs || this.pollIntervalMs;
-    this._pollTimer = setInterval(() => {
+    console.log(`[${this.workerName}] Started — projectionType=${this._projectType}, debounce=${interval}ms (onWrite-driven)`);
+  }
+
+  /**
+   * Schedule a debounced tick. If a tick is already pending, this is a no-op.
+   * After pollIntervalMs, the pending tick fires and the gate resets.
+   *
+   * @param {number} delayMs — debounce interval
+   */
+  _scheduleTick(delayMs) {
+    if (this._tickPending || !this._running) return;
+    this._tickPending = true;
+
+    this._tickTimer = setTimeout(() => {
+      this._tickPending = false;
+      this._tickTimer = null;
+      if (!this._running) return;
       this._tick().catch(err => {
         console.error(`[${this.workerName}] Tick error:`, err.message);
       });
-    }, interval);
-    this._pollTimer.unref();
-
-    console.log(`[${this.workerName}] Started — projectionType=${this._projectType}, poll=${interval}ms`);
+    }, delayMs);
+    // Don't unref — we want the tick to fire even if the event loop is idle
   }
 
   /**
@@ -311,10 +362,18 @@ class BaseProjectionWorker {
     if (!this._running) return;
     this._running = false;
 
-    if (this._pollTimer) {
-      clearInterval(this._pollTimer);
-      this._pollTimer = null;
+    // Unsubscribe from onWrite stream
+    if (this._unsubscribeOnWrite) {
+      try { this._unsubscribeOnWrite(); } catch (_) {}
+      this._unsubscribeOnWrite = null;
     }
+
+    // Clear any pending tick timer
+    if (this._tickTimer) {
+      clearTimeout(this._tickTimer);
+      this._tickTimer = null;
+    }
+    this._tickPending = false;
 
     console.log(`[${this.workerName}] Stopped — ticks=${this._tickCount}`);
   }

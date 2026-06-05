@@ -1,5 +1,6 @@
-// substrates/vault/signal-dispatch.js
+// graph-capability-kernel/substrates/vault/signal-dispatch.js
 // Centralized signal-dispatch adapter for vault façades.
+// Migrated from substrates/vault/signal-dispatch.js
 //
 // Constitutional role:
 //   Vault façades (pat, uat, scope) emit trigger events when a worker call succeeds.

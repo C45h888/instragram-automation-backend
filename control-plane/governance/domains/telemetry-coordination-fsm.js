@@ -532,17 +532,11 @@ let _ckContext = null;               // CK context passed during start()
 // Fires synchronously on every _transitionLog.push(). Filters strictly to
 // uncoordinated PROJECTION_INTENT entries. All other entry types are skipped.
 //
-// Coordinated filter: FSM is the SOLE coordinator. Entries with
-// coordinatedBy === 'telemetry-coordination-fsm' are FSM output (SEMANTIC_PROJECTION_TRANSITION).
-// These are consumed by transition-writers, NOT by the FSM's reactive handler.
+// FSM output (SEMANTIC_PROJECTION_TRANSITION, raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION')
+// is consumed by transition-writers, NOT by the FSM's reactive handler.
 function _onTransitionLogWrite(transition) {
   // Gate 1: only react to PROJECTION_INTENT (uncoordinated intent entries)
   if (transition.nextState !== 'PROJECTION_INTENT') return;
-
-  // Gate 2: skip entries already coordinated by FSM
-  // PROJECTION_INTENT entries never have coordinatedBy set — they are raw worker output.
-  // This guard is defensive: ensures the reactive trigger never acts on FSM output.
-  if (transition.raw?.coordinatedBy === 'telemetry-coordination-fsm') return;
 
   // Fire reactive coordination — non-blocking, setImmediate to yield event loop
   // _triggerReactiveCoordination is idempotent — multiple rapid onWrite events
@@ -886,7 +880,6 @@ function _serializeIntent(intent) {
       confidence: raw.confidence,
       integrityScore: raw.integrityScore,
       sourceTelemetryWindow: raw.sourceTelemetryWindow,
-      coordinatedBy: 'telemetry-coordination-fsm',
       originalIntentTraceId: intent.traceId,
     },
   };

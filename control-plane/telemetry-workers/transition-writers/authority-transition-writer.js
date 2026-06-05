@@ -2,7 +2,7 @@
 // Authority Transition Writer: bounded append for authority namespace FSM output.
 //
 // Domain: authority
-// Filter: coordinatedBy === 'telemetry-coordination-fsm' AND domain === 'authority'
+// Filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === 'authority'
 // Write: lineage:ledger:entries (canonical ledger)
 // Dispatch: CK.dispatch(PROJECTION_PERSISTED)
 

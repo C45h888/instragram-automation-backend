@@ -1,6 +1,6 @@
-// substrates/vault/pat-substrate/workers/exchange-worker.js
+// graph-capability-kernel/substrates/vault/pat-substrate/workers/exchange-worker.js
 // PAT exchange worker: one bounded /me/accounts Graph call + IG business account discovery.
-// Migrated from services/tokens/pat.js: exchangeForPageToken.
+// Migrated from substrates/vault/pat-substrate/workers/exchange-worker.js
 //
 // Owns: ONE bounded HTTP call.
 // Does NOT own: factory, pre-flight, orchestration, state, retry.

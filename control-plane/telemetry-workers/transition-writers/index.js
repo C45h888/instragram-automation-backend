@@ -2,7 +2,7 @@
 // Transition Writers: unified export for 5 bounded domain writers.
 //
 // Each writer is a dumb mechanical append pipe — it receives FSM-coordinated
-// SEMANTIC_PROJECTION_TRANSITION entries (coordinatedBy === 'telemetry-coordination-fsm')
+// SEMANTIC_PROJECTION_TRANSITION entries (raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION')
 // and writes them to the canonical ledger. It does not interpret, serialize, or
 // write to namespace projection state.
 //
@@ -12,7 +12,7 @@
 //   Phase 2: FSM reactive coordination → _emitTransition() → SEMANTIC_PROJECTION_TRANSITION
 //            → written to global + domain-bounded transition log
 //            → onWrite fires → 5 transition-writers each receive the event
-//              → filter: coordinatedBy === 'telemetry-coordination-fsm'? YES
+//              → filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION'? YES
 //              → filter: domain === <this-writer's-namespace>? MATCH
 //                → recordWorkerEntry() → lineage:ledger:entries
 //                → CK.dispatch(PROJECTION_PERSISTED)

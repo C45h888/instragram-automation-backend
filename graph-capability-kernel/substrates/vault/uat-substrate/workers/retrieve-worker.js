@@ -1,8 +1,8 @@
-// substrates/vault/uat-substrate/workers/retrieve-worker.js
+// graph-capability-kernel/substrates/vault/uat-substrate/workers/retrieve-worker.js
 // UAT retrieve worker: select + decrypt + expiry check.
-// Migrated from services/tokens/uat.js: retrieveUserToken.
+// Migrated from substrates/vault/uat-substrate/workers/retrieve-worker.js
 
-const { getSupabaseAdmin } = require('../../../../config/supabase');
+const { getSupabaseAdmin } = require('../../../../../config/supabase');
 
 class RetrieveWorker {
   /**

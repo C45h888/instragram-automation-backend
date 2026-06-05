@@ -1,13 +1,13 @@
-// substrates/vault/pat-substrate/workers/store-worker.js
+// graph-capability-kernel/substrates/vault/pat-substrate/workers/store-worker.js
 // PAT store worker: vault key provisioning + upsert business_account + encrypt + upsert credential + audit.
-// Migrated from services/tokens/pat.js: storePageToken.
+// Migrated from substrates/vault/pat-substrate/workers/store-worker.js
 //
 // Owns: ONE bounded supabase transaction.
 // Does NOT own: factory, pre-flight, orchestration, retry, cache invalidation.
 
 const crypto = require('crypto');
-const { getSupabaseAdmin, logAudit } = require('../../../../config/supabase');
-const { clearCredentialCache } = require('../../../../helpers/credential-cache');
+const { getSupabaseAdmin, logAudit } = require('../../../../../config/supabase');
+const { clearCredentialCache } = require('../../../../../helpers/credential-cache');
 const { PAT_SCOPE_DEFAULTS } = require('../../default-scopes');
 
 class StoreWorker {

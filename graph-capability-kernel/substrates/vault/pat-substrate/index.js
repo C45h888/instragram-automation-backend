@@ -1,6 +1,7 @@
-// substrates/vault/pat-substrate/index.js
+// graph-capability-kernel/substrates/vault/pat-substrate/index.js
 // PAT substrate façade: factory-creates workers, owns pre-flight + orchestration.
 // Does NOT do I/O — workers do.
+// Migrated from substrates/vault/pat-substrate/index.js
 //
 // Architectural invariant:
 //   Substrate = mutation plane (state, pre-flight, factory, signal dispatch)
@@ -8,7 +9,7 @@
 //
 // Constitutional wiring:
 //   Every successful worker call emits a trigger event via signal-dispatch → trigger-bridge → ck → FSM.
-//   signal-dispatch is the single source of truth for vault signal emission (substrates/vault/signal-dispatch.js).
+//   signal-dispatch is the single source of truth for vault signal emission (signal-dispatch.js).
 
 const ExchangeWorker = require('./workers/exchange-worker');
 const StoreWorker = require('./workers/store-worker');

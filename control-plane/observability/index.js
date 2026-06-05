@@ -42,10 +42,16 @@ const signalBusIntegration = require('./bus/signal-bus-integration');
  * Emit a state transition into the observability plane.
  * Call this before every state mutation in every subsystem.
  *
+ * Returns a Promise that resolves when the transition has been fully
+ * projected and written to the Redis bounded partition. Callers that
+ * need ordering guarantees (e.g., FSM reactive coordination) MUST await
+ * this promise before yielding to the event loop.
+ *
  * @param {object} params — see transition-emitter.js for full signature
+ * @returns {Promise<void>}
  */
 function transition(params) {
-  transitionEmitter.transition(params);
+  return transitionEmitter.transition(params);
 }
 
 /**

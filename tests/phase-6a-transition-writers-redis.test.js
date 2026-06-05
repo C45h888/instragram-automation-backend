@@ -9,14 +9,14 @@
  * Architecture under test (production-aligned):
  *   Projection Worker emits PROJECTION_INTENT (raw production state)
  *     → FSM _onTransitionLogWrite reacts (gate: nextState === 'PROJECTION_INTENT')
- *     → FSM _emitTransition() → SEMANTIC_PROJECTION_TRANSITION (coordinatedBy='tcf')
- *     → onWrite fires → writer receives FSM output
- *     → writer: coordinatedBy='tcf' AND domain=namespace? YES → recordWorkerEntry()
+ *     → FSM _emitTransition() → SEMANTIC_PROJECTION_TRANSITION (entryType='SEMANTIC_PROJECTION_TRANSITION')
+ *     → FSM output written to global + domain-bounded transition log
+ *     → writer: raw.entryType='SEMANTIC_PROJECTION_TRANSITION' AND domain=namespace? YES → recordWorkerEntry()
  *     → lineageLedger.recordWorkerEntry() → Redis: lineage:ledger:entries
  *     → CK.dispatch(PROJECTION_PERSISTED) — fire-and-forget
  *
  * Test simulation plane:
- *   Tests emit raw PROJECTION_INTENT (no coordinatedBy) — same as projection workers.
+ *   Tests emit raw PROJECTION_INTENT (no entryType marker) — same as projection workers.
  *   FSM coordinates, writers process FSM output. No separate test gate.
  *   Simulation reflects production exactly.
  *
@@ -177,8 +177,8 @@ describe('Phase 6A: Transition Writers → Redis Write Path', () => {
 
       // Emit PROJECTION_INTENT — raw production state from projection workers.
       // This is what projection workers emit in production: nextState=PROJECTION_INTENT,
-      // no coordinatedBy flag (uncoordinated). The FSM reacts, processes intent,
-      // and emits SEMANTIC_PROJECTION_TRANSITION with coordinatedBy='tcf'.
+      // no entryType marker (raw intent). The FSM reacts, processes intent,
+      // and emits SEMANTIC_PROJECTION_TRANSITION with entryType='SEMANTIC_PROJECTION_TRANSITION'.
       // Writers receive FSM output and write to ledger.
       await observability.transition({
         domain: 'runtime',
@@ -187,7 +187,7 @@ describe('Phase 6A: Transition Writers → Redis Write Path', () => {
         previousState: 'IDLE',
         nextState: 'PROJECTION_INTENT',  // ← raw production state, NOT pre-coordinated
         authority: 'phase-6a-test',
-        raw: {},  // ← no coordinatedBy — FSM gate 2 allows this through
+        raw: {},  // ← no entryType — FSM gate allows raw PROJECTION_INTENT through
       });
 
       const size = await waitForLedgerEntries(beforeSize + 1, 2000);

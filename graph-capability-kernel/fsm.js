@@ -1,5 +1,6 @@
-// control-plane/governance/domains/graph-capability-fsm.js
+// graph-capability-kernel/fsm.js
 // Graph Capability Domain FSM: federated state machine governing Graph capability lifecycle.
+// Migrated from control-plane/governance/domains/graph-capability-fsm.js
 //
 // Owns: capability validation cadence, token verification cadence, scope verification cadence,
 //        capability degradation lifecycle, capability recovery lifecycle, capability state transitions,

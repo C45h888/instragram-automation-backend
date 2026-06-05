@@ -1,6 +1,7 @@
-// substrates/vault/scope-substrate/index.js
+// graph-capability-kernel/substrates/vault/scope-substrate/index.js
 // Scope substrate façade: factory-creates workers, owns pre-flight.
 // Does NOT do I/O — workers do.
+// Migrated from substrates/vault/scope-substrate/index.js
 //
 // Constitutional wiring:
 //   On success, emits a CAPABILITY_EVALUATE trigger via signal-dispatch → trigger-bridge → ck → FSM.

@@ -32,7 +32,7 @@ async function main() {
     nextState: 'EMITTING',
     authority: 'debug-test',
     raw: {
-      coordinatedBy: 'telemetry-coordination-fsm',
+      entryType: 'SEMANTIC_PROJECTION_TRANSITION',
       transitionType: 'SEMANTIC_PROJECTION_TRANSITION',
     },
   });

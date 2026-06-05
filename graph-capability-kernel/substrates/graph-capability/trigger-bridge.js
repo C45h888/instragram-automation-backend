@@ -1,5 +1,6 @@
-// substrates/graph-capability/trigger-bridge.js
+// graph-capability-kernel/substrates/graph-capability/trigger-bridge.js
 // Event ingress bridge. Thin wrapper that converts domain events into CK dispatches.
+// Migrated from substrates/graph-capability/trigger-bridge.js
 //
 // Architecture:
 //   Trigger source (token-health, OAuth callback, worker) → triggerBridge.emit*() → ck.dispatch() → CK routes → FSM

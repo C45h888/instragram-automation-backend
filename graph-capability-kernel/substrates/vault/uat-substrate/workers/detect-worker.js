@@ -1,6 +1,6 @@
-// substrates/vault/uat-substrate/workers/detect-worker.js
+// graph-capability-kernel/substrates/vault/uat-substrate/workers/detect-worker.js
 // UAT detect worker: one bounded /debug_token call.
-// Migrated from services/tokens/detection.js: detectTokenType.
+// Migrated from substrates/vault/uat-substrate/workers/detect-worker.js
 
 const { axios, GRAPH_API_BASE } = require('../../api-surface');
 

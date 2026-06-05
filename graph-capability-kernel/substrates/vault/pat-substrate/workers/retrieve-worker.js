@@ -1,11 +1,11 @@
-// substrates/vault/pat-substrate/workers/retrieve-worker.js
+// graph-capability-kernel/substrates/vault/pat-substrate/workers/retrieve-worker.js
 // PAT retrieve worker: supabase select + decrypt.
-// Migrated from services/tokens/pat.js: retrievePageToken.
+// Migrated from substrates/vault/pat-substrate/workers/retrieve-worker.js
 //
 // Owns: ONE bounded supabase read + decrypt.
 // Does NOT own: factory, pre-flight, retry, cache, encryption key provisioning.
 
-const { getSupabaseAdmin } = require('../../../../config/supabase');
+const { getSupabaseAdmin } = require('../../../../../config/supabase');
 
 class RetrieveWorker {
   /**

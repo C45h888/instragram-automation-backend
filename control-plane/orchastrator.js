@@ -36,9 +36,10 @@ const dbReaders = require('../substrates/db/readers');
 const cognitionScanner = require('../substrates/db/cognition-scanner');
 const orphanMessageRepair = require('../substrates/reconciliation/orphan-message-repair');
 
-// ── 6 Domain FSMs ───────────────────────────────────────────────────────────
+// ── 8 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('../acquisition-kernel/fsm');
 const publishingFsm = require('../publishing-kernel/fsm');
+const graphCapabilityFsm = require('../graph-capability-kernel/fsm');
 const schedulingFsm = require('./governance/domains/scheduling-fsm');
 const dedupFsm = require('./governance/domains/dedup-fsm');
 const engagementFsm = require('../retry-cadence-kernel/fsm');
@@ -63,6 +64,7 @@ function _wire() {
   // Register domain FSMs — must happen before wiring membranes
   constitutional.registerDomain(acquisitionFsm);
   constitutional.registerDomain(publishingFsm);
+  constitutional.registerDomain(graphCapabilityFsm);
   constitutional.registerDomain(schedulingFsm);
   constitutional.registerDomain(dedupFsm);
   constitutional.registerDomain(engagementFsm);
@@ -97,7 +99,7 @@ async function startAllWorkers() {
 
   // Start the 5 transition writers — event-driven, bounded by namespace.
   // Each writer subscribes to observability.onWrite() and filters for:
-  //   coordinatedBy === 'telemetry-coordination-fsm' AND domain === <namespace>
+  //   raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === <namespace>
   // They append FSM-coordinated output to the canonical ledger and notify CK.
   // Writers read from the domain-bounded transition log partition (not the global log).
   transitionWriters.startAll();

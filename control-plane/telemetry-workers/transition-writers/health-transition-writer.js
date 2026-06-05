@@ -2,7 +2,7 @@
 // Health Transition Writer: bounded append for health namespace FSM output.
 //
 // Domain: health
-// Filter: coordinatedBy === 'telemetry-coordination-fsm' AND domain === 'health'
+// Filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === 'health'
 // Write: lineage:ledger:entries (canonical ledger)
 // Dispatch: CK.dispatch(PROJECTION_PERSISTED)
 

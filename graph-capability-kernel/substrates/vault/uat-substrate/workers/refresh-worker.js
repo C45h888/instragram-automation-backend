@@ -1,13 +1,13 @@
-// substrates/vault/uat-substrate/workers/refresh-worker.js
+// graph-capability-kernel/substrates/vault/uat-substrate/workers/refresh-worker.js
 // UAT refresh worker: fb_exchange_token + /debug_token validate + store.
-// Migrated from services/tokens/uat.js: refreshUserToken.
+// Migrated from substrates/vault/uat-substrate/workers/refresh-worker.js
 //
 // This worker orchestrates a sequence of bounded calls (exchange → detect → store) because
 // they share a single business operation (refresh a UAT). The substrate façade remains
 // mutation-plane (state, signals) while this worker is executor-plane (the actual I/O sequence).
 
 const { axios, GRAPH_API_BASE } = require('../../api-surface');
-const { clearCredentialCache } = require('../../../../helpers/credential-cache');
+const { clearCredentialCache } = require('../../../../../helpers/credential-cache');
 const StoreWorker = require('./store-worker');
 const DetectWorker = require('./detect-worker');
 
@@ -17,7 +17,7 @@ class RefreshWorker {
    * @returns {Promise<{ success: boolean, expiresAt: string|null, scopes: string[], error?: string }>}
    */
   async execute({ userId, businessAccountId }) {
-    // Step 1: retrieve current UAT (delegated to retrieve-worker — but this worker composes it inline since refresh is a self-contained op)
+    // Step 1: retrieve current UAT
     const RetrieveWorker = require('./retrieve-worker');
     const retrieveWorker = new RetrieveWorker();
     const current = await retrieveWorker.execute({ userId, businessAccountId });

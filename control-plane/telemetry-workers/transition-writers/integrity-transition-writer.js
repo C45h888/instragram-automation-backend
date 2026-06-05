@@ -2,7 +2,7 @@
 // Integrity Transition Writer: bounded append for integrity namespace FSM output.
 //
 // Domain: integrity
-// Filter: coordinatedBy === 'telemetry-coordination-fsm' AND domain === 'integrity'
+// Filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === 'integrity'
 // Write: lineage:ledger:entries (canonical ledger)
 // Dispatch: CK.dispatch(PROJECTION_PERSISTED)
 

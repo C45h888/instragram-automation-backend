@@ -3,8 +3,9 @@
 // Extracted from routes/agent-proxy.js to keep route files lean.
 
 const { getSupabaseAdmin, logApiRequest, logAudit, shouldLog } = require('../config/supabase');
-const verdictGate = require('../substrates/graph-capability/verdict-gate');
-const vault = require('../substrates/vault');
+const verdictGate = require('../graph-capability-kernel/substrates/graph-capability/verdict-gate');
+const vault = require('../graph-capability-kernel/substrates/vault');
+const triggerBridge = require('../graph-capability-kernel/substrates/graph-capability/trigger-bridge');
 const { clearCredentialCache: _clearCredentialCacheRaw, getFromCache, setInCache } = require('./credential-cache');
 
 const GRAPH_API_BASE = 'https://graph.facebook.com/v25.0';

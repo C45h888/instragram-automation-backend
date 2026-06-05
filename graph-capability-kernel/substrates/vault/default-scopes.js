@@ -1,6 +1,6 @@
-// substrates/vault/default-scopes.js
+// graph-capability-kernel/substrates/vault/default-scopes.js
 // PAT scope fallback set. Used when /debug_token is unavailable.
-// Migrated from services/tokens/base.js.
+// Migrated from substrates/vault/default-scopes.js
 
 const PAT_SCOPE_DEFAULTS = [
   'instagram_basic',

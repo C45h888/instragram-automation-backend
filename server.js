@@ -18,7 +18,7 @@ const {
 const { runStartupHealthChecks } = require('./services/sync');
 
 // Graph Capability Plane — constitutional substrate (FSM + workers + verdict-gate)
-const graphCapabilityWiring = require('./substrates/graph-capability/wiring');
+const graphCapabilityWiring = require('./graph-capability-kernel/substrates/graph-capability/wiring');
 const constitutionalKernel = require('./control-plane/governance/constitutional-kernel');
 
 // Redis-driven AcquisitionWorker — primary data acquisition pipeline

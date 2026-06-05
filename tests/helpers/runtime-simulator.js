@@ -149,7 +149,7 @@ class RuntimeSimulator {
 
     // 4. Start 5 transition writers — event-driven, bounded by namespace.
     //    Each writer subscribes to observability.onWrite() and filters for:
-    //      coordinatedBy === 'telemetry-coordination-fsm' AND domain === <namespace>
+    //    raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === <namespace>
     //    Phase 2 FSM reactive coordination layer — transition-writers own all writes.
     transitionWriters.startAll();
 

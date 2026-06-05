@@ -1,8 +1,8 @@
-// substrates/vault/uat-substrate/workers/store-worker.js
+// graph-capability-kernel/substrates/vault/uat-substrate/workers/store-worker.js
 // UAT store worker: encrypt + upsert credential row.
-// Migrated from services/tokens/uat.js: storeUserToken.
+// Migrated from substrates/vault/uat-substrate/workers/store-worker.js
 
-const { getSupabaseAdmin } = require('../../../../config/supabase');
+const { getSupabaseAdmin } = require('../../../../../config/supabase');
 
 class StoreWorker {
   /**

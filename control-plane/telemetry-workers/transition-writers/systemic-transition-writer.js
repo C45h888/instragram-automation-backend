@@ -2,7 +2,7 @@
 // Systemic Transition Writer: bounded append for systemic namespace FSM output.
 //
 // Domain: systemic
-// Filter: coordinatedBy === 'telemetry-coordination-fsm' AND domain === 'systemic'
+// Filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === 'systemic'
 // Write: lineage:ledger:entries (canonical ledger)
 // Dispatch: CK.dispatch(PROJECTION_PERSISTED)
 
