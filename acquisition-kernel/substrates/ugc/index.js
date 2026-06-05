@@ -10,7 +10,30 @@
 const HashtagWorker = require('./workers/hashtag');
 const TaggedWorker = require('./workers/tagged');
 const { mapRawPostToUgcContent } = require('./normalizer');
-const dispatchWrite = require('../../../postgres-telemetry-kernel/writers').dispatchWrite;
+
+/**
+ * Persist UGC data to Supabase.
+ * Constitutional path: normalize → CK(DB_WRITE_REQUESTED) → writer.
+ */
+async function persist(accountId, rawData, extra = {}) {
+  const governance = extra._governance;
+
+  if (!rawData.records || rawData.records.length === 0) return { count: 0 };
+  const source = rawData.cleanHashtag ? 'hashtag' : 'tagged';
+  const rows = rawData.records
+    .filter(p => p.id)
+    .map(p => mapRawPostToUgcContent(p, accountId, source, rawData.cleanHashtag || null));
+  if (rows.length === 0) return { count: 0 };
+
+  governance?.dispatch({
+    type: 'DB_WRITE_REQUESTED',
+    domain: 'ugc', accountId, intentId: null,
+    table: 'ugc_content',
+    operation: 'batch_upsert_ugc',
+    rows,
+  });
+  return { count: rows.length };
+}
 
 /**
  * Fetch raw data from Instagram API for UGC domain.
@@ -28,24 +51,6 @@ async function fetch(accountId, params, credentials) {
   }
   const worker = new TaggedWorker();
   return worker.execute(accountId, params, credentials);
-}
-
-/**
- * Persist UGC data to Supabase.
- * Routes through CK dispatch path: DB_WRITE_REQUESTED → persist-telemetry-fsm → db/writer.
- */
-async function persist(accountId, rawData) {
-  if (!rawData.records || rawData.records.length === 0) return { count: 0 };
-  const source = rawData.cleanHashtag ? 'hashtag' : 'tagged';
-  const rows = rawData.records
-    .filter(p => p.id)
-    .map(p => mapRawPostToUgcContent(p, accountId, source, rawData.cleanHashtag || null));
-  if (rows.length === 0) return { count: 0 };
-  dispatchWrite('batch_upsert_ugc', {
-    domain: 'ugc', accountId, intentId: null, table: 'ugc_content',
-    rows,
-  });
-  return { count: rows.length };
 }
 
 module.exports = { fetch, persist };

@@ -1,5 +1,6 @@
-// control-plane/runtime/lifecycle.js
+// scheduling-kernel/substrates/cadence/lifecycle.js
 // Account Lifecycle: bounded account discovery and removal tracking.
+// Kernelized from: control-plane/runtime/lifecycle.js
 //
 // Owns: discovering active accounts, tracking membership, signalling removal.
 // Does NOT own: evaluation, emission, signal intake, operational safety,
@@ -14,7 +15,7 @@
 //   lifecycle.stopAll()  → clear all tracked accounts
 //   lifecycle.onRemove(fn) → register removal callback
 
-const { getRedisClient } = require('../../config/redis');
+const { getRedisClient } = require('../../../../config/redis');
 
 /** Set of currently active account IDs */
 const _activeAccounts = new Set();
@@ -111,7 +112,7 @@ async function refresh() {
  */
 function _emitTransition(accountId, previousState, nextState) {
   try {
-    const observability = require('../observability/emitters/transition-emitter');
+    const observability = require('../../../control-plane/observability/emitters/transition-emitter');
     observability.transition({
       domain: 'lifecycle',
       entity: 'account',
@@ -135,4 +136,3 @@ function stopAll() {
 }
 
 module.exports = { status, refresh, stopAll, onRemove, setGovernance };
-

@@ -1,5 +1,6 @@
-// control-plane/runtime/cadence.js
+// scheduling-kernel/substrates/cadence/cadence.js
 // Cadence: bounded periodic maintenance loop.
+// Kernelized from: control-plane/runtime/cadence.js
 //
 // Owns: running a background loop at a fixed interval, stop signalling.
 // Does NOT own: worker pool refresh, operational checks — it just calls the callback.
@@ -100,7 +101,7 @@ async function stop() {
  */
 function _emitTransition(nextState) {
   try {
-    const observability = require('../observability/emitters/transition-emitter');
+    const observability = require('../../../control-plane/observability/emitters/transition-emitter');
     const previousState = _loopPromise ? 'TICKING' : 'IDLE';
     observability.transition({
       domain: 'cadence',

@@ -1,5 +1,6 @@
-// control-plane/governance/domains/scheduling-fsm.js
+// scheduling-kernel/fsm.js
 // Scheduling Domain FSM: federated state machine governing maintenance cadence.
+// Kernelized from: control-plane/governance/domains/scheduling-fsm.js
 //
 // Owns: cadence-driven maintenance lifecycle (scan → refresh → check → metrics),
 //        worker metrics evaluation, health signal reporting.
@@ -12,18 +13,8 @@
 // Architectural invariant:
 //   Signals UP   → ctx.dispatchGlobal(event) reports degradation to constitutional
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
-//   Membranes ↓  → actions returned to constitFSM utional for emission to orchestrators
-
-// Lazy import to avoid circular dependency
-let _observability = null;
-function _obs() {
-  if (!_observability) {
-    try { _observability = require('../../observability/emitters/transition-emitter'); }
-    catch (_) { _observability = null; }
-  }
-  return _observability;
-}
-//   Lineage      → ctx.recordLineage() writes to authoritative ledger (via CK mediation)
+//   Membranes ↓  → actions returned to constitutional for emission to orchestrators
+//   Lineage     → ctx.recordLineage() writes to authoritative ledger (via CK mediation)
 //
 // Domain FSMs CANNOT directly access the lineage ledger.
 // The constitutional kernel mediates all lineage writes.
@@ -33,6 +24,16 @@ function _obs() {
 //   SCANNING   — scanning database for publishable items
 //   REFRESHING — refreshing account lifecycle
 //   CHECKING   — running safety checks and metrics
+
+// Lazy import to avoid circular dependency
+let _observability = null;
+function _obs() {
+  if (!_observability) {
+    try { _observability = require('../../control-plane/observability/emitters/transition-emitter'); }
+    catch (_) { _observability = null; }
+  }
+  return _observability;
+}
 
 const crypto = require('crypto');
 

@@ -13,7 +13,6 @@ const ConversationsWorker = require('./workers/conversations');
 const transport = require('./transport');
 const { getRecentMedia } = require('../../../postgres-telemetry-kernel/readers');
 const { normalizeComment, transformMessage } = require('./normalizer');
-const dispatchWrite = require('../../../postgres-telemetry-kernel/writers').dispatchWrite;
 const conversationHydrator = require('./hydrators/conversation-hydrator');
 const mediaHydrator = require('./hydrators/media-hydrator');
 
@@ -76,42 +75,44 @@ async function fetch(accountId, params, credentials) {
 
 /**
  * Persist engagement data to Supabase.
- * Routes through CK dispatch path: DB_WRITE_REQUESTED → persist-telemetry-fsm → db/writer.
+ * Constitutional path: hydrate → normalize → CK(DB_WRITE_REQUESTED) → writer.
  *
- * Normalization is done inline — callers receive raw API shapes and this function
- * canonicalizes them before dispatching.
+ * Normalization is done via canonical normalizer — no inline field mapping.
  */
 async function persist(accountId, rawData, extra = {}) {
-  if (rawData.batches) {
-    // Comments from media batches: { batches: [{ mediaId, comments }] }
-    const governance = extra._governance;
+  const governance = extra._governance;
 
-    // Phase 3B: hydrate Instagram media IDs → DB UUIDs BEFORE normalization
+  if (rawData.batches) {
+    // ── Comments from media batches ────────────────────────────────────────
+    // Hydrate: resolve Instagram media IDs → DB UUIDs
     const mediaIds = [...new Set(rawData.batches.map(b => b.mediaId).filter(Boolean))];
-    let mediaUUIDMap = new Map(); // igId → uuid
+    let mediaUUIDMap = new Map();
 
     if (governance && mediaIds.length > 0) {
       const { resolved, missing } = await mediaHydrator.hydrate(accountId, mediaIds, governance);
       mediaUUIDMap = resolved;
 
-      // Create stubs for any missing media IDs
+      // Create stubs for missing media IDs via constitutional dispatch
       if (missing.size > 0) {
         const stubs = [...missing].map(igId => ({
           instagram_media_id: igId,
           business_account_id: accountId,
         }));
-        dispatchWrite('batch_upsert_media_stubs', {
-          domain: 'media', accountId, intentId: null, table: 'instagram_media',
+        governance.dispatch({
+          type: 'DB_WRITE_REQUESTED',
+          domain: 'media', accountId, intentId: null,
+          table: 'instagram_media',
+          operation: 'batch_upsert_media_stubs',
           rows: stubs,
         });
-        // Assume stubs will be created — the comment writer will resolve FKs
-        // on upsert. For stub rows, use Instagram ID as fallback (writer handles).
+        // Assume stubs created; pass through Instagram ID as fallback
         for (const igId of missing) {
-          mediaUUIDMap.set(igId, igId); // fallback: pass through Instagram ID
+          mediaUUIDMap.set(igId, igId);
         }
       }
     }
 
+    // Normalize via canonical normalizer
     const allRecords = [];
     for (const { mediaId, comments } of rawData.batches) {
       const uuid = mediaUUIDMap.get(mediaId) || mediaId;
@@ -121,79 +122,83 @@ async function persist(accountId, rawData, extra = {}) {
       }
     }
     if (allRecords.length === 0) return { count: 0 };
-    dispatchWrite('batch_upsert_comments', {
-      domain: 'comments', accountId, intentId: null, table: 'instagram_comments',
+
+    governance?.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'comments', accountId, intentId: null,
+      table: 'instagram_comments',
+      operation: 'batch_upsert_comments',
       rows: allRecords,
     });
     return { count: allRecords.length };
   }
 
   if (rawData.records) {
-    // Direct comments (no media context): { records: [...] }
+    // ── Direct comments (no media context) ─────────────────────────────────
     const allRecords = [];
     for (const c of rawData.records) {
       if (!c.id) continue;
       allRecords.push(normalizeComment(c, 'direct', accountId));
     }
     if (allRecords.length === 0) return { count: 0 };
-    dispatchWrite('batch_upsert_comments', {
-      domain: 'comments', accountId, intentId: null, table: 'instagram_comments',
+
+    governance?.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'comments', accountId, intentId: null,
+      table: 'instagram_comments',
+      operation: 'batch_upsert_comments',
       rows: allRecords,
     });
     return { count: allRecords.length };
   }
 
   if (rawData.rawMessages) {
-    // Messages: { rawMessages: [...], conversationId, igUserId?, pageId? }
+    // ── Messages ───────────────────────────────────────────────────────────
     const igUserId = rawData.igUserId || extra.igUserId;
     const pageId = rawData.pageId || extra.pageId || null;
+
+    // Hydrate: resolve conversation thread ID → DB UUID
+    let conversationUUID = null;
+    if (governance && rawData.conversationId) {
+      const convResult = await governance.governedRead('db.accounts', {
+        query: 'igThreadIdToUuid',
+        threadIds: [rawData.conversationId],
+      });
+      if (convResult.success && Array.isArray(convResult.data) && convResult.data.length > 0) {
+        conversationUUID = convResult.data[0].id;
+      }
+    }
+    // Fallback: use thread ID directly if governedRead unavailable or conversation not found
+    if (!conversationUUID) {
+      conversationUUID = rawData.conversationId || 'direct';
+    }
+
     const rows = [];
     for (const m of rawData.rawMessages) {
       if (!m || !m.id) continue;
-      const fromBusiness = m.from?.id === igUserId || (pageId && m.from?.id === pageId);
-      const att = m.attachments?.data?.[0] || null;
-      const imgData = att?.image_data || null;
-      const isSticker = imgData?.render_as_sticker === true;
-      const mediaUrl = imgData?.url || imgData?.animated_gif_url || att?.file_url || m.story?.link || null;
-      let messageType = 'text';
-      if (isSticker) messageType = 'media';
-      else if (att) messageType = 'media';
-      else if (m.story) messageType = 'story_reply';
-      else if (m.shares?.data?.length) messageType = 'post_share';
-      const mediaType = imgData ? 'image' : att?.file_url ? 'file' : null;
-      rows.push({
-        instagram_message_id: m.id,
-        message_text: m.message || null,
-        message_type: messageType,
-        media_url: mediaUrl,
-        media_type: mediaType,
-        conversation_id: rawData.conversationId || 'direct',
-        business_account_id: accountId,
-        is_from_business: fromBusiness,
-        recipient_instagram_id: m.to?.data?.[0]?.id || (fromBusiness ? null : igUserId) || '',
-        sender_username: m.from?.username || null,
-        sent_at: m.created_time,
-        send_status: fromBusiness ? 'sent' : 'delivered',
-      });
+      rows.push(transformMessage(m, conversationUUID, accountId, igUserId, pageId, null));
     }
     if (rows.length === 0) return { count: 0 };
-    dispatchWrite('batch_upsert_messages', {
-      domain: 'messages', accountId, intentId: null, table: 'instagram_dm_messages',
+
+    governance?.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'messages', accountId, intentId: null,
+      table: 'instagram_dm_messages',
+      operation: 'batch_upsert_messages',
       rows,
     });
     return { count: rows.length };
   }
 
   if (rawData.rawConversations) {
-    // Conversations: { rawConversations: [...], igUserId?, pageId? }
+    // ── Conversations ──────────────────────────────────────────────────────
     const igUserId = rawData.igUserId || extra.igUserId;
     const pageId = rawData.pageId || extra.pageId || null;
     const { parseConversations } = require('./parser');
     const { records } = parseConversations(rawData.rawConversations, igUserId, pageId);
     if (records.length === 0) return { count: 0 };
 
-    // Phase 3A: hydrate customer_user_id via governedRead BEFORE writer dispatch
-    const governance = extra._governance;
+    // Hydrate: resolve customer_user_id via governedRead
     if (governance) {
       await conversationHydrator.hydrate(records, governance);
     }
@@ -209,8 +214,12 @@ async function persist(accountId, rawData, extra = {}) {
       message_count: r.message_count,
       conversation_status: 'active',
     }));
-    dispatchWrite('batch_upsert_conversations', {
-      domain: 'messages', accountId, intentId: null, table: 'instagram_dm_conversations',
+
+    governance?.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'messages', accountId, intentId: null,
+      table: 'instagram_dm_conversations',
+      operation: 'batch_upsert_conversations',
       rows,
     });
     return { count: rows.length };

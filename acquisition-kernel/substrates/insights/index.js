@@ -8,7 +8,9 @@
 // Persist: routes to persistence substrate (called by parsing workers asynchronously).
 
 const InsightsWorker = require('./workers/insights');
-const dispatchWrite = require('../../../postgres-telemetry-kernel/writers').dispatchWrite;
+const { normalizeMediaInsight } = require('./normalizer');
+const { syncHashtagsFromCaptions } = require('../../../helpers/agent-helpers');
+const { getSupabaseAdmin } = require('../../../config/supabase');
 
 /**
  * Fetch raw data from Instagram API for insights domain.
@@ -26,36 +28,35 @@ async function fetch(accountId, params, credentials) {
 
 /**
  * Persist insights data to Supabase.
- * Routes through CK dispatch path: DB_WRITE_REQUESTED → persist-telemetry-fsm → db/writer.
- * Note: syncHashtagsFromCaptions side-effect deferred to Phase 4 enrichment membrane.
+ * Constitutional path: normalize → CK(DB_WRITE_REQUESTED) → writer → hashtag sync.
+ * Uses canonical normalizer — no inline field mapping.
  */
-async function persist(accountId, rawData) {
+async function persist(accountId, rawData, extra = {}) {
+  const governance = extra._governance;
+
   if (!rawData.insights || rawData.insights.length === 0) return { count: 0 };
+
   const rows = rawData.insights
     .filter(item => item && item.media_id)
-    .map(item => {
-      const isStory = item.media_type === 'STORY';
-      return {
-        instagram_media_id: item.media_id,
-        business_account_id: accountId,
-        media_type: item.media_type || null,
-        caption: item.caption || null,
-        media_url: item.media_url || null,
-        thumbnail_url: item.thumbnail_url || null,
-        permalink: item.permalink || null,
-        like_count: item.like_count || 0,
-        comments_count: item.comments_count || 0,
-        reach: item.insights.find(i => i.name === 'reach')?.values?.[0]?.value || 0,
-        impressions: item.insights.find(i => i.name === 'impressions')?.values?.[0]?.value || 0,
-        saves: isStory ? null : (item.insights.find(i => i.name === 'saved')?.values?.[0]?.value ?? 0),
-        published_at: item.timestamp || null,
-      };
-    });
+    .map(item => normalizeMediaInsight(item, accountId));
+
   if (rows.length === 0) return { count: 0 };
-  dispatchWrite('batch_upsert_insights', {
-    domain: 'insights', accountId, intentId: null, table: 'instagram_media',
+
+  governance?.dispatch({
+    type: 'DB_WRITE_REQUESTED',
+    domain: 'insights', accountId, intentId: null,
+    table: 'instagram_media',
+    operation: 'batch_upsert_insights',
     rows,
   });
+
+  // Side-effect: extract hashtags from captions into ugc_monitored_hashtags
+  const captions = rawData.insights.map(p => p.caption).filter(Boolean);
+  if (captions.length > 0) {
+    const supabase = getSupabaseAdmin();
+    if (supabase) syncHashtagsFromCaptions(supabase, accountId, captions).catch(() => {});
+  }
+
   return { count: rows.length };
 }
 

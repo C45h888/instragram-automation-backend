@@ -1,5 +1,6 @@
-// control-plane/orchestration/cadence-orchestrator.js
+// scheduling-kernel/orchestrator.js
 // Cadence Orchestrator: constitutional coordination membrane.
+// Kernelized from: control-plane/orchestration/cadence-orchestrator.js
 //
 // Owns: routing CADENCE_TICK maintenance actions downward,
 //        forwarding maintenance observations upward.
@@ -9,11 +10,8 @@
 // It mechanically dispatches maintenance work and forwards results upward.
 // It NEVER interprets runtime meaning.
 
-// NOTE: db-scanner removed — legacy coupled module deleted.
-// SCAN_DATABASE action removed from scheduling-fsm.
-
-const lifecycle = require('../runtime/lifecycle');
-const safety = require('../runtime/operational-safety');
+const lifecycle = require('./substrates/cadence/lifecycle');
+const safety = require('./substrates/cadence/operational-safety');
 const metricsSubstrate = require('../../substrates/metrics-substrate');
 
 /**
@@ -37,7 +35,7 @@ function wire(governance) {
     });
   });
 
-  // ── CHECK_SAFETY → safety module ───────────────────────────────────────
+  // ── CHECK_SAFETY → safety module ────────────────────────────────────────
   governance.subscribeAction('CHECK_SAFETY', (action) => {
     safety.runChecks().then(() => {
       governance.dispatch({ type: 'SAFETY_CHECK_COMPLETE' });

@@ -8,6 +8,7 @@ const WORKER_MAP = {
   batch_upsert_posts:                 './content-writer',
   batch_upsert_insights:              './content-writer',
   batch_upsert_ugc:                   './ugc-writer',
+  batch_upsert_media_stubs:           './content-writer',
   batch_fix_message_conversation_ids: './message-fix-writer',
 };
 

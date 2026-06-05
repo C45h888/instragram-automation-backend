@@ -8,7 +8,9 @@
 // Persist: routes to persistence substrate (called by parsing workers asynchronously).
 
 const PostsWorker = require('./workers/posts');
-const dispatchWrite = require('../../../postgres-telemetry-kernel/writers').dispatchWrite;
+const { normalizeBusinessPost } = require('./normalizer');
+const { syncHashtagsFromCaptions } = require('../../../helpers/agent-helpers');
+const { getSupabaseAdmin } = require('../../../config/supabase');
 
 /**
  * Fetch raw data from Instagram API for content domain.
@@ -26,30 +28,35 @@ async function fetch(accountId, params, credentials) {
 
 /**
  * Persist business post data to Supabase.
- * Routes through CK dispatch path: DB_WRITE_REQUESTED → persist-telemetry-fsm → db/writer.
- * Note: syncHashtagsFromCaptions side-effect deferred to Phase 4 enrichment membrane.
+ * Constitutional path: normalize → CK(DB_WRITE_REQUESTED) → writer → hashtag sync.
+ * Uses canonical normalizer — no inline field mapping.
  */
-async function persist(accountId, rawData) {
+async function persist(accountId, rawData, extra = {}) {
+  const governance = extra._governance;
+
   if (!rawData.posts || rawData.posts.length === 0) return { count: 0 };
+
   const rows = rawData.posts
     .filter(p => p && p.id)
-    .map(p => ({
-      instagram_media_id: p.id,
-      business_account_id: accountId,
-      media_type: p.media_type || null,
-      caption: p.caption || null,
-      media_url: p.media_url || null,
-      thumbnail_url: p.thumbnail_url || null,
-      permalink: p.permalink || null,
-      like_count: p.like_count || 0,
-      comments_count: p.comments_count || 0,
-      published_at: p.timestamp || null,
-    }));
+    .map(p => normalizeBusinessPost(p, accountId));
+
   if (rows.length === 0) return { count: 0 };
-  dispatchWrite('batch_upsert_posts', {
-    domain: 'media', accountId, intentId: null, table: 'instagram_media',
+
+  governance?.dispatch({
+    type: 'DB_WRITE_REQUESTED',
+    domain: 'media', accountId, intentId: null,
+    table: 'instagram_media',
+    operation: 'batch_upsert_posts',
     rows,
   });
+
+  // Side-effect: extract hashtags from captions into ugc_monitored_hashtags
+  const captions = rawData.posts.map(p => p.caption).filter(Boolean);
+  if (captions.length > 0) {
+    const supabase = getSupabaseAdmin();
+    if (supabase) syncHashtagsFromCaptions(supabase, accountId, captions).catch(() => {});
+  }
+
   return { count: rows.length };
 }
 
