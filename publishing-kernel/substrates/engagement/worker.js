@@ -8,7 +8,7 @@
 // Stateless. Created by engagement substrate (factory), destroyed after result.
 
 const transport = require('./transport');
-const { categorizeIgError } = require('../../../helpers/agent-helpers');
+const { categorizeIgError } = require('../../../substrates/transport/error-classifier');
 
 module.exports = class EngagementWorker {
   /**

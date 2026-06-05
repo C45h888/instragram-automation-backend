@@ -144,7 +144,7 @@ function _buildPayload(record) {
 // ── Direct execute methods (for non-batched, non-governed calls) ──────────
 
 const transport = require('./transport');
-const { categorizeIgError } = require('../../../helpers/agent-helpers');
+const { categorizeIgError } = require('../../../substrates/transport/error-classifier');
 
 async function executeCommentReply(accountId, credentials, payload) {
   const { pageToken } = credentials;

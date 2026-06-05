@@ -5,7 +5,9 @@
 // All substrate-specific transport files import from here to avoid boilerplate duplication.
 
 const axios = require('axios');
-const { resolveAccountCredentials, categorizeIgError, GRAPH_API_BASE } = require('../../helpers/agent-helpers');
+const { GRAPH_API_BASE } = require('../../config/instagram');
+const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
+const { categorizeIgError } = require('./error-classifier');
 const { logWithDomain } = require('../telemetry');
 const { parseUsageHeader } = require('../quota');
 

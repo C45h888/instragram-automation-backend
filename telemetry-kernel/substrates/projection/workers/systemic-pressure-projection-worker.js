@@ -1,6 +1,6 @@
 const { BaseProjectionWorker } = require('./base-projection-worker');
-const systemicInput = require('../projection-layers/inputs/systemic-input');
-const systemicSynthesis = require('../projection-layers/synthesis/systemic-pressure-projection');
+const systemicInput = require('../inputs/systemic-input');
+const systemicSynthesis = require('../synthesis/systemic-pressure-projection');
 
 const PROJECTION_TYPE = 'SYSTEMIC_PRESSURE_PROJECTION';
 const POLL_INTERVAL_MS = 30000;

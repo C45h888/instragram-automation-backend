@@ -1,11 +1,11 @@
-const metricsSubstrate = require('../../../substrates/metrics-substrate');
+const metricsSubstrate = require('../../../../substrates/metrics-substrate');
 
 async function getNormalizedInputWindow({ pollIntervalMs, tickCount, failureHistory = [], lastFailureRate = 0 }) {
   const healthSignals = metricsSubstrate.getHealthSignals();
   const domainBreakdown = metricsSubstrate.getDomainBreakdown();
   let observabilitySnapshot = {};
   try {
-    const observability = require('../../observability');
+    const observability = require('../../../../control-plane/observability');
     observabilitySnapshot = observability.query.getFullSnapshot() || {};
   } catch (_) {}
 

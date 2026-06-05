@@ -1,6 +1,6 @@
 const { BaseProjectionWorker } = require('./base-projection-worker');
-const runtimeInput = require('../projection-layers/inputs/runtime-input');
-const runtimeSynthesis = require('../projection-layers/synthesis/runtime-projection');
+const runtimeInput = require('../inputs/runtime-input');
+const runtimeSynthesis = require('../synthesis/runtime-projection');
 
 const PROJECTION_TYPE = 'RUNTIME_PROJECTION';
 const POLL_INTERVAL_MS = 30000;

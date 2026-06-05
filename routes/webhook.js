@@ -9,7 +9,6 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { getSupabaseAdmin, logAudit } = require('../config/supabase');
-const { ensureMediaRecord } = require('../helpers/agent-helpers');
 
 // ============================================
 // META WEBHOOK SIGNATURE VERIFICATION
@@ -169,7 +168,26 @@ async function handleCommentEvent(supabase, igAccountId, value) {
   const businessAccountId = account.business_account_id;
 
   // Ensure media record exists (needed for FK constraint on instagram_comments.media_id)
-  const mediaUUID = await ensureMediaRecord(supabase, mediaId, businessAccountId);
+  let mediaUUID = null;
+  const { data: existingMedia } = await supabase
+    .from('instagram_media')
+    .select('id, caption')
+    .eq('instagram_media_id', mediaId)
+    .limit(1)
+    .single();
+  if (existingMedia?.caption) {
+    mediaUUID = existingMedia.id;
+  } else {
+    const { data: created, error: mediaErr } = await supabase
+      .from('instagram_media')
+      .upsert({ instagram_media_id: mediaId, business_account_id: businessAccountId }, { onConflict: 'instagram_media_id' })
+      .select('id')
+      .single();
+    if (mediaErr) {
+      console.warn(`[Webhook] ensureMediaRecord failed for ${mediaId}:`, mediaErr.message);
+    }
+    mediaUUID = created?.id || null;
+  }
   if (!mediaUUID) {
     console.warn(`[Webhook] Could not resolve media ${mediaId} for comment ${commentId}`);
   }

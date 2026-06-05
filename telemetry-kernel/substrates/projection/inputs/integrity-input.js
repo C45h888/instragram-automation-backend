@@ -1,5 +1,4 @@
-
-const lineageLedger = require('../../governance/lineage-ledger');
+const lineageLedger = require('../../../../control-plane/governance/lineage-ledger');
 
 async function getNormalizedInputWindow({ pollIntervalMs, tickCount }) {
   const ledgerSize = await lineageLedger.getSize();

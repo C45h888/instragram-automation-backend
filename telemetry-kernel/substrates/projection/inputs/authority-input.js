@@ -4,7 +4,7 @@ async function getNormalizedInputWindow({ pollIntervalMs, tickCount }) {
   const rateLimitWindows = [];
 
   try {
-    const observability = require('../../observability');
+    const observability = require('../../../../control-plane/observability');
     crossDomain = observability.query.getCrossDomain(['acquisition', 'publishing', 'scheduling', 'dedup']) || {};
     for (const [domain, state] of Object.entries(crossDomain)) {
       domainBreakdown[domain] = typeof state === 'object' && state !== null

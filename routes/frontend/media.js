@@ -6,7 +6,7 @@ const axios = require('axios');
 const verdictGate = require('../../substrates/graph-capability/verdict-gate');
 const vault = require('../../substrates/vault');
 const { logAudit: logAuditService } = require('../../config/supabase');
-const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
+const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
 const { getSupabaseAdmin } = require('../../config/supabase');
 
 const logAudit = logAuditService;

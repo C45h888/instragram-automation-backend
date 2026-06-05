@@ -11,7 +11,7 @@
 // It never decides which accounts to keep or remove.
 
 const lifecycle = require('../runtime/lifecycle');
-const { clearCredentialCache } = require('../../helpers/agent-helpers');
+const { clearCredentialCache } = require('../../graph-capability-kernel/substrates/credential-resolver');
 
 /**
  * Wire this orchestrator to the governance kernel.

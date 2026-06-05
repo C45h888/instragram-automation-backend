@@ -1,6 +1,6 @@
 const { BaseProjectionWorker } = require('./base-projection-worker');
-const integrityInput = require('../projection-layers/inputs/integrity-input');
-const integritySynthesis = require('../projection-layers/synthesis/integrity-projection');
+const integrityInput = require('../inputs/integrity-input');
+const integritySynthesis = require('../synthesis/integrity-projection');
 
 const PROJECTION_TYPE = 'INTEGRITY_PROJECTION';
 const POLL_INTERVAL_MS = 30000;

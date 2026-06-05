@@ -24,7 +24,7 @@ const dedupSubstrate = require('../dedup-kernel/substrates/dedup');
 const mutationSubstrate = require('../control-plane/mutation-substrate');
 const contentSubstrate = require('./substrates/content');
 const engagementSubstrate = require('./substrates/engagement');
-const { resolveAccountCredentials } = require('../helpers/agent-helpers');
+const { resolveAccountCredentials } = require('../graph-capability-kernel/substrates/credential-resolver');
 
 const MUTATION_POLICY = {
   scheduled_posts: {

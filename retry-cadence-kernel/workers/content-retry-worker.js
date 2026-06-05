@@ -15,7 +15,7 @@
 const retry = require('../../substrates/retry');
 const { getPolicy } = require('../policy');
 const contentTransport = require('../../acquisition-kernel/substrates/content/transport');
-const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
+const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
 const parsing = require('../../acquisition-kernel/parsing');
 
 function schedule(domain, accountId, intentId, params, retryCount, maxRetries, governance) {

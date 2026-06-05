@@ -1,9 +1,9 @@
-const lineageLedger = require('../../governance/lineage-ledger');
+const lineageLedger = require('../../../../control-plane/governance/lineage-ledger');
 
 async function getNormalizedInputWindow({ pollIntervalMs, tickCount, previousConvergenceConfidence = 1.0 }) {
   let crossDomain = {};
   try {
-    const observability = require('../../observability');
+    const observability = require('../../../../control-plane/observability');
     crossDomain = observability.query.getCrossDomain(['acquisition', 'publishing', 'scheduling', 'dedup']) || {};
   } catch (_) {}
   const lineageEntries = await lineageLedger.getLineage(100);

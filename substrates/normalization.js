@@ -5,8 +5,6 @@
 //        Every function is pure — no API calls, no DB writes, no side effects.
 // Does NOT own: API transport, persistence, retry, orchestration.
 
-const { syncHashtagsFromCaptions } = require('../helpers/agent-helpers');
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMMENTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -196,5 +194,4 @@ module.exports = {
   normalizeBusinessPost,
   normalizeMediaInsight,
   mapRawPostToUgcContent,
-  syncHashtagsFromCaptions,
 };

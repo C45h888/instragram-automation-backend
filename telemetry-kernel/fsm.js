@@ -1,5 +1,7 @@
-// control-plane/governance/domains/telemetry-coordination-fsm.js
+// telemetry-kernel/fsm.js
 // Deterministic Telemetry Coordination FSM: constitutional semantic ingress plane.
+// Migrated from control-plane/governance/domains/telemetry-coordination-fsm.js
+// with observability/redis/lineage-ledger paths adjusted for kernel location.
 //
 // Owns: semantic ingress ordering, projection ownership validation,
 //        namespace authority validation, deterministic sequencing,
@@ -52,7 +54,7 @@ const crypto = require('crypto');
 let _observability = null;
 function _obs() {
   if (!_observability) {
-    try { _observability = require('../../observability/emitters/transition-emitter'); }
+    try { _observability = require('../../control-plane/observability/emitters/transition-emitter'); }
     catch (_) { _observability = null; }
   }
   return _observability;
@@ -141,7 +143,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-buildActions: async (event, ctx) => {
+    buildActions: async (event, ctx) => {
       // 1. Read intents from all domain-bounded partitions via per-namespace cursors
       const { intents, newCursors } = await _readIntents();
       _intentCursors = newCursors;
@@ -275,7 +277,7 @@ buildActions: async (event, ctx) => {
 
         if (validation.valid) {
           // 2. Mark accepted in canonical ledger
-          const lineageLedger = require('../lineage-ledger');
+          const lineageLedger = require('../../control-plane/governance/lineage-ledger');
           lineageLedger.markEntryAccepted(ledgerId).catch(err =>
             console.error('[telemetry-coordination-fsm] markEntryAccepted error:', err.message)
           );
@@ -289,7 +291,7 @@ buildActions: async (event, ctx) => {
           });
         } else {
           // 4. Remove from canonical ledger
-          const lineageLedger = require('../lineage-ledger');
+          const lineageLedger = require('../../control-plane/governance/lineage-ledger');
           lineageLedger.removeEntry(ledgerId).catch(err =>
             console.error('[telemetry-coordination-fsm] removeEntry error:', err.message)
           );
@@ -410,13 +412,9 @@ buildActions: async (event, ctx) => {
   },
 
   // ── Transition Writer Health — worker layer degraded ─────────────────────
-  // Fired by CK when transition-writer health transitions to DEGRADED or FAILED.
-  // The telemetry FSM transitions to WORKER_DEGRADED substate and activates
-  // the retry escalation chain to engage the recovery protocol.
   TRANSITION_WRITER_HEALTH_CHANGED: {
     target: (event) => {
-      // Transition to degraded substate if writers are not healthy
-      if (!event.health || event.health.ok) return _localState; // no change if healthy
+      if (!event.health || event.health.ok) return _localState;
       if (event.health.status === 'FAILED' || event.health.status === 'STOPPED') {
         return 'WORKER_DEGRADED';
       }
@@ -428,14 +426,12 @@ buildActions: async (event, ctx) => {
       const actions = [];
 
       if (!health.ok) {
-        // Determine escalation level based on error category
         const worstCat = health.worstCategory;
         const escalationLevel =
           worstCat === 'REDIS_UNAVAILABLE' ? 'DEGRADED' :
           worstCat === 'CK_DISPATCH_FAILED' ? 'ESCALATED' :
           'RETRYING';
 
-        // ── Escalate: activate retry cadence via engagement FSM ────────────
         if (ctx && ctx.dispatchGlobal) {
           ctx.dispatchGlobal({
             type: 'RETRY_CADENCE_REQUEST',
@@ -447,7 +443,6 @@ buildActions: async (event, ctx) => {
           });
         }
 
-        // ── Log degradation with error classification ───────────────────────
         const degradedWriter = health.writers?.find(w => !w.ok);
         actions.push({
           type: 'LOG_DEGRADED',
@@ -458,7 +453,6 @@ buildActions: async (event, ctx) => {
           failedWrites: degradedWriter?.failedWrites ?? 0,
         });
 
-        // ── Signal CK that retry is active ─────────────────────────────────
         actions.push({
           type: 'INGRESS_RETRY_ACTIVE',
           lag: health.totalErrors || 0,
@@ -467,7 +461,6 @@ buildActions: async (event, ctx) => {
           source: 'worker',
         });
       } else {
-        // Worker recovered — clear retry cadence
         if (ctx && ctx.dispatchGlobal) {
           ctx.dispatchGlobal({
             type: 'RETRY_CADENCE_CLEAR',
@@ -491,11 +484,8 @@ buildActions: async (event, ctx) => {
 // 3. Domain-local runtime state (private)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let _localState = 'IDLE'; // IDLE | VALIDATING | ORDERING | SERIALIZING | EMITTING | HALTED | WORKER_DEGRADED | INGRESS_LAG_RETRYING | INGRESS_ESCALATED | INGRESS_DEGRADED
+let _localState = 'IDLE';
 
-// ── Per-namespace cursors — one cursor per domain-bounded partition.
-// Each namespace's cursor tracks only its own bounded partition independently.
-// This replaces the single _intentCursor which could not track 5 independent streams.
 let _intentCursors = {
   runtime: 0,
   integrity: 0,
@@ -511,70 +501,37 @@ let _serializedTransitionCount = 0;
 let _priorCycleOutputCount = 0;
 let _backpressureSignaled = false;
 
-// ── Ingress retry escalation budget ───────────────────────────────────────
-let _retryAttempts = 0;          // attempts within current 60s window
-let _retryWindowStart = null;    // timestamp of window start
-let _retryEscalationState = 'IDLE'; // 'IDLE' | 'RETRYING' | 'ESCALATED' | 'DEGRADED'
+// ── Ingress retry escalation budget
+let _retryAttempts = 0;
+let _retryWindowStart = null;
+let _retryEscalationState = 'IDLE';
 
-// ── Rejection log — last N rejected intents for forensic analysis
-const _rejectionLog = []; // capped at 50
-const MAX_REJECTION_LOG = 50; 
+// ── Rejection log
+const _rejectionLog = [];
+const MAX_REJECTION_LOG = 50;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3b. Reactive mode — onWrite event-driven coordination (Phase 3 trigger)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ── Reactive state
-let _unsubscribeOnWrite = null;      // onWrite hook unsubscribe fn
-let _coordinationPending = false;    // prevents re-entrant dispatch calls
-let _ckContext = null;               // CK context passed during start()
+let _unsubscribeOnWrite = null;
+let _coordinationPending = false;
+let _ckContext = null;
 
-// ── onWrite callback — reacts to PROJECTION_INTENT entries as they land.
-// Fires synchronously on every _transitionLog.push(). Filters strictly to
-// uncoordinated PROJECTION_INTENT entries. All other entry types are skipped.
-//
-// FSM output (SEMANTIC_PROJECTION_TRANSITION, raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION')
-// is consumed by transition-writers, NOT by the FSM's reactive handler.
 function _onTransitionLogWrite(transition) {
-  // Gate 1: only react to PROJECTION_INTENT (uncoordinated intent entries)
   if (transition.nextState !== 'PROJECTION_INTENT') return;
-
-  // Fire reactive coordination — non-blocking, setImmediate to yield event loop
-  // _triggerReactiveCoordination is idempotent — multiple rapid onWrite events
-  // result in one coordination cycle (batching handled inside PROCESS_INTENTS).
   _triggerReactiveCoordination();
 }
 
-// ── Trigger coordination cycle from reactive event.
-// Uses setImmediate to yield without sleeping — coordination fires in the
-// next event loop tick, never blocking the onWrite callback that triggered it.
-// Multiple onWrite events arriving before the tick are batched into one cycle.
-//
-// CRITICAL FIX: Reactive coordination now routes through CK via dispatchGlobal,
-// not directly to FSM.dispatch(). This makes CK aware of every coordination
-// cycle and sequences it properly with other domain events. Without this,
-// CK has no visibility into reactive telemetry cycles — it cannot coordinate
-// them with other domain FSMs, cannot backpressure them, and cannot observe
-// them in its own action log.
 function _triggerReactiveCoordination() {
-  // Prevent re-entrant calls — if a coordination is already pending, skip.
   if (_coordinationPending) return;
-
   _coordinationPending = true;
 
-  // Yield to event loop — non-blocking. Allows all pending onWrite events
-  // from the current tick to accumulate before the coordination cycle fires.
   setImmediate(() => {
     try {
-      // Route through CK — CK dispatches to FSM, giving CK full visibility
-      // and sequencing control over the reactive coordination cycle.
       if (_ckContext && typeof _ckContext.dispatchGlobal === 'function') {
-        // dispatchGlobal routes through CK.dispatch() which routes to domain FSMs
-        // This makes CK aware: it sees every reactive cycle, can backpressure,
-        // and can sequence with other domain events.
         _ckContext.dispatchGlobal({ type: 'TELEMETRY_PROCESS_INTENTS', source: 'reactive' });
       } else if (_ckContext && typeof _ckContext.dispatch === 'function') {
-        // Fallback to direct FSM dispatch only if CK context is unavailable
-        // (e.g., FSM started without CK context). This path bypasses CK.
         _ckContext.dispatch({ type: 'PROCESS_INTENTS', source: 'reactive' });
       }
     } catch (err) {
@@ -586,29 +543,20 @@ function _triggerReactiveCoordination() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 4. Intent Processing — pure functions, no timing/async dependencies
+// 4. Intent Processing
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Read PROJECTION_INTENT entries from all domain-bounded partitions.
- * Each namespace is read with its own cursor — no cross-contamination.
- * All intents are aggregated into one coordination batch per cycle.
- *
- * @returns {Promise<{ intents: Array<object>, newCursors: object }>}
- */
 async function _readIntents() {
   try {
-    const observability = require('../../observability');
+    const observability = require('../../control-plane/observability');
     const NAMESPACES = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
     const allIntents = [];
     const newCursors = { ..._intentCursors };
 
-    // Read each namespace's bounded partition independently
     for (const namespace of NAMESPACES) {
       const cursor = newCursors[namespace];
       const { entries, nextCursor } = await observability.query.getDomainEntriesSince(namespace, cursor);
 
-      // Filter: only PROJECTION_INTENT entries
       for (const entry of entries) {
         if (entry.nextState === 'PROJECTION_INTENT') {
           allIntents.push(entry);
@@ -625,16 +573,9 @@ async function _readIntents() {
   }
 }
 
-/**
- * Persist per-namespace cursors to Redis after each coordination cycle.
- * Prevents replay storm on restart — FSM resumes from where it left off.
- * Cursors are namespaced: governance:telemetry:fsm:cursor:{namespace}
- *
- * @param {object} newCursors — { runtime: number, integrity: number, authority: number, health: number, systemic: number }
- */
 async function _persistCursors(newCursors) {
   try {
-    const redis = require('../../../config/redis').getRedisClient();
+    const redis = require('../../control-plane/config/redis').getRedisClient();
     if (!redis || redis.status !== 'ready') return;
 
     const pipeline = redis.pipeline();
@@ -647,16 +588,9 @@ async function _persistCursors(newCursors) {
   }
 }
 
-/**
- * Restore per-namespace cursors from Redis on boot.
- * If no cursor is found for a namespace, defaults to 0.
- * Called from init() — replaces the hard reset to 0 on every boot.
- *
- * @returns {Promise<object>} restored cursors
- */
 async function _restoreCursors() {
   try {
-    const redis = require('../../../config/redis').getRedisClient();
+    const redis = require('../../control-plane/config/redis').getRedisClient();
     if (!redis || redis.status !== 'ready') return null;
 
     const result = {};
@@ -667,22 +601,14 @@ async function _restoreCursors() {
     }
     return result;
   } catch (err) {
-    return null; // Redis unavailable — will start from 0
+    return null;
   }
 }
 
-/**
- * Validate a single projection intent against constitutional contracts.
- * Pure function — same intent always produces same result.
- *
- * @param {object} intent — raw PROJECTION_INTENT entry from observability
- * @returns {{ valid: boolean, violations: Array<{ field: string, reason: string }> }}
- */
 function _validateSingleIntent(intent) {
   const violations = [];
   const raw = intent.raw || {};
 
-  // 1. Validate projection namespace is known
   const namespace = raw.projectionNamespace;
   if (!namespace || !KNOWN_PROJECTION_NAMESPACES.has(namespace)) {
     violations.push({
@@ -692,7 +618,6 @@ function _validateSingleIntent(intent) {
     return { valid: false, violations };
   }
 
-  // 2. Validate authority — must be a projection worker
   const authority = intent.authority;
   if (!authority || !authority.includes('projection-worker')) {
     violations.push({
@@ -702,7 +627,6 @@ function _validateSingleIntent(intent) {
     return { valid: false, violations };
   }
 
-  // 3. Validate projection payload exists
   const payload = raw.projectionPayload;
   if (!payload || typeof payload !== 'object') {
     violations.push({
@@ -712,7 +636,6 @@ function _validateSingleIntent(intent) {
     return { valid: false, violations };
   }
 
-  // 4. Validate projection type is in schema
   const projectionType = raw.projectionType;
   if (!projectionType || typeof projectionType !== 'string') {
     violations.push({
@@ -721,22 +644,11 @@ function _validateSingleIntent(intent) {
     });
   }
 
-  // 5. Validate signal ownership — projection payload signals must belong
-  //    to telemetry-workers per SIGNAL_OWNERSHIP_MAP
   _validateSignalOwnership(payload, namespace, violations);
 
   return { valid: violations.length === 0, violations };
 }
 
-/**
- * Recursively validate that projection payload signals are owned by telemetry-workers.
- * Signals owned by 'lineage-worker' found in projection payloads indicate
- * a signal ownership contract violation.
- *
- * @param {object} payload — projection payload
- * @param {string} namespace — projection namespace (health, integrity, etc.)
- * @param {Array} violations — accumulator
- */
 function _validateSignalOwnership(payload, namespace, violations) {
   if (!payload || typeof payload !== 'object') return;
 
@@ -748,15 +660,10 @@ function _validateSignalOwnership(payload, namespace, violations) {
     } else if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') {
       const signalPath = `${namespace}.${key}`;
 
-      // Check if this signal exists in the ownership contract
       if (TELEMETRY_OWNED_SIGNALS.has(signalPath)) {
-        // Signal is legitimately owned by telemetry-workers — allowed
         continue;
       }
 
-      // Check if this signal is explicitly owned by namespace-projection-interpreter (violation)
-      // Interpreter signals are LEDGER_DERIVABLE and must NOT appear
-      // in telemetry projection payloads
       const lineageOwnedPrefixes = [
         'domain.', 'authority.acquisition.', 'authority.publishing.',
         'authority.scheduling.', 'governanceRuntime.runtimeState',
@@ -775,18 +682,10 @@ function _validateSignalOwnership(payload, namespace, violations) {
           reason: `Signal '${signalPath}' is ledger-derivable (owned by lineage-worker) — must not appear in telemetry projection payloads`,
         });
       }
-      // Unknown signals (not in either ownership set) — allowed, may be newly classified
     }
   }
 }
 
-/**
- * Validate all intents. Returns validated and rejected lists.
- * Pure function — no side effects.
- *
- * @param {Array<object>} intents
- * @returns {{ valid: Array<object>, rejected: Array<{ intent: object, violations: Array }> }}
- */
 function _validateIntents(intents) {
   const valid = [];
   const rejected = [];
@@ -804,17 +703,6 @@ function _validateIntents(intents) {
   return { valid, rejected };
 }
 
-/**
- * Deterministically order validated intents by:
- *   1. Namespace priority (integrity > authority > runtime > health > systemic)
- *   2. Within same namespace: projectionType lexical order
- *   3. Within same projectionType: traceId lexical order
- *
- * This is a pure function — same input always produces same order.
- *
- * @param {Array<object>} intents — validated intents
- * @returns {Array<object>} ordered intents
- */
 function _orderIntents(intents) {
   return [...intents].sort((a, b) => {
     const rawA = a.raw || {};
@@ -838,17 +726,9 @@ function _orderIntents(intents) {
   });
 }
 
-/**
- * Serialize a validated intent into a canonical SEMANTIC_PROJECTION_TRANSITION.
- * Deterministic traceId — hash of intent content, same input → same traceId.
- *
- * @param {object} intent — validated PROJECTION_INTENT entry
- * @returns {object} canonical SEMANTIC_PROJECTION_TRANSITION
- */
 function _serializeIntent(intent) {
   const raw = intent.raw || {};
 
-  // Deterministic traceId: SHA-256 of intent content — replay-stable
   const contentForHash = JSON.stringify({
     projectionNamespace: raw.projectionNamespace,
     projectionType: raw.projectionType,
@@ -868,7 +748,7 @@ function _serializeIntent(intent) {
     authority: 'telemetry-coordination-fsm',
     traceId,
     correlationId: intent.correlationId || null,
-    causationId: intent.traceId || null, // links back to original intent traceId
+    causationId: intent.traceId || null,
     parentTransitionId: null,
     raw: {
       entryType: 'SEMANTIC_PROJECTION_TRANSITION',
@@ -885,13 +765,6 @@ function _serializeIntent(intent) {
   };
 }
 
-/**
- * Emit a validated SEMANTIC_PROJECTION_TRANSITION through the observability plane.
- * Fire-and-forget — emission failure does not halt the FSM.
- *
- * @param {object} transition — serialized transition
- * @returns {boolean} true if emitted successfully
- */
 function _emitTransition(transition) {
   try {
     const obs = _obs();
@@ -916,12 +789,6 @@ function _emitTransition(transition) {
   return false;
 }
 
-/**
- * Record a rejected intent in the forensic rejection log.
- *
- * @param {object} intent — rejected intent
- * @param {Array} violations — ownership/schema violations
- */
 function _recordRejection(intent, violations) {
   _rejectionLog.push({
     id: crypto.randomUUID(),
@@ -940,25 +807,9 @@ function _recordRejection(intent, violations) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. Dispatch — process event, ask constitutional for validation, transition
-//
-// Domain FSMs emit through observability plane (not lineage ledger).
-// The lineage worker consumes these transitions and writes to canonical ledger.
+// 5. Dispatch
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Process a domain event within the telemetry coordination FSM.
- *
- * The FSM coordinates semantic ingress only. It does NOT:
- *   - declare constitutional truth
- *   - infer legality
- *   - mutate governance state
- *   - override reconciliation
- *
- * @param {{ type: string, [key: string]: any }} event — domain event
- * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
- * @returns {{ allowed: boolean, from?: string, to?: string, actions?: Array, reason?: string }}
- */
 function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
@@ -971,7 +822,6 @@ function dispatch(event, ctx) {
 
   const from = _localState;
 
-  // 1. Run per-transition guard
   if (txn.guard) {
     const result = txn.guard(event);
     if (!result.allowed) {
@@ -979,16 +829,13 @@ function dispatch(event, ctx) {
     }
   }
 
-  // 2. Resolve target state
   const rawTarget = txn.target;
   const target = typeof rawTarget === 'function' ? rawTarget(event) : rawTarget;
 
-  // null target = no state change
   if (target === null) {
     return { allowed: true, from, to: from, actions: [], reason: 'no-transition' };
   }
 
-  // 3. Ask constitutional kernel for transition approval
   if (ctx && ctx.validate) {
     const validation = ctx.validate(from, target, event);
     if (!validation.allowed) {
@@ -996,19 +843,12 @@ function dispatch(event, ctx) {
     }
   }
 
-  // 4. Materialize state
   const priorState = _localState;
   _localState = target;
 
-  // 5. Build actions — synchronously validate, order, serialize, emit.
-  //    PROCESS_INTENTS is a fire-and-forget cycle. All work happens inside
-  //    buildActions. The FSM returns to IDLE immediately — there are no
-  //    intermediate states because serialization is synchronous and
-  //    deterministic.
   const actions = txn.buildActions ? txn.buildActions(event, ctx) : [];
   _cycleCount++;
 
-  // 6. Emit observability transition for domain FSM state change
   try {
     const obs = _obs();
     if (obs) {
@@ -1041,30 +881,19 @@ function dispatch(event, ctx) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 6. Initialization — called by constitutional kernel on boot with rehydrated state
+// 6. Initialization
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Initialize the domain FSM with rehydrated state from lineage.
- * Called by the constitutional kernel after rehydrate() completes on boot.
- * Rehydration is synchronous — state is restored from checkpoint.
- *
- * @param {string} rehydratedState — the domain state to restore (e.g., 'IDLE', 'HALTED')
- */
 async function init(rehydratedState) {
   if (rehydratedState && typeof rehydratedState === 'string') {
     _localState = rehydratedState;
     console.log(`[telemetry-coordination-fsm] Initialized with rehydrated state: ${rehydratedState}`);
   }
 
-  // Phase 3: Register as consumer for truncation protection.
-  // Consumer registration protects against _transitionLog truncation.
   try {
-    const observability = require('../../observability');
+    const observability = require('../../control-plane/observability');
     await observability.query.registerConsumer('telemetry-coordination-fsm');
 
-    // Restore cursors from Redis — prevents replay storm on restart.
-    // If Redis unavailable, defaults to 0 (full replay).
     const restored = await _restoreCursors();
     if (restored) {
       _intentCursors = restored;
@@ -1079,15 +908,6 @@ async function init(rehydratedState) {
   }
 }
 
-/**
- * Start the reactive coordination layer — registers onWrite subscription.
- * Called by CK after init() completes. Safe to call multiple times (idempotent).
- *
- * @param {{ dispatch: Function, validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx
- *   CK context — provides dispatch, validate, dispatchGlobal for FSM event handling.
- *   The FSM uses ctx.dispatch for reactive coordination triggers and ctx.validate
- *   for constitutional transition approval.
- */
 function start(ctx) {
   if (_unsubscribeOnWrite) {
     console.log('[telemetry-coordination-fsm] Already started — skipping');
@@ -1096,16 +916,12 @@ function start(ctx) {
 
   _ckContext = ctx || null;
 
-  const observability = require('../../observability');
+  const observability = require('../../control-plane/observability');
   _unsubscribeOnWrite = observability.onWrite(_onTransitionLogWrite);
 
   console.log('[telemetry-coordination-fsm] Reactive mode active — onWrite subscription registered');
 }
 
-/**
- * Stop the reactive coordination layer — unsubscribes onWrite.
- * Called by CK on graceful shutdown.
- */
 function stop() {
   if (_unsubscribeOnWrite) {
     _unsubscribeOnWrite();
@@ -1116,7 +932,7 @@ function stop() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 7. Observability — domain state queries
+// 7. Observability
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function getState() {
@@ -1150,12 +966,6 @@ function getHealth() {
   };
 }
 
-/**
- * Return the rejection log for forensic analysis.
- *
- * @param {number} [n] — number of recent rejections (default: all)
- * @returns {Array<object>}
- */
 function getRejectionLog(n) {
   if (typeof n === 'number' && n > 0) {
     return _rejectionLog.slice(-n);
@@ -1163,9 +973,6 @@ function getRejectionLog(n) {
   return [..._rejectionLog];
 }
 
-/**
- * Return ingress retry escalation state for CK diagnostics.
- */
 function getIngressRetryState() {
   return {
     retryAttempts: _retryAttempts,

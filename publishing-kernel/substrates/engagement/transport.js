@@ -7,7 +7,7 @@
 // Migrated from substrates/transport/publishing.js — engagement-specific actions only.
 
 const axios = require('axios');
-const { GRAPH_API_BASE } = require('../../../helpers/agent-helpers');
+const { GRAPH_API_BASE } = require('../../../config/instagram');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REPLY COMMENT

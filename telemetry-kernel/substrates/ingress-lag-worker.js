@@ -1,4 +1,4 @@
-// control-plane/telemetry-workers/ingress-lag-worker.js
+// telemetry-kernel/substrates/ingress-lag-worker.js
 // Bounded Operative Worker: last-resort diagnostic and fix for ingress lag.
 // Dispatched by CK when retry escalation reaches DEGRADED state.
 //
@@ -17,11 +17,14 @@
 //   - Never restarts Redis, reconstructs lineage, or mutates replay state
 //   - Never bypasses CK authority — it is dispatched by CK, not self-triggered
 //   - Does not modify the observability log or lineage ledger directly
+//
+// Migrated from control-plane/telemetry-workers/ingress-lag-worker.js
+// with paths adjusted for kernel location.
 
 function _getObsDeps() {
-  const observability = require('../../observability');
-  const lineageLedger = require('../governance/lineage-ledger');
-  const transitionWriters = require('./transition-writers');
+  const observability = require('../../../control-plane/observability');
+  const lineageLedger = require('../../../control-plane/governance/lineage-ledger');
+  const transitionWriters = require('../../../control-plane/telemetry-workers/transition-writers');
   return { observability, lineageLedger, transitionWriters };
 }
 

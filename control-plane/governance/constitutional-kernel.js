@@ -1233,7 +1233,7 @@ async function _triggerConstitutionalDeath(ckpt) {
 
   // 2. Stop all workers
   
-  try { await require('../telemetry-workers').stopAll(); } catch (e) { console.warn('[CK] Telemetry workers stop error:', e.message); }
+  try { await require('../../telemetry-kernel').stopAll(); } catch (e) { console.warn('[CK] Telemetry workers stop error:', e.message); }
 
   // 3. Clear stale in-memory domain states
   _rehydratedDomainStates = null;

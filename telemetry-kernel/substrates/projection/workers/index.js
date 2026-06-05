@@ -1,4 +1,4 @@
-// control-plane/telemetry-workers/index.js
+// telemetry-kernel/substrates/projection/workers/index.js
 // Bounded Telemetry Projection Layer: unified export for all projection workers.
 //
 // Architecture (Phase 3):
@@ -13,14 +13,7 @@
 //   Namespace Projection Interpreter (write domain state to namespaces)
 //
 // All 5 projection workers are exported here. They are started/stopped
-// as a group by the orchestrator.
-//
-// Workers:
-//   RuntimeProjectionWorker       — runtimeState, executionPressure, retryPressure
-//   IntegrityProjectionWorker      — replayContinuity, causationIntegrity
-//   AuthorityProjectionWorker      — authorityContinuity, authorityOscillation
-//   HealthProjectionWorker         — failureRate, runtimeEntropy, degradationSignals, RETRY_PRESSURE
-//   SystemicPressureProjectionWorker — governancePressure, convergenceConfidence, systemicStress
+// as a group by the projection substrate.
 
 const RuntimeProjectionWorker = require('./runtime-projection-worker');
 const IntegrityProjectionWorker = require('./integrity-projection-worker');
@@ -52,7 +45,7 @@ async function startAll(pollIntervalMs) {
   for (const key of order) {
     await workers[key].start(pollIntervalMs);
   }
-  console.log('[telemetry-workers] All 5 projection workers started');
+  console.log('[telemetry-kernel/projection-workers] All 5 projection workers started');
 }
 
 /**
@@ -63,7 +56,7 @@ async function stopAll() {
   for (const key of order) {
     await workers[key].stop();
   }
-  console.log('[telemetry-workers] All projection workers stopped');
+  console.log('[telemetry-kernel/projection-workers] All projection workers stopped');
 }
 
 /**
@@ -89,14 +82,9 @@ function getAllProjections() {
 }
 
 module.exports = {
-  // Worker instances
   workers,
-
-  // Group lifecycle
   startAll,
   stopAll,
-
-  // Query
   getAllHealth,
   getAllProjections,
 };

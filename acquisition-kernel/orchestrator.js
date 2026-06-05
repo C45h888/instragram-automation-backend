@@ -14,7 +14,7 @@
 const { getRedisClient } = require('../config/redis');
 const substrateRegistry = require('./substrate-registry');
 const retryWorker = require('./retry-worker');
-const { resolveAccountCredentials } = require('../helpers/agent-helpers');
+const { resolveAccountCredentials } = require('../graph-capability-kernel/substrates/credential-resolver');
 const syncSubstrate = require('../substrates/sync-substrate');
 const retrySubstrate = require('../substrates/retry');
 const rateLimiter = require('../substrates/rate-limiter');

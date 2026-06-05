@@ -17,7 +17,7 @@
 const retry = require('../../substrates/retry');
 const { getPolicy } = require('../policy');
 const insightsTransport = require('../../acquisition-kernel/substrates/insights/transport');
-const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
+const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
 const parsing = require('../../acquisition-kernel/parsing');
 
 /**

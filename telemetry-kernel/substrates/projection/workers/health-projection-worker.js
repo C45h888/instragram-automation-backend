@@ -1,6 +1,6 @@
 const { BaseProjectionWorker } = require('./base-projection-worker');
-const healthInput = require('../projection-layers/inputs/health-input');
-const healthSynthesis = require('../projection-layers/synthesis/health-projection');
+const healthInput = require('../inputs/health-input');
+const healthSynthesis = require('../synthesis/health-projection');
 
 const PROJECTION_TYPE = 'HEALTH_PROJECTION';
 const POLL_INTERVAL_MS = 30000;

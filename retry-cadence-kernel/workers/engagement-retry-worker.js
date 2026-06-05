@@ -15,7 +15,7 @@
 const retry = require('../../substrates/retry');
 const { getPolicy } = require('../policy');
 const engagementTransport = require('../../acquisition-kernel/substrates/engagement/transport');
-const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
+const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
 const parsing = require('../../acquisition-kernel/parsing');
 
 // Engagement-specific: IG code → override base delay

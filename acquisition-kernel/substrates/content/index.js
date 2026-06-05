@@ -9,7 +9,7 @@
 
 const PostsWorker = require('./workers/posts');
 const { normalizeBusinessPost } = require('./normalizer');
-const { syncHashtagsFromCaptions } = require('../../../helpers/agent-helpers');
+const { syncHashtagsFromCaptions } = require('./hashtag-sync');
 const { getSupabaseAdmin } = require('../../../config/supabase');
 
 /**

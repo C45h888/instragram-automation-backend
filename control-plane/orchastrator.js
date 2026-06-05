@@ -24,7 +24,8 @@ const lifecycle = require('../scheduling-kernel/substrates/cadence/lifecycle');
 const signalIntake = require('./runtime/signal-intake');
 const syncSubstrate = require('../substrates/sync-substrate');
 const engagementTelemetryAdapter = require('./governance/interpreters/engagement-telemetry-adapter');
-const telemetryWorkers = require('./telemetry-workers');
+const telemetryKernel = require('../telemetry-kernel');
+const telemetryWorkers = telemetryKernel; // kernel owns canonical startAll/stopAll
 const transitionWriters = require('./telemetry-workers/transition-writers');
 
 const ingressSubstrate = require('./governance/ingress-consistency/substrate');
@@ -45,7 +46,7 @@ const schedulingFsm = require('../scheduling-kernel/fsm');
 const dedupFsm = require('../dedup-kernel/fsm');
 const engagementFsm = require('../retry-cadence-kernel/fsm');
 const reconciliationFsm = require('../reconciliation-kernel/fsm');
-const telemetryCoordinationFsm = require('./governance/domains/telemetry-coordination-fsm');
+const telemetryCoordinationFsm = telemetryKernel.fsm;
 const persistTelemetryFsm = require('../postgres-telemetry-kernel/fsm');
 
 // ── 6 Membrane orchestrators ─────────────────────────────────────────────────

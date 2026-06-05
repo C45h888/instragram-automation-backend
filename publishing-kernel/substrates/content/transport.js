@@ -10,7 +10,8 @@
 // also imported by engagement/transport.js for any engagement-side media actions.
 
 const axios = require('axios');
-const { categorizeIgError, GRAPH_API_BASE } = require('../../../helpers/agent-helpers');
+const { GRAPH_API_BASE } = require('../../../config/instagram');
+const { categorizeIgError } = require('../../../substrates/transport/error-classifier');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MEDIA CONTAINER (shared)

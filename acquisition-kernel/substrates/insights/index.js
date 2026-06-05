@@ -9,7 +9,7 @@
 
 const InsightsWorker = require('./workers/insights');
 const { normalizeMediaInsight } = require('./normalizer');
-const { syncHashtagsFromCaptions } = require('../../../helpers/agent-helpers');
+const { syncHashtagsFromCaptions } = require('../content/hashtag-sync');
 const { getSupabaseAdmin } = require('../../../config/supabase');
 
 /**

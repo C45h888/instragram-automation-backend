@@ -1,5 +1,7 @@
-// control-plane/telemetry-workers/base-projection-worker.js
+// telemetry-kernel/substrates/projection/workers/base-projection-worker.js
 // Base Projection Worker: shared infrastructure for bounded telemetry projection.
+// Copied from control-plane/telemetry-workers/base-projection-worker.js
+// with observability path adjusted for kernel location.
 //
 // Owns: event-driven tick scheduling, cursor tracking, projection versioning,
 //        deterministic projection synthesis from raw telemetry signals,
@@ -34,7 +36,7 @@
 //   edge is missed — every write event is a scheduling signal.
 
 const crypto = require('crypto');
-const monotonicClock = require('../runtime/monotonic-clock');
+const monotonicClock = require('../../../../control-plane/runtime/monotonic-clock');
 
 // ── Versioning ───────────────────────────────────────────────────────────────────
 
@@ -147,8 +149,6 @@ class BaseProjectionWorker {
 
   // ── Core tick ────────────────────────────────────────────────────────────────
 
-  // ── Core tick ────────────────────────────────────────────────────────────────
-
   /**
    * Get the current lineage cursor (ledger sequence id) for replay watermarking.
    * Subclasses may override to provide their specific cursor source.
@@ -159,7 +159,7 @@ class BaseProjectionWorker {
   _getLineageCursor() {
     try {
       // eslint-disable-next-line global-require
-      const { getLogSize } = require('../observability');
+      const { getLogSize } = require('../../../../control-plane/observability');
       return getLogSize();
     } catch {
       return 0;
@@ -246,7 +246,7 @@ class BaseProjectionWorker {
   async _emitProjectionTransition(projection) {
     try {
       // eslint-disable-next-line global-require
-      const observability = require('../observability/emitters/transition-emitter');
+      const observability = require('../../../../control-plane/observability/emitters/transition-emitter');
       await observability.transition({
         domain: this._domain,
         entity: 'projection_intent',
@@ -311,7 +311,7 @@ class BaseProjectionWorker {
     // Subscribe to observability stream — event-driven trigger
     try {
       // eslint-disable-next-line global-require
-      const observability = require('../observability');
+      const observability = require('../../../../control-plane/observability');
       this._unsubscribeOnWrite = observability.onWrite((transition) => {
         // Only react to entries landing in this worker's domain
         if (transition.domain !== domain) return;
