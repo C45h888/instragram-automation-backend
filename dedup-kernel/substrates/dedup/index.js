@@ -1,8 +1,9 @@
-// substrates/dedup-substrate.js
-// Governance substrate: Redis-backed deduplication and idempotency.
+// dedup-kernel/substrates/dedup/index.js
+// Dedup substrate: Redis-backed deduplication and idempotency.
+// Migrated from substrates/dedup-substrate.js (now deleted).
 //
 // Owns: in-flight intent dedup, idempotency key tracking with TTL,
-//        replay detection (lineage-aware identity).
+//       replay detection (lineage-aware identity).
 // Does NOT own: evaluation logic, orchestration, intent emission,
 //               lineage ledger reads, governance interpretation.
 //
@@ -26,7 +27,7 @@
 //   resource_tracker: null → TRACKED             (new — first time resource seen)
 //   resource_tracker: TRACKED → REPLAY_DETECTED  (new — different intent on same resource)
 
-const { getRedisClient } = require('../config/redis');
+const { getRedisClient } = require('../../../config/redis');
 
 const DEDUP_KEY_PREFIX = 'governance:dedup:';
 const RESOURCE_KEY_PREFIX = 'governance:dedup:resource:';
@@ -58,7 +59,7 @@ function _evictOldest(cache) {
 
 function _emitTransition(params) {
   try {
-    const observability = require('../control-plane/observability/emitters/transition-emitter');
+    const observability = require('../../../../control-plane/observability/emitters/transition-emitter');
     observability.transition(params);
   } catch (err) {
     console.warn('[dedup] Observability transition error:', err.message);
@@ -98,6 +99,7 @@ async function markInFlight(accountId, actionType, resourceId, opts = {}) {
   const previousIntentId = _resourceTracker.has(resourceKey)
     ? _resourceTracker.get(resourceKey).lastIntentId
     : null;
+
   _resourceTracker.set(resourceKey, { lastIntentId: intentId, ts: now });
   _evictOldest(_resourceTracker);
 

@@ -16,7 +16,7 @@ const retry = require('../../substrates/retry');
 const { getPolicy } = require('../policy');
 const ugcTransport = require('../../acquisition-kernel/substrates/ugc/transport');
 const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
-const parsing = require('../../substrates/parsing');
+const parsing = require('../../acquisition-kernel/parsing');
 
 /**
  * Schedule a retry for the UGC domain.

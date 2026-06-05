@@ -57,7 +57,7 @@ const { getRedisClient } = require('../../config/redis.js');
 const acquisitionFsm = require('../../control-plane/governance/domains/acquisition-fsm.js');
 const publishingFsm = require('../../control-plane/governance/domains/publishing-fsm.js');
 const schedulingFsm = require('../../control-plane/governance/domains/scheduling-fsm.js');
-const dedupFsm = require('../../control-plane/governance/domains/dedup-fsm.js');
+const dedupFsm = require('../../dedup-kernel/fsm');
 const engagementFsm = require('../../control-plane/governance/domains/engagement-fsm.js');
 const reconciliationFsm = require('../../control-plane/governance/domains/reconciliation-fsm.js');
 const telemetryCoordinationFsm = require('../../control-plane/governance/domains/telemetry-coordination-fsm.js');
@@ -322,7 +322,7 @@ class RuntimeSimulator {
    * @returns {object}
    */
   _buildSubstrates() {
-    const dedupSubstrate = require('../../substrates/dedup-substrate');
+    const dedupSubstrate = require('../../dedup-kernel/substrates/dedup');
     const retrySubstrate = require('../../substrates/retry');
     const cadence = require('../../control-plane/runtime/cadence');
 

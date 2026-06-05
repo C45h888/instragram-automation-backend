@@ -1,9 +1,10 @@
-// control-plane/governance/domains/dedup-fsm.js
+// dedup-kernel/fsm.js
 // Dedup Domain FSM: federated state machine governing deduplication lifecycle.
+// Migrated from control-plane/governance/domains/dedup-fsm.js
 //
 // Owns: dedup batch lifecycle (IDLE → ACTIVE → IDLE),
-//        replay detection governance (escalation decisions),
-//        orphan rate monitoring, constitutional transition validation.
+//       replay detection governance (escalation decisions),
+//       orphan rate monitoring, constitutional transition validation.
 // Does NOT own: Redis key mechanics (SET/GET/TTL), mechanical dedup checks,
 //               intent emission, evaluation policy — those belong to the
 //               dedup substrate and evaluation modules respectively.
@@ -28,7 +29,7 @@
 let _observability = null;
 function _obs() {
   if (!_observability) {
-    try { _observability = require('../../observability/emitters/transition-emitter'); }
+    try { _observability = require('../../control-plane/observability/emitters/transition-emitter'); }
     catch (_) { _observability = null; }
   }
   return _observability;
@@ -202,7 +203,7 @@ let _batchMarks = 0;
 let _batchReplays = 0;
 let _batchOrphans = 0;
 
-// ── Persistent tracking across batches ───────────────────────────────────────
+// ── Persistent tracking across batches ────────────────────────────────────────
 let _degradationCount = 0;             // cumulative degradation signals emitted
 const _replayResources = new Map();    // resourceId → [{ intentId, previousIntentId, ts }]
 

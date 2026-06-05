@@ -22,7 +22,7 @@
 
 const crypto = require('crypto');
 const publishingPolicy = require('../policies/publishing');
-const dedupSubstrate = require('../../substrates/dedup-substrate');
+const dedupSubstrate = require('../../dedup-kernel/substrates/dedup');
 
 // ── Observability state tracking ────────────────────────────────────────────
 

@@ -20,7 +20,7 @@
 
 const evaluator = require('../control-plane/runtime/evaluation');
 const emitter = require('../control-plane/runtime/emission');
-const dedupSubstrate = require('../substrates/dedup-substrate');
+const dedupSubstrate = require('../../dedup-kernel/substrates/dedup');
 const mutationSubstrate = require('../control-plane/mutation-substrate');
 const contentSubstrate = require('./substrates/content');
 const engagementSubstrate = require('./substrates/engagement');

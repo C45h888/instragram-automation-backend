@@ -21,7 +21,7 @@ const quota = require('../substrates/quota');
 const telemetry = require('../substrates/telemetry');
 const metricsSubstrate = require('../substrates/metrics-substrate');
 const rateLimiter = require('../substrates/rate-limiter');
-const parsing = require('../substrates/parsing');
+const parsing = require('./parsing');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Retry counting is now owned by substrates/retry-cadence (per-substrate policy).

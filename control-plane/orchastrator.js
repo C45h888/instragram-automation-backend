@@ -29,7 +29,7 @@ const transitionWriters = require('./telemetry-workers/transition-writers');
 
 const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
-const parsing = require('../substrates/parsing');
+const parsing = require('../acquisition-kernel/parsing');
 const retryCadence = require('../retry-cadence-kernel/index');
 const dbWriters = require('../substrates/db/writers');
 const dbReaders = require('../substrates/db/readers');
@@ -41,7 +41,7 @@ const acquisitionFsm = require('../acquisition-kernel/fsm');
 const publishingFsm = require('../publishing-kernel/fsm');
 const graphCapabilityFsm = require('../graph-capability-kernel/fsm');
 const schedulingFsm = require('./governance/domains/scheduling-fsm');
-const dedupFsm = require('./governance/domains/dedup-fsm');
+const dedupFsm = require('../dedup-kernel/fsm');
 const engagementFsm = require('../retry-cadence-kernel/fsm');
 const reconciliationFsm = require('../reconciliation-kernel/fsm');
 const telemetryCoordinationFsm = require('./governance/domains/telemetry-coordination-fsm');

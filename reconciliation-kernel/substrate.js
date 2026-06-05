@@ -21,7 +21,7 @@ const ingressSubstrate = require('../control-plane/governance/ingress-consistenc
 // ── Substrate Query Interface ────────────────────────────────────────────────
 
 function _buildSubstrateQueries() {
-  const dedupSubstrate = require('../substrates/dedup-substrate');
+  const dedupSubstrate = require('../../dedup-kernel/substrates/dedup');
   const retrySubstrate = require('../substrates/retry');
   const metricsSubstrate = require('../substrates/metrics-substrate');
   const cadence = require('../control-plane/runtime/cadence');
