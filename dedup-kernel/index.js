@@ -11,8 +11,10 @@
 
 const fsm = require('./fsm');
 const substrate = require('./substrates/dedup');
+const conversationRepair = require('./substrates/repair/conversation-repair');
 
 module.exports = {
   fsm,
   substrate,
+  conversationRepair,
 };

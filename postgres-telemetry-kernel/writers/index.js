@@ -1,4 +1,4 @@
-// substrates/db/writers/index.js
+// postgres-telemetry-kernel/writers/index.js
 // DB Writers — canonical Supabase write authority.
 //
 // Owns: dispatching write operations to operationally bounded workers.

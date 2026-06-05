@@ -1,11 +1,10 @@
-// substrates/db/writers/conversations-writer.js
-// Conversations writer: instagram_dm_conversations batch upsert.
+// postgres-telemetry-kernel/writers/ugc-writer.js
+// UGC writer: ugc_content batch upsert.
 //
-// Owns: Supabase upsert for instagram_dm_conversations table.
-// Does NOT own: governance, normalization, fetch, orchestration,
-//               customer_user_id resolution (Phase 3A: hydrator).
+// Owns: Supabase upsert for ugc_content table.
+// Does NOT own: governance, normalization, fetch, orchestration.
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const { getSupabaseAdmin } = require('../../config/supabase');
 
 async function execute(params, governance) {
   const { domain, accountId, intentId, table, rows } = params;
@@ -18,7 +17,7 @@ async function execute(params, governance) {
   try {
     const { error } = await supabase
       .from(table)
-      .upsert(rows, { onConflict: 'instagram_thread_id', ignoreDuplicates: false });
+      .upsert(rows, { onConflict: 'business_account_id,visitor_post_id', ignoreDuplicates: false });
 
     if (error) throw error;
 

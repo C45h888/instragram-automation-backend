@@ -1,11 +1,11 @@
-// substrates/db/writers/messages-writer.js
-// Messages writer: instagram_dm_messages batch upsert.
+// postgres-telemetry-kernel/writers/conversations-writer.js
+// Conversations writer: instagram_dm_conversations batch upsert.
 //
-// Owns: Supabase upsert for instagram_dm_messages table.
+// Owns: Supabase upsert for instagram_dm_conversations table.
 // Does NOT own: governance, normalization, fetch, orchestration,
-//               orphan repair (Phase 3C: orphan-message-repair.js).
+//               customer_user_id resolution (Phase 3A: hydrator).
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const { getSupabaseAdmin } = require('../../config/supabase');
 
 async function execute(params, governance) {
   const { domain, accountId, intentId, table, rows } = params;
@@ -18,7 +18,7 @@ async function execute(params, governance) {
   try {
     const { error } = await supabase
       .from(table)
-      .upsert(rows, { onConflict: 'instagram_message_id', ignoreDuplicates: true });
+      .upsert(rows, { onConflict: 'instagram_thread_id', ignoreDuplicates: false });
 
     if (error) throw error;
 

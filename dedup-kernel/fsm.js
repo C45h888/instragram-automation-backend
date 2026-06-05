@@ -189,6 +189,26 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
+
+  // ── Conversation repair: route to repair substrate (Phase 5) ────────────
+  // Not state-gated — repairs can fire anytime. Dedup handled by substrate.
+  REPAIR_CONVERSATION: {
+    target: (event) => _localState, // stay in current state
+    guard: (event) => {
+      // Always allow — repair requests are always valid
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      return [{
+        type: 'EXECUTE_CONVERSATION_REPAIR',
+        threadId: event.threadId,
+        accountId: event.accountId,
+        igUserId: event.igUserId,
+        pageToken: event.pageToken,
+        pageId: event.pageId,
+      }];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

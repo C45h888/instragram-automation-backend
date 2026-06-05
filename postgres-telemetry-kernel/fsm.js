@@ -1,29 +1,34 @@
-// control-plane/governance/domains/persist-telemetry-fsm.js
+// postgres-telemetry-kernel/fsm.js
 // Persist-Telemetry FSM: governs all DB write operations.
+// Migrated from control-plane/governance/domains/persist-telemetry-fsm.js
 //
 // Owns: DB write lifecycle (IDLE → WRITING → IDLE), table whitelist
 //        validation, backpressure detection, in-flight write tracking.
 // Does NOT own: Supabase operations (delegates to db/writers),
-//               read operations (CK handles directly), parse/normalize.
+//               read operations (delegates to reading-substrate via CK injection).
 //
 // Any domain needing a DB write MUST route through:
-//   domain → CK(DB_WRITE_REQUESTED) → persist-telemetry-fsm
+//   domain → CK(DB_WRITE_REQUESTED) → postgres-telemetry-kernel/fsm
 //   → db.writers (async worker) → CK(DB_WRITE_COMPLETE)
-//   → persist-telemetry-fsm → PARSING_COMPLETE + WRITE_ACQUISITION_RESULT
+//   → postgres-telemetry-kernel/fsm → PARSING_COMPLETE + WRITE_ACQUISITION_RESULT
 //
 // Reports to: constitutional kernel for transition validation + global observability.
+//
+// Reading-substrate: injected by CK at boot via setReadingSubstrate().
+// The FSM does NOT import reading-substrate — CK registers it and injects.
+//
 
 // Lazy import to avoid circular dependency
 let _observability = null;
 function _obs() {
   if (!_observability) {
-    try { _observability = require('../../observability/emitters/transition-emitter'); }
+    try { _observability = require('../../control-plane/observability/emitters/transition-emitter'); }
     catch (_) { _observability = null; }
   }
   return _observability;
 }
 
-const db = require('../../../substrates/db/writers');
+const db = require('./writers');
 
 // Lazy reading-substrate reference — set by CK after instantiation
 let _readingSubstrate = null;
@@ -119,6 +124,7 @@ const TRANSITION_MAP = {
       _readsInFlight++;
 
       // Delegate to reading-substrate — async, non-blocking
+      // _readingSubstrate is injected by CK via setReadingSubstrate() at boot
       if (_readingSubstrate) {
         const readPromise = _readingSubstrate.executeRead(readDomain, params, readId);
         // Fire completion back through governance when done
@@ -178,7 +184,7 @@ const TRANSITION_MAP = {
 
   DB_READ_COMPLETE: {
     target: () => {
-      if (_readsInFlight === 0 && _writesInFlight === 0) return 'IDLE';
+      if (_readsInFlight === 0 && _inFlight === 0) return 'IDLE';
       if (_readsInFlight > 0) return 'READ_EXECUTING';
       return _localState;
     },
@@ -372,15 +378,28 @@ function dispatch(event, ctx) {
   return { allowed: true, from, to: target, actions };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. Initialization — called by constitutional kernel on boot with rehydrated state
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function init(rehydratedState) {
   if (rehydratedState && typeof rehydratedState === 'string') {
     _localState = rehydratedState;
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 6. Observability — domain state queries
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function getState() { return _localState; }
 function exportState() { return { state: _localState, writesInFlight: _inFlight, readsInFlight: _readsInFlight }; }
-function getHealth() { return { ok: _inFlight < BACKPRESSURE_THRESHOLD && _readsInFlight < READ_BACKPRESSURE_THRESHOLD, signals: { writesInFlight: _inFlight, readsInFlight: _readsInFlight } }; }
+function getHealth() {
+  return {
+    ok: _inFlight < BACKPRESSURE_THRESHOLD && _readsInFlight < READ_BACKPRESSURE_THRESHOLD,
+    signals: { writesInFlight: _inFlight, readsInFlight: _readsInFlight },
+  };
+}
 
 module.exports = {
   name: 'persist-telemetry',

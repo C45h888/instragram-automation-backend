@@ -11,9 +11,9 @@ const CommentsWorker = require('./workers/comments');
 const MessagesWorker = require('./workers/messages');
 const ConversationsWorker = require('./workers/conversations');
 const transport = require('./transport');
-const { getRecentMedia } = require('../../../substrates/db/readers');
+const { getRecentMedia } = require('../../../postgres-telemetry-kernel/readers');
 const { normalizeComment, transformMessage } = require('./normalizer');
-const dispatchWrite = require('../../../substrates/db/writers').dispatchWrite;
+const dispatchWrite = require('../../../postgres-telemetry-kernel/writers').dispatchWrite;
 const conversationHydrator = require('./hydrators/conversation-hydrator');
 const mediaHydrator = require('./hydrators/media-hydrator');
 

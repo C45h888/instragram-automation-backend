@@ -1,10 +1,11 @@
-// substrates/db/writers/content-writer.js
-// Content writer: instagram_media batch upsert (posts + insights).
+// postgres-telemetry-kernel/writers/comments-writer.js
+// Comments writer: instagram_comments batch upsert.
 //
-// Owns: Supabase upsert for instagram_media table.
-// Does NOT own: governance, normalization, fetch, orchestration.
+// Owns: Supabase upsert for instagram_comments table.
+// Does NOT own: governance, normalization, fetch, orchestration,
+//               media UUID resolution (Phase 3B: media-hydrator).
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const { getSupabaseAdmin } = require('../../config/supabase');
 
 async function execute(params, governance) {
   const { domain, accountId, intentId, table, rows } = params;
@@ -17,7 +18,7 @@ async function execute(params, governance) {
   try {
     const { error } = await supabase
       .from(table)
-      .upsert(rows, { onConflict: 'instagram_media_id', ignoreDuplicates: false });
+      .upsert(rows, { onConflict: 'instagram_comment_id', ignoreDuplicates: false });
 
     if (error) throw error;
 

@@ -15,7 +15,7 @@
 //
 // Replaces: persistence.js getActiveAccounts() (account discovery).
 
-const { getSupabaseAdmin } = require('../../../../config/supabase');
+const { getSupabaseAdmin } = require('../../../config/supabase');
 
 // ── Per-worker cache ────────────────────────────────────────────────────────
 const _cache = new Map(); // key → { data, expiresAt }
@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const CACHE_TTL_MS = {
   getActiveAccounts: 30_000,  // 30s (matches legacy persistence.js behavior)
   igIdToUserId:     30_000,  // 30s — per-igIds-set
+  igThreadIdToUuid: 30_000,  // 30s — per-threadIds-set
 };
 
 function _cacheKey(query, context = null) {
@@ -66,10 +67,10 @@ function _getStale(query, context = null) {
  * @returns {Promise<{success: boolean, data?, error?, latencyMs: number, cached?: boolean, stale?: boolean}>}
  */
 async function execute(params, governance) {
-  const { query, igIds } = params;
+  const { query, igIds, threadIds } = params;
   const startTime = Date.now();
 
-  const VALID_QUERIES = ['getActiveAccounts', 'igIdToUserId'];
+  const VALID_QUERIES = ['getActiveAccounts', 'igIdToUserId', 'igThreadIdToUuid'];
   if (!VALID_QUERIES.includes(query)) {
     const elapsed = Date.now() - startTime;
     _emitObserved(governance, query, elapsed, `unknown_query: ${query}`);
@@ -103,6 +104,47 @@ async function execute(params, governance) {
         .from('instagram_business_accounts')
         .select('instagram_business_id, user_id')
         .in('instagram_business_id', sorted);
+
+      if (error) throw error;
+
+      const result = data || [];
+      const elapsed = Date.now() - startTime;
+      _setCache(query, result, hashCtx);
+      _emitObserved(governance, query, elapsed);
+      return { success: true, data: result, error: null, latencyMs: elapsed };
+    } catch (err) {
+      const elapsed = Date.now() - startTime;
+      _emitObserved(governance, query, elapsed, err.message);
+      return { success: false, data: null, error: err.message, latencyMs: elapsed };
+    }
+  }
+
+  // ── igThreadIdToUuid: batch-resolve instagram_thread_id → UUID ────────
+  if (query === 'igThreadIdToUuid') {
+    const sorted = [...new Set(threadIds || [])].sort();
+    if (sorted.length === 0) {
+      return { success: true, data: [], error: null, latencyMs: Date.now() - startTime, cached: false };
+    }
+    const hashCtx = _sortedHash(sorted);
+
+    const cached = _getCached(query, hashCtx);
+    if (cached !== null) {
+      _emitObserved(governance, query, Date.now() - startTime, null, true);
+      return { success: true, data: cached, error: null, latencyMs: Date.now() - startTime, cached: true };
+    }
+
+    const supabase = getSupabaseAdmin();
+    if (!supabase) {
+      const elapsed = Date.now() - startTime;
+      _emitObserved(governance, query, elapsed, 'supabase_unavailable');
+      return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('instagram_dm_conversations')
+        .select('id, instagram_thread_id')
+        .in('instagram_thread_id', sorted);
 
       if (error) throw error;
 

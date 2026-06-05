@@ -151,6 +151,7 @@ async function fetchMessages(accountId, conversationId, limit = 20, credentials 
     return {
       success: true,
       rawMessages: res.data.data || [],
+      conversationId,
       igUserId, pageId, pageToken,
       count: (res.data.data || []).length,
       _usagePct: extractUsage(res.headers),

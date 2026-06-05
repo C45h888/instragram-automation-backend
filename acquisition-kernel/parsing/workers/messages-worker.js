@@ -1,48 +1,60 @@
 // substrates/parsing/workers/messages-worker.js
-// Messages parsing worker: build rows → CK(DB_WRITE_REQUESTED).
+// Messages parsing worker: parse → hydrate → normalize → CK(DB_WRITE_REQUESTED).
 //
-// Owns: transforming raw message batches into normalized rows,
-//        emitting through CK for governed DB write.
-// Does NOT own: Supabase, governance policy, fetch, orchestration.
+// Owns: sequencing the engagement pipeline for message + conversation data.
+// Does NOT own: parsing logic (engagement parser), normalization (engagement
+//               normalizer), hydration (conversation-hydrator), Supabase,
+//               governance policy. Conversation UUID resolution deferred to Phase 5.
+//
+// Phase 4: canonical path — uses domain substrate tools, no inline normalization.
+// Phase 5: conversation UUID resolution + repair dispatch for missing conversations.
+
+const { parseMessages, parseConversations } = require('../../substrates/engagement/parser');
+const { transformMessage } = require('../../substrates/engagement/normalizer');
+const { hydrate: hydrateConversations } = require('../../substrates/engagement/hydrators/conversation-hydrator');
 
 async function execute(rawData, accountId, intentId, extra = {}, governance) {
   const igUserId = rawData.igUserId || extra.igUserId;
   const pageId = rawData.pageId || extra.pageId || null;
   const pageToken = rawData.pageToken || extra.pageToken || null;
 
-  // Messages for a single conversation
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MESSAGES — single conversation
+  // ═══════════════════════════════════════════════════════════════════════════
   if (rawData.rawMessages && rawData.rawMessages.length > 0) {
-    const rows = rawData.rawMessages
-      .filter(m => m && m.id)
-      .map(m => {
-        const fromBusiness = m.from?.id === igUserId || (pageId && m.from?.id === pageId);
-        const att = m.attachments?.data?.[0] || null;
-        const imgData = att?.image_data || null;
-        const mediaUrl = imgData?.url || imgData?.animated_gif_url || att?.file_url || m.story?.link || null;
-        let messageType = 'text';
-        if (imgData?.render_as_sticker) messageType = 'media';
-        else if (att) messageType = 'media';
-        else if (m.story) messageType = 'story_reply';
-        else if (m.shares?.data?.length) messageType = 'post_share';
+    const conversationId = rawData.conversationId;
 
-        return {
-          instagram_message_id: m.id,
-          message_text: m.message || null,
-          message_type: messageType,
-          media_url: mediaUrl,
-          media_type: imgData ? 'image' : att?.file_url ? 'file' : null,
-          conversation_id: rawData.conversationId || 'direct',
-          business_account_id: accountId,
-          is_from_business: fromBusiness,
-          recipient_instagram_id: m.to?.data?.[0]?.id || '',
-          sender_username: m.from?.username || null,
-          sent_at: m.created_time,
-          send_status: fromBusiness ? 'sent' : 'delivered',
-        };
+    // ── Parse ──────────────────────────────────────────────────────────────
+    const parsed = parseMessages(rawData.rawMessages);
+    if (!parsed.length) return { count: 0 };
+
+    // ── Resolve conversation UUID (Phase 5) ────────────────────────────────
+    let conversationUUID = conversationId || 'direct'; // fallback: thread ID
+    if (governance && conversationId && conversationId !== 'direct') {
+      const result = await governance.governedRead('db.accounts', {
+        query: 'igThreadIdToUuid',
+        threadIds: [conversationId],
       });
+      if (result.success && result.data?.length > 0) {
+        conversationUUID = result.data[0].id; // resolved UUID
+      } else {
+        // Conversation missing — fire repair through CK, proceed with stub
+        governance.dispatch({
+          type: 'REPAIR_CONVERSATION',
+          threadId: conversationId,
+          accountId, igUserId, pageToken, pageId,
+        });
+      }
+    }
 
-    if (rows.length === 0) return { count: 0 };
+    // ── Normalize → DB rows ────────────────────────────────────────────────
+    const rows = parsed.map(m =>
+      transformMessage(m, conversationUUID, accountId, igUserId, pageId, null)
+    );
 
+    if (!rows.length) return { count: 0 };
+
+    // ── Constitutional dispatch ────────────────────────────────────────────
     if (governance) {
       governance.dispatch({
         type: 'DB_WRITE_REQUESTED',
@@ -51,36 +63,41 @@ async function execute(rawData, accountId, intentId, extra = {}, governance) {
         table: 'instagram_dm_messages',
         operation: 'batch_upsert_messages',
         rows,
-        extra: { igUserId, pageId, pageToken, conversationId: rawData.conversationId },
+        extra: { igUserId, pageId, pageToken, conversationId: conversationUUID },
       });
     }
 
-    return { count: 0 };
+    return { count: rows.length };
   }
 
-  // Conversations list
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CONVERSATIONS — list
+  // ═══════════════════════════════════════════════════════════════════════════
   if (rawData.rawConversations && rawData.rawConversations.length > 0) {
-    const rows = [];
-    for (const conv of rawData.rawConversations) {
-      const customerMsg = conv.messages?.data?.find(m => m.from?.id !== igUserId && m.from?.id !== pageId);
-      const participants = conv.participants?.data || [];
-      const customerParticipant = participants.find(p => p.id !== igUserId && p.id !== pageId) || participants[0];
-      if (!customerParticipant?.id) continue;
+    const { records } = parseConversations(rawData.rawConversations, igUserId, pageId);
+    if (!records.length) return { count: 0 };
 
-      rows.push({
-        instagram_thread_id: conv.id,
-        customer_instagram_id: customerParticipant.id,
-        customer_username: customerParticipant.username || null,
-        business_account_id: accountId,
-        last_message_at: conv.updated_time || null,
-        last_user_message_at: customerMsg ? new Date(customerMsg.created_time).toISOString() : null,
-        message_count: conv.message_count || 0,
-        conversation_status: 'active',
-      });
+    // ── Hydrate: resolve customer_user_id via governedRead ─────────────────
+    if (governance) {
+      await hydrateConversations(records, governance);
     }
 
-    if (rows.length === 0) return { count: 0 };
+    // ── Normalize → DB rows ────────────────────────────────────────────────
+    const rows = records.map(r => ({
+      instagram_thread_id: r.id,
+      customer_instagram_id: r.customer_instagram_id,
+      customer_username: r.customer_username,
+      business_account_id: accountId,
+      customer_user_id: r.customer_user_id || null,
+      last_message_at: r.updated_time,
+      last_user_message_at: r.last_customer_message_at,
+      message_count: r.message_count,
+      conversation_status: 'active',
+    }));
 
+    if (!rows.length) return { count: 0 };
+
+    // ── Constitutional dispatch ────────────────────────────────────────────
     if (governance) {
       governance.dispatch({
         type: 'DB_WRITE_REQUESTED',
@@ -93,7 +110,7 @@ async function execute(rawData, accountId, intentId, extra = {}, governance) {
       });
     }
 
-    return { count: 0 };
+    return { count: rows.length };
   }
 
   return { count: 0 };

@@ -13,7 +13,7 @@
 //   → substrates/db/reading/index.js (operational substrate)
 //   → registry → worker.execute()
 
-const dbReading = require('../../../../substrates/db/reading');
+const dbReading = require('../../../../postgres-telemetry-kernel/reading');
 
 // ── Governance reference — set by CK at boot ────────────────────────────────
 let _governance = null;

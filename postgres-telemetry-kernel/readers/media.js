@@ -11,7 +11,7 @@
 // The reading-substrate (control-plane/governance/domains/reading-substrate.js)
 // wraps these raw methods under persist-telemetry FSM governance.
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const { getSupabaseAdmin } = require('../../config/supabase');
 
 const _recentMediaCache = new Map(); // accountId → { data, expiresAt }
 const _hashtagsCache    = new Map(); // accountId → { data, expiresAt }

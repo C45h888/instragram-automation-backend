@@ -11,7 +11,7 @@
 //
 // Phase 3C: extracted from messages-writer.js inline repair block.
 
-const { getSupabaseAdmin } = require('../../config/supabase');
+const { getSupabaseAdmin } = require('../config/supabase');
 
 let _started = false;
 

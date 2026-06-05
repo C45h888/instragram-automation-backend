@@ -7,7 +7,7 @@
 // Operationally bounded to: db.media read domain.
 // Dispatched by: substrates/db/reading/index.js
 
-const { getSupabaseAdmin } = require('../../../../config/supabase');
+const { getSupabaseAdmin } = require('../../../config/supabase');
 
 // ── Per-worker cache ────────────────────────────────────────────────────────
 const _cache = new Map(); // key → { data, expiresAt }

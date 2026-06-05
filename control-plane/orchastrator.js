@@ -31,10 +31,11 @@ const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
 const parsing = require('../acquisition-kernel/parsing');
 const retryCadence = require('../retry-cadence-kernel/index');
-const dbWriters = require('../substrates/db/writers');
-const dbReaders = require('../substrates/db/readers');
-const cognitionScanner = require('../substrates/db/cognition-scanner');
-const orphanMessageRepair = require('../substrates/reconciliation/orphan-message-repair');
+const dbWriters = require('../postgres-telemetry-kernel/writers');
+const dbReaders = require('../postgres-telemetry-kernel/readers');
+const cognitionScanner = require('../postgres-telemetry-kernel/cognition-scanner');
+const orphanMessageRepair = require('../reconciliation-kernel/orphan-message-repair');
+const dedupKernel = require('../dedup-kernel');
 
 // ── 8 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('../acquisition-kernel/fsm');
@@ -45,7 +46,7 @@ const dedupFsm = require('../dedup-kernel/fsm');
 const engagementFsm = require('../retry-cadence-kernel/fsm');
 const reconciliationFsm = require('../reconciliation-kernel/fsm');
 const telemetryCoordinationFsm = require('./governance/domains/telemetry-coordination-fsm');
-const persistTelemetryFsm = require('./governance/domains/persist-telemetry-fsm');
+const persistTelemetryFsm = require('../postgres-telemetry-kernel/fsm');
 
 // ── 6 Membrane orchestrators ─────────────────────────────────────────────────
 const cadenceOrchestrator     = require('./orchestration/cadence-orchestrator');
@@ -132,6 +133,11 @@ async function startAllWorkers() {
   // Start orphan message repair — subscribes to DB_WRITE_COMPLETE on instagram_dm_messages
   // Runs async, idempotent, non-blocking.
   orphanMessageRepair.start(constitutional);
+
+  // Start conversation repair substrate — inside dedup-kernel, subscribes to
+  // EXECUTE_CONVERSATION_REPAIR. Worker fetches from Graph API, upserts
+  // through canonical writers, fixes orphaned message conversation_ids.
+  dedupKernel.conversationRepair.start(constitutional);
 
   // Rehydrate CK from the worker-populated ledger.
   // Prior entries from a previous process lifetime are now available.

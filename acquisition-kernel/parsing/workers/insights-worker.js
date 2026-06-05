@@ -1,35 +1,22 @@
 // substrates/parsing/workers/insights-worker.js
-// Insights parsing worker: build rows → CK(DB_WRITE_REQUESTED).
+// Insights parsing worker: parse → normalize → CK(DB_WRITE_REQUESTED).
 //
-// Owns: transforming raw insights data into normalized instagram_media rows,
-//        emitting through CK for governed DB write.
-// Does NOT own: Supabase, governance policy, fetch, orchestration.
+// Owns: sequencing the insights pipeline for media insights data.
+// Does NOT own: normalization logic (insights normalizer), Supabase,
+//               governance policy. Hashtag enrichment deferred to Phase 6.
+//
+// Phase 4: canonical path — uses domain substrate tools, no inline normalization.
+
+const { normalizeMediaInsight } = require('../../substrates/insights/normalizer');
 
 async function execute(rawData, accountId, intentId, extra = {}, governance) {
   if (!rawData.insights || rawData.insights.length === 0) return { count: 0 };
 
   const rows = rawData.insights
     .filter(item => item && item.media_id)
-    .map(item => {
-      const isStory = item.media_type === 'STORY';
-      return {
-        instagram_media_id: item.media_id,
-        business_account_id: accountId,
-        media_type: item.media_type || null,
-        caption: item.caption || null,
-        media_url: item.media_url || null,
-        thumbnail_url: item.thumbnail_url || null,
-        permalink: item.permalink || null,
-        like_count: item.like_count || 0,
-        comments_count: item.comments_count || 0,
-        reach: item.insights.find(i => i.name === 'reach')?.values?.[0]?.value || 0,
-        impressions: item.insights.find(i => i.name === 'impressions')?.values?.[0]?.value || 0,
-        saves: isStory ? null : (item.insights.find(i => i.name === 'saved')?.values?.[0]?.value ?? 0),
-        published_at: item.timestamp || null,
-      };
-    });
+    .map(item => normalizeMediaInsight(item, accountId));
 
-  if (rows.length === 0) return { count: 0 };
+  if (!rows.length) return { count: 0 };
 
   if (governance) {
     governance.dispatch({
@@ -42,7 +29,7 @@ async function execute(rawData, accountId, intentId, extra = {}, governance) {
     });
   }
 
-  return { count: 0 };
+  return { count: rows.length };
 }
 
 module.exports = { execute };

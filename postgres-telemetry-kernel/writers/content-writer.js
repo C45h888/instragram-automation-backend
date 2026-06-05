@@ -1,10 +1,10 @@
-// substrates/db/writers/ugc-writer.js
-// UGC writer: ugc_content batch upsert.
+// postgres-telemetry-kernel/writers/content-writer.js
+// Content writer: instagram_media batch upsert (posts + insights).
 //
-// Owns: Supabase upsert for ugc_content table.
+// Owns: Supabase upsert for instagram_media table.
 // Does NOT own: governance, normalization, fetch, orchestration.
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const { getSupabaseAdmin } = require('../../config/supabase');
 
 async function execute(params, governance) {
   const { domain, accountId, intentId, table, rows } = params;
@@ -17,7 +17,7 @@ async function execute(params, governance) {
   try {
     const { error } = await supabase
       .from(table)
-      .upsert(rows, { onConflict: 'business_account_id,visitor_post_id', ignoreDuplicates: false });
+      .upsert(rows, { onConflict: 'instagram_media_id', ignoreDuplicates: false });
 
     if (error) throw error;
 

@@ -172,7 +172,7 @@ function clearAccountsCacheAndQuota() {
   }
   // Fallback: route through reading kernel public API
   try {
-    require('./db/reading').invalidateCache('db.accounts');
+    require('../postgres-telemetry-kernel/reading').invalidateCache('db.accounts');
   } catch (_) {}
 }
 

@@ -19,7 +19,7 @@
 //   - EMISSION_OBSERVATION subscriber provides deterministic completion signal
 //   - getState() check prevents dispatching into a busy FSM
 
-const { getSupabaseAdmin } = require('../../config/supabase');
+const { getSupabaseAdmin } = require('../config/supabase');
 
 // ── Module state ─────────────────────────────────────────────────────────────
 

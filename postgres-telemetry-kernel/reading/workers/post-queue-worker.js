@@ -15,7 +15,7 @@
 //           cognition-scanner's Realtime subscriptions are the sole trigger source;
 //           this reader provides the governed pull path).
 
-const { getSupabaseAdmin } = require('../../../../config/supabase');
+const { getSupabaseAdmin } = require('../../../config/supabase');
 
 // ── Per-worker cache ────────────────────────────────────────────────────────
 const _cache = new Map(); // key → { data, expiresAt }
