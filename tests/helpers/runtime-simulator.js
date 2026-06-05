@@ -41,7 +41,7 @@
 const observability = require('../../control-plane/observability/index.js');
 const CK = require('../../control-plane/governance/constitutional-kernel.js');
 const telemetryWorkers = require('../../control-plane/telemetry-workers/index.js');
-const transitionWriters = require('../../control-plane/telemetry-workers/transition-writers/index.js');
+const transitionWriters = require('../../telemetry-kernel/substrates/projection/transition-writers/index.js');
 const phase2DumbWriter = null; // REMOVED — transition-writers are sole write path
 const namespaceProjectionInterpreter = require('../../control-plane/governance/interpreters/namespace-projection-interpreter.js');
 const lineageLedger = require('../../control-plane/governance/lineage-ledger.js');

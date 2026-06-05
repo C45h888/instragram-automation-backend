@@ -1375,7 +1375,7 @@ function _initReconciliationTrigger() {
 function getTransitionWriterHealth() {
   try {
     // eslint-disable-next-line global-require
-    const tw = require('../telemetry-workers/transition-writers');
+    const tw = require('../../telemetry-kernel/substrates/projection/transition-writers');
     return tw.getHealth();
   } catch (err) {
     return { status: 'UNAVAILABLE', error: err.message, timestamp: Date.now() };

@@ -14,9 +14,10 @@
 //                                                        ↓
 //            SEMANTIC_PROJECTION_TRANSITION → transition-writers → lineage ledger
 //
-// Worker→FSM→TransitionWriter chain is:
-//   Projection Worker (kernel) → observability → FSM (kernel) → transition-writers (control-plane)
-// The transition-writers remain in control-plane as the mechanical write pipe.
+// Worker→FSM→TransitionWriter chain (all inside the telemetry-kernel):
+//   Projection Worker → observability → FSM → transition-writers → lineage ledger
+// The transition-writers are owned by the kernel, co-located with the FSM
+// they serve — single source of truth for the projection → ledger pipeline.
 
 const { workers, startAll, stopAll, getAllHealth, getAllProjections } = require('./workers');
 

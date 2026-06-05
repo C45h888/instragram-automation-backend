@@ -1,5 +1,6 @@
-// control-plane/telemetry-workers/transition-writers/authority-transition-writer.js
+// telemetry-kernel/substrates/projection/transition-writers/authority-transition-writer.js
 // Authority Transition Writer: bounded append for authority namespace FSM output.
+// Migrated from control-plane/telemetry-workers/transition-writers/authority-transition-writer.js.
 //
 // Domain: authority
 // Filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === 'authority'

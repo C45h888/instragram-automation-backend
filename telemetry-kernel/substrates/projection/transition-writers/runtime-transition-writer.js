@@ -1,5 +1,6 @@
-// control-plane/telemetry-workers/transition-writers/runtime-transition-writer.js
+// telemetry-kernel/substrates/projection/transition-writers/runtime-transition-writer.js
 // Runtime Transition Writer: bounded append for runtime namespace FSM output.
+// Migrated from control-plane/telemetry-workers/transition-writers/runtime-transition-writer.js.
 //
 // Domain: runtime
 // Filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === 'runtime'

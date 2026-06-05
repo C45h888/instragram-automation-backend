@@ -26,7 +26,7 @@ const syncSubstrate = require('../substrates/sync-substrate');
 const engagementTelemetryAdapter = require('./governance/interpreters/engagement-telemetry-adapter');
 const telemetryKernel = require('../telemetry-kernel');
 const telemetryWorkers = telemetryKernel; // kernel owns canonical startAll/stopAll
-const transitionWriters = require('./telemetry-workers/transition-writers');
+const transitionWriters = require('../telemetry-kernel/substrates/projection/transition-writers');
 
 const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');

@@ -1,8 +1,7 @@
 // substrates/parsing/index.js
 // Parsing substrate: async parsing job dispatcher.
 //
-// Owns: dispatching parse→normalize→persist jobs per domain,
-//        tracking job state (pending/completed/failed).
+// Owns: dispatching parse→normalize→persist jobs per domain.
 // Does NOT own: fetch, transport, orchestration, governance policy.
 //
 // Workers run asynchronously via setImmediate. dispatch() returns immediately.
@@ -11,9 +10,6 @@
 
 const { getWorker } = require('./domain-map');
 const crypto = require('crypto');
-
-// ── Job state ─────────────────────────────────────────────────────────────────
-const _jobs = new Map(); // jobId → { domain, accountId, intentId, status, result, createdAt }
 
 // ── Governance reference (set by orchastrator.js at boot) ────────────────────
 let _governance = null;
@@ -40,18 +36,9 @@ function setGovernance(governance) {
  */
 function dispatch(domain, rawData, accountId, intentId, extra = {}) {
   const jobId = crypto.randomUUID();
-  const now = Date.now();
-
-  _jobs.set(jobId, {
-    domain, accountId, intentId,
-    status: 'pending',
-    result: null,
-    createdAt: now,
-  });
 
   const worker = getWorker(domain);
   if (!worker) {
-    _jobs.set(jobId, { ..._jobs.get(jobId), status: 'failed', result: { count: 0, error: `unknown domain: ${domain}` } });
     _emitComplete(jobId, accountId, domain, intentId, { status: 'failed', count: 0, error: `unknown domain: ${domain}` });
     return { jobId, status: 'pending' };
   }
@@ -60,10 +47,8 @@ function dispatch(domain, rawData, accountId, intentId, extra = {}) {
   setImmediate(async () => {
     try {
       const result = await worker.execute(rawData, accountId, intentId, extra, _governance);
-      _jobs.set(jobId, { ..._jobs.get(jobId), status: 'completed', result });
       _emitComplete(jobId, accountId, domain, intentId, { status: 'completed', count: result.count || 0 });
     } catch (err) {
-      _jobs.set(jobId, { ..._jobs.get(jobId), status: 'failed', result: { count: 0, error: err.message } });
       _emitComplete(jobId, accountId, domain, intentId, { status: 'failed', count: 0, error: err.message });
     }
   });
@@ -87,29 +72,4 @@ function _emitComplete(jobId, accountId, domain, intentId, result) {
   }
 }
 
-/**
- * Get job state by ID.
- * @param {string} jobId
- * @returns {{ status: string, result: object|null }|null}
- */
-function getJob(jobId) {
-  const job = _jobs.get(jobId);
-  if (!job) return null;
-  return { status: job.status, result: job.result };
-}
-
-/**
- * Get job statistics.
- * @returns {{ pending: number, completed: number, failed: number }}
- */
-function getStats() {
-  let pending = 0, completed = 0, failed = 0;
-  for (const job of _jobs.values()) {
-    if (job.status === 'pending') pending++;
-    else if (job.status === 'completed') completed++;
-    else failed++;
-  }
-  return { pending, completed, failed };
-}
-
-module.exports = { dispatch, getJob, getStats, setGovernance };
+module.exports = { dispatch, setGovernance };

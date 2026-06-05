@@ -1,8 +1,10 @@
-// control-plane/telemetry-workers/transition-writers/base-transition-writer.js
+// telemetry-kernel/substrates/projection/transition-writers/base-transition-writer.js
 // Base Transition Writer: mechanical append pipe for FSM-coordinated transitions.
+// Migrated from control-plane/telemetry-workers/transition-writers/base-transition-writer.js
+// with dependency paths adjusted for kernel location.
 //
 // Owns: reading from bounded domain partition of the transition log,
-//       appending FSM output to canonical ledger, notifying CK for async validation.
+//        appending FSM output to canonical ledger, notifying CK for async validation.
 //
 // Does NOT own: semantic validation, namespace projection state, serialization,
 //               intent interpretation, or any governance decision.
@@ -106,11 +108,11 @@ function createTransitionWriter(namespace) {
 
   function start() {
     // eslint-disable-next-line global-require
-    const observability = require('../../observability');
+    const observability = require('../../../../control-plane/observability');
     // eslint-disable-next-line global-require
-    const lineageLedger = require('../../governance/lineage-ledger');
+    const lineageLedger = require('../../../../control-plane/governance/lineage-ledger');
     // eslint-disable-next-line global-require
-    const CK = require('../../governance/constitutional-kernel');
+    const CK = require('../../../../control-plane/governance/constitutional-kernel');
 
     _unsubscribe = observability.onWrite(async (transition) => {
       // Gate 1: Structural filter — only FSM output (SEMANTIC_PROJECTION_TRANSITION) is consumed.
@@ -158,7 +160,7 @@ function createTransitionWriter(namespace) {
         console.error(`[${namespace}-transition-writer] Ledger write error [${category}]:`, err.message);
       });
     });
-    }
+  }
 
   function stop() {
     if (_unsubscribe) {

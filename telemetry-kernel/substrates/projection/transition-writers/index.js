@@ -1,5 +1,9 @@
-// control-plane/telemetry-workers/transition-writers/index.js
+// telemetry-kernel/substrates/projection/transition-writers/index.js
 // Transition Writers: unified export for 5 bounded domain writers.
+// Migrated from control-plane/telemetry-workers/transition-writers/index.js.
+// These writers are semantically owned by the telemetry-coordination FSM — the
+// canonical write pipe from FSM-coordinated SEMANTIC_PROJECTION_TRANSITION
+// entries into the lineage ledger.
 //
 // Each writer is a dumb mechanical append pipe — it receives FSM-coordinated
 // SEMANTIC_PROJECTION_TRANSITION entries (raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION')

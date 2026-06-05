@@ -1,5 +1,6 @@
-// control-plane/telemetry-workers/transition-writers/systemic-transition-writer.js
+// telemetry-kernel/substrates/projection/transition-writers/systemic-transition-writer.js
 // Systemic Transition Writer: bounded append for systemic namespace FSM output.
+// Migrated from control-plane/telemetry-workers/transition-writers/systemic-transition-writer.js.
 //
 // Domain: systemic
 // Filter: raw.entryType === 'SEMANTIC_PROJECTION_TRANSITION' AND domain === 'systemic'
