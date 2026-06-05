@@ -10,13 +10,15 @@
 
 const signalBus = require('../signal-bus');
 const realtime = require('../../substrates/realtime');
-const { getActiveAccounts } = require('../../substrates/persistence');
 
 const TOPIC = 'db:insert';
 
 let _onEvent = null;
 let _started = false;
 let _accountCount = 0;
+let _governance = null;
+
+function setGovernance(g) { _governance = g; }
 
 /**
  * Returns live runtime state. Deterministic, no side effects.
@@ -44,7 +46,15 @@ async function start(accounts, onEvent) {
   }
   if (_started) return;
   if (!accounts) {
-    accounts = await getActiveAccounts();
+    if (!_governance) {
+      throw new Error('[signal-intake] governance not wired — call setGovernance(governance) before start()');
+    }
+    const result = await _governance.governedRead('db.accounts', { query: 'getActiveAccounts' });
+    if (!result.success) {
+      console.error('[signal-intake] governed read failed:', result.error);
+      return;
+    }
+    accounts = result.data;
   }
   _accountCount = accounts.length;
   _onEvent = onEvent;
@@ -96,4 +106,4 @@ function _emitTransition(previousState, nextState) {
   }
 }
 
-module.exports = { start, stop, status };
+module.exports = { start, stop, status, setGovernance };

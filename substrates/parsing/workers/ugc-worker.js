@@ -5,7 +5,7 @@
 //        emitting through CK for governed DB write.
 // Does NOT own: Supabase, governance policy, fetch, orchestration.
 
-const { mapRawPostToUgcContent } = require('../../ugc/normalizer');
+const { mapRawPostToUgcContent } = require('../../../acquisition-kernel/substrates/ugc/normalizer');
 
 async function execute(rawData, accountId, intentId, extra = {}, governance) {
   if (!rawData.records || rawData.records.length === 0) return { count: 0 };

@@ -15,13 +15,17 @@
 //   lifecycle.onRemove(fn) → register removal callback
 
 const { getRedisClient } = require('../../config/redis');
-const { getActiveAccounts } = require('../../substrates/persistence');
 
 /** Set of currently active account IDs */
 const _activeAccounts = new Set();
 
 /** Called when an account is removed so other modules can clean up. */
 let _onRemove = null;
+
+/** Governance reference — injected at boot, used for governed reads. */
+let _governance = null;
+
+function setGovernance(g) { _governance = g; }
 
 /**
  * Returns live runtime state. Deterministic, no side effects.
@@ -60,7 +64,17 @@ async function refresh() {
     return { ok: false, error: 'redis unavailable', added: 0, removed: 0 };
   }
 
-  const accounts = await getActiveAccounts();
+  if (!_governance) {
+    console.warn('[lifecycle] governance not wired — skipping refresh');
+    return { ok: false, error: 'governance not wired', added: 0, removed: 0 };
+  }
+
+  const result = await _governance.governedRead('db.accounts', { query: 'getActiveAccounts' });
+  if (!result.success) {
+    console.warn('[lifecycle] governed read failed:', result.error);
+    return { ok: false, error: result.error, added: 0, removed: 0 };
+  }
+  const accounts = result.data;
   const currentIds = new Set(accounts.map(a => a.id));
 
   let added = 0;
@@ -120,5 +134,5 @@ function stopAll() {
   console.log('[lifecycle] All accounts cleared');
 }
 
-module.exports = { status, refresh, stopAll, onRemove };
+module.exports = { status, refresh, stopAll, onRemove, setGovernance };
 

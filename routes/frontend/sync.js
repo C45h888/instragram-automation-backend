@@ -8,9 +8,9 @@ const router = express.Router();
 const { logAudit: logAuditService } = require('../../config/supabase');
 const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
 const dispatchWrite = require('../../substrates/db/writers').dispatchWrite;
-const { mapRawPostToUgcContent } = require('../../substrates/ugc/normalizer');
-const ugcTransport = require('../../substrates/ugc/transport');
-const contentTransport = require('../../substrates/content/transport');
+const { mapRawPostToUgcContent } = require('../../acquisition-kernel/substrates/ugc/normalizer');
+const ugcTransport = require('../../acquisition-kernel/substrates/ugc/transport');
+const contentTransport = require('../../acquisition-kernel/substrates/content/transport');
 
 const logAudit = logAuditService;
 

@@ -8,8 +8,8 @@
 
 const { getSupabaseAdmin } = require('../config/supabase');
 const { resolveAccountCredentials, ensureConversationRows, ensureMediaRecord, syncHashtagsFromCaptions } = require('../helpers/agent-helpers');
-const { transformMessage, normalizeComment } = require('./engagement/normalizer');
-const { parseConversations } = require('./engagement/parser');
+const { transformMessage, normalizeComment } = require('../acquisition-kernel/substrates/engagement/normalizer');
+const { parseConversations } = require('../acquisition-kernel/substrates/engagement/parser');
 const { logWithDomain } = require('./telemetry');
 const { _setClearAccountsCache } = require('./retry');
 
@@ -338,7 +338,7 @@ async function storeMediaInsightsBatch(businessAccountId, mediaInsights, caption
   const supabase = getSupabaseAdmin();
   if (!supabase) return { count: 0 };
 
-  const { normalizeMediaInsight } = require('./insights/normalizer');
+  const { normalizeMediaInsight } = require('../acquisition-kernel/substrates/insights/normalizer');
   const mediaRecords = mediaInsights.map(m => normalizeMediaInsight(m, businessAccountId));
 
   const { error: mediaErr } = await supabase
@@ -371,7 +371,7 @@ async function storeBusinessPosts(businessAccountId, posts) {
   const supabase = getSupabaseAdmin();
   if (!supabase) return { count: 0 };
 
-  const { normalizeBusinessPost } = require('./content/normalizer');
+  const { normalizeBusinessPost } = require('../acquisition-kernel/substrates/content/normalizer');
   const mediaRecords = posts.map(p => normalizeBusinessPost(p, businessAccountId));
 
   const { error: upsertErr } = await supabase

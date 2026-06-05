@@ -1,4 +1,4 @@
-// substrates/publishing/index.js
+// publishing-kernel/substrate-registry.js
 // Publishing bounded-substrate routing entry.
 //
 // Owns: mapping worker names to bounded substrates.
@@ -7,8 +7,8 @@
 // Workers are instantiated by the publishing orchestrator (emission-orchestrator.js)
 // via EXECUTE_CONTENT / EXECUTE_ENGAGEMENT subscribers.
 
-const content = require('./content');
-const engagement = require('./engagement');
+const content = require('./substrates/content');
+const engagement = require('./substrates/engagement');
 
 const WORKER_MAP = {
   // ── Content substrate ──────────────────────────────────────

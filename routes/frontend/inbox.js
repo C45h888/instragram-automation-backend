@@ -13,7 +13,7 @@
 const express = require('express');
 const router = express.Router();
 const { getSupabaseAdmin } = require('../../config/supabase');
-const publishingFsm = require('../../control-plane/governance/domains/publishing-fsm');
+const publishingFsm = require('../../publishing-kernel/fsm');
 
 // ============================================
 // GET /dm-conversations

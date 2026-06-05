@@ -1,4 +1,4 @@
-// substrates/publishing/content/worker.js
+// publishing-kernel/substrates/content/worker.js
 // Content publishing worker: one bounded IG API call per instantiation.
 //
 // Owns: ONE HTTP call to IG Graph API via transport.

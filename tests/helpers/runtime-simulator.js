@@ -173,7 +173,8 @@ class RuntimeSimulator {
 
     // 10. Refresh lifecycle and dispatch account state — matches production order
     await lifecycle.refresh();
-    const accounts = await require('../../substrates/persistence.js').getActiveAccounts();
+    const readResult = await CK.governedRead('db.accounts', { query: 'getActiveAccounts' });
+    const accounts = readResult.success ? readResult.data : [];
     CK.dispatch({
       type: 'LIFECYCLE_REFRESHED',
       accountIds: accounts.map((a) => a.id),

@@ -1,4 +1,4 @@
-// substrates/publishing/engagement/transport.js
+// publishing-kernel/substrates/engagement/transport.js
 // Engagement publishing transport: pure Instagram Graph API write operations.
 //
 // Owns: reply_comment, reply_dm, send_dm HTTP calls.

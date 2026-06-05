@@ -9,6 +9,7 @@ const WORKER_MAP = {
   'db.media':            './workers/media-worker',
   'db.post-queue':       './workers/post-queue-worker',
   'db.scheduled-posts':  './workers/post-queue-worker',
+  'db.accounts':         './workers/accounts-worker',
 };
 
 function getWorker(domain) {

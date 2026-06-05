@@ -21,7 +21,7 @@ const metricsSubstrate = require('../substrates/metrics-substrate');
 const { getRedisClient } = require('../config/redis');
 const cadence = require('./runtime/cadence');
 const lifecycle = require('./runtime/lifecycle');
-const persistence = require('../substrates/persistence');
+const signalIntake = require('./runtime/signal-intake');
 const syncSubstrate = require('../substrates/sync-substrate');
 const engagementTelemetryAdapter = require('./governance/interpreters/engagement-telemetry-adapter');
 const telemetryWorkers = require('./telemetry-workers');
@@ -37,18 +37,18 @@ const cognitionScanner = require('../substrates/db/cognition-scanner');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('../acquisition-kernel/fsm');
-const publishingFsm = require('./governance/domains/publishing-fsm');
+const publishingFsm = require('../publishing-kernel/fsm');
 const schedulingFsm = require('./governance/domains/scheduling-fsm');
 const dedupFsm = require('./governance/domains/dedup-fsm');
 const engagementFsm = require('./governance/domains/engagement-fsm');
-const reconciliationFsm = require('./governance/domains/reconciliation-fsm');
+const reconciliationFsm = require('../reconciliation-kernel/fsm');
 const telemetryCoordinationFsm = require('./governance/domains/telemetry-coordination-fsm');
 const persistTelemetryFsm = require('./governance/domains/persist-telemetry-fsm');
 
 // ── 6 Membrane orchestrators ─────────────────────────────────────────────────
 const cadenceOrchestrator     = require('./orchestration/cadence-orchestrator');
 const acquisitionOrchestrator = require('../acquisition-kernel/orchestrator');
-const emissionOrchestrator    = require('./orchestration/emission-orchestrator');
+const emissionOrchestrator    = require('../publishing-kernel/orchestrator');
 const lifecycleOrchestrator   = require('./orchestration/lifecycle-orchestrator');
 const degradationOrchestrator = require('./orchestration/degradation-orchestrator');
 
@@ -132,8 +132,13 @@ async function startAllWorkers() {
 
   await metricsSubstrate.init();
 
+  // Wire governance into runtime modules — governed reads require this
+  lifecycle.setGovernance(constitutional);
+  signalIntake.setGovernance(constitutional);
+
   await lifecycle.refresh();
-  const accounts = await persistence.getActiveAccounts();
+  const result = await constitutional.governedRead('db.accounts', { query: 'getActiveAccounts' });
+  const accounts = result.success ? result.data : [];
 
   // Start cognition scanner — sole deterministic trigger for publishing FSM
   await cognitionScanner.start(constitutional, accounts, publishingFsm);

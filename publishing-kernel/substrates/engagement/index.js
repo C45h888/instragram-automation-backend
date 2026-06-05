@@ -1,4 +1,4 @@
-// substrates/publishing/engagement/index.js
+// publishing-kernel/substrates/engagement/index.js
 // Engagement bounded substrate: owns worker factory, rate limiter, execution loop.
 //
 // Owns: factory-creating engagement workers, pre-flight checks, per-item iteration,

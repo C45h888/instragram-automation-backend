@@ -1,4 +1,4 @@
-// substrates/publishing/content/transport.js
+// publishing-kernel/substrates/content/transport.js
 // Content publishing transport: pure Instagram Graph API write operations.
 //
 // Owns: post creation (IMAGE/CAROUSEL_ALBUM), story creation (VIDEO/REELS),

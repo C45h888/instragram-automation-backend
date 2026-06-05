@@ -15,7 +15,6 @@
 const lifecycle = require('../runtime/lifecycle');
 const safety = require('../runtime/operational-safety');
 const metricsSubstrate = require('../../substrates/metrics-substrate');
-const persistence = require('../../substrates/persistence');
 
 /**
  * Wire this orchestrator to the governance kernel.
@@ -25,11 +24,12 @@ const persistence = require('../../substrates/persistence');
  * @param {object} governance — governance kernel module
  */
 function wire(governance) {
-  // ── REFRESH_LIFECYCLE → lifecycle → persistence ────────────────────────
+  // ── REFRESH_LIFECYCLE → lifecycle → governed read ────────────────────────
   governance.subscribeAction('REFRESH_LIFECYCLE', (action) => {
     lifecycle.refresh().then(() => {
-      return persistence.getActiveAccounts();
-    }).then(accounts => {
+      return governance.governedRead('db.accounts', { query: 'getActiveAccounts' });
+    }).then(result => {
+      const accounts = result.success ? result.data : [];
       governance.dispatch({ type: 'LIFECYCLE_REFRESHED', accountIds: accounts.map(a => a.id) });
     }).catch(err => {
       console.error('[cadence-orchestrator] Lifecycle refresh error:', err.message);

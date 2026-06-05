@@ -1,4 +1,4 @@
-// control-plane/orchestration/emission-orchestrator.js
+// publishing-kernel/orchestrator.js
 // Emission Orchestrator: constitutional coordination membrane.
 //
 // Owns: routing EVALUATE actions downward through the
@@ -18,13 +18,13 @@
 // and DEDUP_BATCH_END after evaluation, bridging async substrate work to
 // synchronous dedup FSM governance.
 
-const evaluator = require('../runtime/evaluation');
-const emitter = require('../runtime/emission');
-const dedupSubstrate = require('../../substrates/dedup-substrate');
-const mutationSubstrate = require('../mutation-substrate');
-const contentSubstrate = require('../../substrates/publishing/content');
-const engagementSubstrate = require('../../substrates/publishing/engagement');
-const { resolveAccountCredentials } = require('../../helpers/agent-helpers');
+const evaluator = require('../control-plane/runtime/evaluation');
+const emitter = require('../control-plane/runtime/emission');
+const dedupSubstrate = require('../substrates/dedup-substrate');
+const mutationSubstrate = require('../control-plane/mutation-substrate');
+const contentSubstrate = require('./substrates/content');
+const engagementSubstrate = require('./substrates/engagement');
+const { resolveAccountCredentials } = require('../helpers/agent-helpers');
 
 const MUTATION_POLICY = {
   scheduled_posts: {
@@ -157,7 +157,7 @@ async function executeEvaluationPipeline(governance, accountId, events) {
 
 function _emitTransition(accountId, previousState, nextState) {
   try {
-    const observability = require('../observability/emitters/transition-emitter');
+    const observability = require('../control-plane/observability/emitters/transition-emitter');
     observability.transition({
       domain: 'emission',
       entity: 'pipeline',

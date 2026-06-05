@@ -1,4 +1,4 @@
-// substrates/publishing/content/index.js
+// publishing-kernel/substrates/content/index.js
 // Content bounded substrate: owns worker factory, rate limiter, execution loop.
 //
 // Owns: factory-creating content workers, pre-flight checks, per-item iteration,

@@ -1,4 +1,4 @@
-// substrates/publishing/engagement/worker.js
+// publishing-kernel/substrates/engagement/worker.js
 // Engagement publishing worker: one bounded IG API call per instantiation.
 //
 // Owns: ONE HTTP call to IG Graph API via transport.

@@ -955,7 +955,7 @@ function stopLoop() {
 // checkpoint gate evaluation, and worker orchestration.
 // CK remains HSM authority — dispatches FSM transitions after substrate returns.
 
-const reconciliationSubstrate = require('./reconciliation-substrate');
+const reconciliationSubstrate = require('../../reconciliation-kernel/substrate');
 
 // Reconciliation substrate owns this — moved to reconciliation-substrate.js
 

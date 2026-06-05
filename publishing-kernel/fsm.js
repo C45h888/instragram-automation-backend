@@ -1,4 +1,4 @@
-// control-plane/governance/domains/publishing-fsm.js
+// publishing-kernel/fsm.js
 // Publishing Domain FSM: federated state machine governing publishing lifecycle.
 //
 // Owns: deterministic trigger intake (via cognition scanner) → governed read →
@@ -37,7 +37,7 @@ const crypto = require('crypto');
 let _observability = null;
 function _obs() {
   if (!_observability) {
-    try { _observability = require('../../observability/emitters/transition-emitter'); }
+    try { _observability = require('../control-plane/observability/emitters/transition-emitter'); }
     catch (_) { _observability = null; }
   }
   return _observability;

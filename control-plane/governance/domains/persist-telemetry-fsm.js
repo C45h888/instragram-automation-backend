@@ -57,6 +57,7 @@ const READ_BACKPRESSURE_THRESHOLD = 20;
 const READ_DOMAIN_WHITELIST = new Set([
   'db.media',
   'db.post-queue',
+  'db.accounts',
   'db.scheduled-posts',
   'ig.content',
   'ig.engagement',
