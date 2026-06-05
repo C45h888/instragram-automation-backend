@@ -10,7 +10,7 @@
 const HashtagWorker = require('./workers/hashtag');
 const TaggedWorker = require('./workers/tagged');
 const { mapRawPostToUgcContent } = require('./normalizer');
-const dispatchWrite = require('../db/writers').dispatchWrite;
+const dispatchWrite = require('../../../../substrates/db/writers').dispatchWrite;
 
 /**
  * Fetch raw data from Instagram API for UGC domain.

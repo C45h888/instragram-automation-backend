@@ -36,7 +36,7 @@ const dbReaders = require('../substrates/db/readers');
 const cognitionScanner = require('../substrates/db/cognition-scanner');
 
 // ── 6 Domain FSMs ───────────────────────────────────────────────────────────
-const acquisitionFsm = require('./governance/domains/acquisition-fsm');
+const acquisitionFsm = require('../kernels/acquisition/fsm');
 const publishingFsm = require('./governance/domains/publishing-fsm');
 const schedulingFsm = require('./governance/domains/scheduling-fsm');
 const dedupFsm = require('./governance/domains/dedup-fsm');
@@ -47,7 +47,7 @@ const persistTelemetryFsm = require('./governance/domains/persist-telemetry-fsm'
 
 // ── 6 Membrane orchestrators ─────────────────────────────────────────────────
 const cadenceOrchestrator     = require('./orchestration/cadence-orchestrator');
-const acquisitionOrchestrator = require('./orchestration/acquisition-orchestrator');
+const acquisitionOrchestrator = require('../kernels/acquisition/orchestrator');
 const emissionOrchestrator    = require('./orchestration/emission-orchestrator');
 const lifecycleOrchestrator   = require('./orchestration/lifecycle-orchestrator');
 const degradationOrchestrator = require('./orchestration/degradation-orchestrator');

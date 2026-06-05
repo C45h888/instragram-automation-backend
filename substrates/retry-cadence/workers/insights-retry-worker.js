@@ -17,7 +17,7 @@
 const retry = require('../../retry');
 const { getPolicy } = require('../policy');
 const insightsTransport = require('../../insights/transport');
-const persistence = require('../../persistence');
+const { resolveAccountCredentials } = require('../../../helpers/agent-helpers');
 const parsing = require('../../parsing');
 
 /**
@@ -35,7 +35,7 @@ function schedule(domain, accountId, intentId, params, retryCount, maxRetries, g
 
 async function _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   try {
-    const creds = await persistence.resolveAccountCredentials(accountId);
+    const creds = await resolveAccountCredentials(accountId);
     const sevenDaysAgo = params.since || Math.floor((Date.now() - 7 * 24 * 3600000) / 1000);
     const now = params.until || Math.floor(Date.now() / 1000);
 

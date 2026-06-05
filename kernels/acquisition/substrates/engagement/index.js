@@ -11,9 +11,9 @@ const CommentsWorker = require('./workers/comments');
 const MessagesWorker = require('./workers/messages');
 const ConversationsWorker = require('./workers/conversations');
 const transport = require('./transport');
-const { getRecentMedia } = require('../db/readers');
+const { getRecentMedia } = require('../../../../substrates/db/readers');
 const { normalizeComment, transformMessage } = require('./normalizer');
-const dispatchWrite = require('../db/writers').dispatchWrite;
+const dispatchWrite = require('../../../../substrates/db/writers').dispatchWrite;
 
 /**
  * Fetch raw data from Instagram API for engagement domain.
@@ -47,7 +47,7 @@ async function fetch(accountId, params, credentials) {
   if (postsToCheck.length === 0) {
     return { success: true, batches: [], count: 0 };
   }
-  const { runConcurrent } = require('../../services/sync/helpers');
+  const { runConcurrent } = require('../../../../services/sync/helpers');
   const limit = params.limit || 50;
   const results = await runConcurrent(
     postsToCheck,

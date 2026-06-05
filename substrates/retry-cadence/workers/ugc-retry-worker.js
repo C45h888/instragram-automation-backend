@@ -15,7 +15,7 @@
 const retry = require('../../retry');
 const { getPolicy } = require('../policy');
 const ugcTransport = require('../../ugc/transport');
-const persistence = require('../../persistence');
+const { resolveAccountCredentials } = require('../../../helpers/agent-helpers');
 const parsing = require('../../parsing');
 
 /**
@@ -33,7 +33,7 @@ function schedule(domain, accountId, intentId, params, retryCount, maxRetries, g
 
 async function _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   try {
-    const creds = await persistence.resolveAccountCredentials(accountId);
+    const creds = await resolveAccountCredentials(accountId);
 
     let result;
     if (params.hashtag) {

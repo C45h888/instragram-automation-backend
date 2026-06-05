@@ -13,9 +13,9 @@
 //   - auth_failure / permanent: no retry → exhaust immediately
 
 const retry = require('../../retry');
-const { getPolicy, computeDelay } = require('../policy');
+const { getPolicy } = require('../policy');
 const engagementTransport = require('../../engagement/transport');
-const persistence = require('../../persistence');
+const { resolveAccountCredentials } = require('../../../helpers/agent-helpers');
 const parsing = require('../../parsing');
 
 // Engagement-specific: IG code → override base delay
@@ -51,7 +51,7 @@ function schedule(domain, accountId, intentId, params, retryCount, maxRetries, g
  */
 async function _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   try {
-    const creds = await persistence.resolveAccountCredentials(accountId);
+    const creds = await resolveAccountCredentials(accountId);
 
     // Fetch — engagement substrate
     let result;
