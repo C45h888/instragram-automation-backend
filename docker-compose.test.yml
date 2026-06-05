@@ -117,6 +117,36 @@ services:
     mem_limit: 1g
     cpu_shares: 1024
 
+  # ----------------------------------------
+  # Graph Runtime Simulator — Phase 7
+  # ----------------------------------------
+  # Canonical external environment for the
+  # Phase 7 runtime validation framework.
+  # Single source of truth for Graph behavior
+  # across all kernels (acquisition, publishing,
+  # capability). Workers hit the worker port
+  # (9100) via axios like real Meta. Tests and
+  # the runtime simulator hit the control port
+  # (9101) to deterministically inject failure
+  # scenarios.
+  graph-simulator:
+    image: node:22-alpine
+    container_name: instagram-graph-simulator
+    restart: "no"
+    working_dir: /sim
+    command: ["node", "/sim/server.js"]
+    networks:
+      - test-runtime-net
+    volumes:
+      - ./tests/phase-7/runtime/graph-simulator.js:/sim/server.js:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9100/v1/accounts >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    mem_limit: 256m
+    cpu_shares: 256
+
 networks:
   test-runtime-net:
     driver: bridge

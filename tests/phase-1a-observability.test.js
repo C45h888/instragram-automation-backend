@@ -53,7 +53,7 @@ describe('Phase 1A: Runtime Observability Infrastructure', () => {
       const testIntentId = `test-obs-001-${Date.now()}`;
 
       // Note: entityId must be passed via raw.intentId due to normalizer override rule
-      observability.transition({
+      await observability.transition({
         domain: 'execution',
         entity: 'attempt',
         previousState: 'PENDING',
@@ -73,7 +73,7 @@ describe('Phase 1A: Runtime Observability Infrastructure', () => {
     it('should record state transitions in the transition log', async () => {
       const testIntentId = `test-log-001-${Date.now()}`;
 
-      observability.transition({
+      await observability.transition({
         domain: 'publishing',
         entity: 'pipeline',
         entityId: testIntentId,
@@ -92,7 +92,7 @@ describe('Phase 1A: Runtime Observability Infrastructure', () => {
     it('should track FSM states within a domain', async () => {
       const testFsmId = `test-fsm-domain-001-${Date.now()}`;
 
-      observability.transition({
+      await observability.transition({
         domain: 'governance',
         entity: 'fsm',
         entityId: testFsmId,
@@ -154,7 +154,7 @@ describe('Phase 1A: Runtime Observability Infrastructure', () => {
     it('should log membrane transitions through observability', async () => {
       const membraneId = `test-membrane-${Date.now()}`;
 
-      observability.transition({
+      await observability.transition({
         domain: 'governance',
         entity: 'membrane',
         entityId: membraneId,

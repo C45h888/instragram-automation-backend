@@ -38,10 +38,10 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { getRedisClient } from '../config/redis.js';
 import observability from '../control-plane/observability/index.js';
-import transitionWriters from '../control-plane/telemetry-workers/transition-writers/index.js';
+import transitionWriters from '../telemetry-kernel/substrates/projection/transition-writers/index.js';
 import lineageLedger from '../control-plane/governance/lineage-ledger.js';
 import constitutionalKernel from '../control-plane/governance/constitutional-kernel.js';
-import tcf from '../control-plane/governance/domains/telemetry-coordination-fsm.js';
+import tcf from '../telemetry-kernel/fsm.js';
 
 // ── Namespace → Redis cursor key for telemetry-coordination-fsm consumer ──
 const CURSOR_KEY = 'governance:observability:consumer-cursor:telemetry-coordination-fsm';
@@ -93,7 +93,7 @@ describe('Phase 6A: Transition Writers → Redis Write Path', () => {
     await observability.init();
 
     // Step 2: start projection workers (producers)
-    const telemetryWorkers = require('../control-plane/telemetry-workers');
+    const telemetryWorkers = require('../telemetry-kernel');
     await telemetryWorkers.startAll();
 
     // Step 3: start transition writers (consumers of FSM output)
@@ -127,7 +127,7 @@ describe('Phase 6A: Transition Writers → Redis Write Path', () => {
 
   afterAll(async () => {
     transitionWriters.stopAll();
-    const telemetryWorkers = require('../control-plane/telemetry-workers');
+    const telemetryWorkers = require('../telemetry-kernel');
     await telemetryWorkers.stopAll();
     constitutionalKernel.stopLoop();
     await observability.stop();

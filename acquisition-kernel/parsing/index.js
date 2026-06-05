@@ -7,8 +7,12 @@
 // Workers run asynchronously via setImmediate. dispatch() returns immediately.
 // The retry-worker should NOT await the result — it emits PARSING_DISPATCHED
 // to CK and continues. When the worker completes, it emits PARSING_COMPLETE.
+//
+// Constitutional rule: domain→worker binding is owned by substrate-registry.
+// This file MUST NOT maintain a sibling domain map. It calls
+// substrateRegistry.getParsingWorker(domain) to resolve.
 
-const { getWorker } = require('./domain-map');
+const substrateRegistry = require('../substrate-registry');
 const crypto = require('crypto');
 
 // ── Governance reference (set by orchastrator.js at boot) ────────────────────
@@ -37,7 +41,7 @@ function setGovernance(governance) {
 function dispatch(domain, rawData, accountId, intentId, extra = {}) {
   const jobId = crypto.randomUUID();
 
-  const worker = getWorker(domain);
+  const worker = substrateRegistry.getParsingWorker(domain);
   if (!worker) {
     _emitComplete(jobId, accountId, domain, intentId, { status: 'failed', count: 0, error: `unknown domain: ${domain}` });
     return { jobId, status: 'pending' };

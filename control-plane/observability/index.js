@@ -50,7 +50,7 @@ const signalBusIntegration = require('./bus/signal-bus-integration');
  * @param {object} params — see transition-emitter.js for full signature
  * @returns {Promise<void>}
  */
-function transition(params) {
+async function transition(params) {
   return transitionEmitter.transition(params);
 }
 

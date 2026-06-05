@@ -40,7 +40,7 @@ import { waitForLedgerEntry, waitForLedgerEntryCount } from './helpers/sync-barr
 const crypto = require('crypto');
 const observability = require('../control-plane/observability/index.js');
 const CK = require('../control-plane/governance/constitutional-kernel.js');
-const tcf = require('../control-plane/governance/domains/telemetry-coordination-fsm.js');
+const tcf = require('../telemetry-kernel/fsm.js');
 const lineageLedger = require('../control-plane/governance/lineage-ledger.js');
 const { startMonitor, stopMonitor, getReport } = require('./helpers/runtime-monitor.js');
 

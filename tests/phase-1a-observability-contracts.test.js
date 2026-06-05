@@ -19,7 +19,10 @@ describe('Phase 1A: Observability + Smoke Contracts', () => {
   it('projects emitted transitions into state and transition log', async () => {
     const entityId = `obs-causal-${Date.now()}`;
     const cursorStart = observability.query.getLogSize();
-    observability.transition({
+
+    // Must await — transition() is async and returns a Promise.
+    // Callers that need ordering guarantees must await before yielding to the event loop.
+    await observability.transition({
       domain: 'governance',
       entity: 'fsm',
       entityId,
@@ -27,7 +30,7 @@ describe('Phase 1A: Observability + Smoke Contracts', () => {
       nextState: 'HEALTHY',
       authority: 'phase-1a-contract-test',
     });
-    observability.transition({
+    await observability.transition({
       domain: 'governance',
       entity: 'fsm',
       entityId,
@@ -35,6 +38,8 @@ describe('Phase 1A: Observability + Smoke Contracts', () => {
       nextState: 'DEGRADED',
       authority: 'phase-1a-contract-test',
     });
+
+    await sleep(30);
 
     const { entries } = observability.query.getEntriesSince(cursorStart);
     const chainEntries = entries.filter(
@@ -51,8 +56,9 @@ describe('Phase 1A: Observability + Smoke Contracts', () => {
     const runIdB = `det-b-${Date.now()}`;
     const cursorStart = observability.query.getLogSize();
 
-    const emitSequence = (idPrefix) => {
-      observability.transition({
+    const emitSequence = async (idPrefix) => {
+      // Must await each transition — ordering within a sequence must be preserved.
+      await observability.transition({
         domain: 'acquisition',
         entity: 'acquisition_intent',
         entityId: `${idPrefix}-intent`,
@@ -61,7 +67,7 @@ describe('Phase 1A: Observability + Smoke Contracts', () => {
         authority: 'mock-substrate',
         raw: { variant: 'success' },
       });
-      observability.transition({
+      await observability.transition({
         domain: 'acquisition',
         entity: 'acquisition_intent',
         entityId: `${idPrefix}-intent`,
@@ -70,7 +76,7 @@ describe('Phase 1A: Observability + Smoke Contracts', () => {
         authority: 'normalization-layer',
         raw: { variant: 'success' },
       });
-      observability.transition({
+      await observability.transition({
         domain: 'governance',
         entity: 'fsm',
         entityId: `${idPrefix}-governance`,
@@ -80,8 +86,10 @@ describe('Phase 1A: Observability + Smoke Contracts', () => {
       });
     };
 
-    emitSequence(runIdA);
-    emitSequence(runIdB);
+    await emitSequence(runIdA);
+    await emitSequence(runIdB);
+
+    await sleep(30);
 
     const { entries } = observability.query.getEntriesSince(cursorStart);
     const normalize = (prefix) =>
@@ -99,19 +107,26 @@ describe('Phase 1A: Observability + Smoke Contracts', () => {
 
   it('emits semantic projection transitions with replay watermark metadata', async () => {
     const cursorStart = observability.query.getLogSize();
+
+    // Telemetry workers emit PROJECTION_INTENT to the observability plane.
+    // They are started and stopped as part of the projection lifecycle.
     await telemetryWorkers.startAll(25);
     await sleep(120);
     await telemetryWorkers.stopAll();
 
     const { entries } = observability.query.getEntriesSince(cursorStart);
-    const projectionEntries = entries.filter(
-      (e) => e.entity === 'semantic_projection' && e.raw?.entryType === 'SEMANTIC_PROJECTION_TRANSITION'
+    // Projection workers emit PROJECTION_INTENT (not SEMANTIC_PROJECTION_TRANSITION).
+    // SEMANTIC_PROJECTION_TRANSITION is emitted by the Telemetry Coordination FSM
+    // which is the sole serializer for validated projection intents.
+    // In this test, we verify that projection workers emit intent entries.
+    const projectionIntentEntries = entries.filter(
+      (e) => e.entity === 'projection_intent' && e.raw?.entryType === 'PROJECTION_INTENT'
     );
 
-    expect(projectionEntries.length).toBeGreaterThan(0);
-    const sample = projectionEntries[0];
+    expect(projectionIntentEntries.length).toBeGreaterThan(0);
+    const sample = projectionIntentEntries[0];
     expect(sample.raw).toBeDefined();
-    expect(sample.raw.entryType).toBe('SEMANTIC_PROJECTION_TRANSITION');
+    expect(sample.raw.entryType).toBe('PROJECTION_INTENT');
     expect(sample.raw.sourceTelemetryWindow).toBeDefined();
     expect(typeof sample.raw.sourceTelemetryWindow.lineageStartCursor).toBe('number');
     expect(typeof sample.raw.sourceTelemetryWindow.lineageEndCursor).toBe('number');

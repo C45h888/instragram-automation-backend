@@ -32,7 +32,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { RuntimeSimulator } from './helpers/runtime-simulator.js';
 
-const { DRIFT_SIGNAL, DRIFT_SEVERITY } = require('../control-plane/governance/reconciliation-engine.js');
+const { DRIFT_SIGNAL, DRIFT_SEVERITY } = require('../reconciliation-kernel/engine.js');
 
 describe('Phase 5A: Reconciliation Engine Gap Tests', () => {
   let sim;

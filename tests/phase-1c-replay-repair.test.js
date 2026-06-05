@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import observability from '../control-plane/observability/index.js';
-const publishingFsm = require('../control-plane/governance/domains/publishing-fsm');
+const publishingFsm = require('../publishing-kernel/fsm');
 
 function signatureFromEntries(entries, prefix) {
   return entries

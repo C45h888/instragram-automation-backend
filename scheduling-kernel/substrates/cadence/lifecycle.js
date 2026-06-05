@@ -15,7 +15,7 @@
 //   lifecycle.stopAll()  → clear all tracked accounts
 //   lifecycle.onRemove(fn) → register removal callback
 
-const { getRedisClient } = require('../../../../config/redis');
+const { getRedisClient } = require('../../../config/redis');
 
 /** Set of currently active account IDs */
 const _activeAccounts = new Set();

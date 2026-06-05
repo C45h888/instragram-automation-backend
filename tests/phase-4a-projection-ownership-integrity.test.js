@@ -12,7 +12,7 @@ describe('Phase 4A: Projection Ownership Integrity', () => {
       'systemic-pressure-projection-worker.js',
     ];
     for (const file of workers) {
-      const src = readFileSync(path.resolve(process.cwd(), 'control-plane/telemetry-workers', file), 'utf8');
+      const src = readFileSync(path.resolve(process.cwd(), 'telemetry-kernel/substrates/projection/workers', file), 'utf8');
       expect(src.includes("governance/lineage-worker")).toBe(false);
     }
   });

@@ -40,27 +40,29 @@
 
 const observability = require('../../control-plane/observability/index.js');
 const CK = require('../../control-plane/governance/constitutional-kernel.js');
-const telemetryWorkers = require('../../control-plane/telemetry-workers/index.js');
+const telemetryWorkers = require('../../telemetry-kernel/index.js');
 const transitionWriters = require('../../telemetry-kernel/substrates/projection/transition-writers/index.js');
 const phase2DumbWriter = null; // REMOVED — transition-writers are sole write path
 const namespaceProjectionInterpreter = require('../../control-plane/governance/interpreters/namespace-projection-interpreter.js');
 const lineageLedger = require('../../control-plane/governance/lineage-ledger.js');
-const reconciliationEngine = require('../../control-plane/governance/reconciliation-engine.js');
+const reconciliationEngine = require('../../reconciliation-kernel/engine.js');
 const metricsSubstrate = require('../../substrates/metrics-substrate.js');
-const lifecycle = require('../../control-plane/runtime/lifecycle.js');
+const lifecycle = require('../../scheduling-kernel/substrates/cadence/lifecycle.js');
 const engagementTelemetryAdapter = require('../../control-plane/governance/interpreters/engagement-telemetry-adapter.js');
 const ingressSubstrate = require('../../control-plane/governance/ingress-consistency/substrate.js');
 const syncSubstrate = require('../../substrates/sync-substrate.js');
-const cadence = require('../../control-plane/runtime/cadence.js');
+const cadence = require('../../scheduling-kernel/substrates/cadence/cadence.js');
 const { getRedisClient } = require('../../config/redis.js');
 
-const acquisitionFsm = require('../../control-plane/governance/domains/acquisition-fsm.js');
-const publishingFsm = require('../../control-plane/governance/domains/publishing-fsm.js');
-const schedulingFsm = require('../../control-plane/governance/domains/scheduling-fsm.js');
+const acquisitionFsm = require('../../acquisition-kernel/fsm');
+const publishingFsm = require('../../publishing-kernel/fsm');
+const schedulingFsm = require('../../scheduling-kernel/fsm');
 const dedupFsm = require('../../dedup-kernel/fsm');
-const engagementFsm = require('../../control-plane/governance/domains/engagement-fsm.js');
-const reconciliationFsm = require('../../control-plane/governance/domains/reconciliation-fsm.js');
-const telemetryCoordinationFsm = require('../../control-plane/governance/domains/telemetry-coordination-fsm.js');
+const engagementFsm = require('../../retry-cadence-kernel/fsm');
+const reconciliationFsm = require('../../reconciliation-kernel/fsm');
+const telemetryCoordinationFsm = require('../../telemetry-kernel/fsm');
+const graphCapabilityFsm = require('../../graph-capability-kernel/fsm');
+const persistTelemetryFsm = require('../../postgres-telemetry-kernel/fsm');
 
 const ALL_DOMAIN_FSMS = [
   acquisitionFsm,
@@ -70,6 +72,8 @@ const ALL_DOMAIN_FSMS = [
   engagementFsm,
   reconciliationFsm,
   telemetryCoordinationFsm,  // ← 7th domain (was missing)
+  graphCapabilityFsm,
+  persistTelemetryFsm,
 ];
 
 const DOMAIN_NAMES = ALL_DOMAIN_FSMS.map((f) => f.name);
@@ -212,10 +216,6 @@ class RuntimeSimulator {
       CK.dispatch({ type: 'CADENCE_TICK' });
     });
 
-    // 17. Reconciliation is reactive — triggered by LOG_DEGRADED (T1), ESCALATION_SIGNAL (T2),
-    //     death (T3), or manual (T5). No periodic cadence.
-    //     CK.triggerReconciliation() is called by domain events, not by a timer.
-
     // Allow worker ingestion to catch up to initial boot state
     await sleep(300);
 
@@ -323,8 +323,13 @@ class RuntimeSimulator {
    */
   _buildSubstrates() {
     const dedupSubstrate = require('../../dedup-kernel/substrates/dedup');
-    const retrySubstrate = require('../../substrates/retry');
-    const cadence = require('../../control-plane/runtime/cadence');
+    let retrySubstrate;
+    try {
+      retrySubstrate = require('../../substrates/retry');
+    } catch {
+      retrySubstrate = { isAccountRateLimited: () => false };
+    }
+    const cadence = require('../../scheduling-kernel/substrates/cadence/cadence.js');
 
     return {
       dedupIsInFlight: async (accountId, actionType, resourceId) => {
