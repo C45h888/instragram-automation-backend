@@ -65,12 +65,9 @@ const GOVERNANCE_TICK_MS = 10_000; // 10s watchdog tick
 
 function _wire() {
   // Register domain FSMs — must happen before wiring membranes.
-  // engagement-fsm's sanity check is wired via setSanityCheck (below)
-  // because the module-level reference is what the FSM actually calls.
-  // The registerDomain extension is omitted to avoid an infinite
-  // recursion (the extension would call ck.sanityCheck, which would
-  // look up the extension, etc.). The setSanityCheck path uses a
-  // direct closure over ck.sanityCheck and is the active one.
+  // The CK ctx.sanityCheck is the universal gate (Item a, this
+  // turn) — every FSM gets the gate through its dispatch ctx.
+  // No module-level sanity check wiring is needed.
   constitutional.registerDomain(acquisitionFsm);
   constitutional.registerDomain(publishingFsm);
   constitutional.registerDomain(graphCapabilityFsm);
@@ -81,15 +78,14 @@ function _wire() {
   constitutional.registerDomain(telemetryCoordinationFsm);
   constitutional.registerDomain(persistTelemetryFsm);
 
-  // Wire the FSM's sanity check function directly. The module-level
-  // _sanityCheckFn is what the FSM actually calls during evaluation.
-  // This is the deferred-ctx-integration path: the orchastrator wires
-  // the reference, the FSM uses it. The closure captures ck.sanityCheck
-  // directly to avoid the recursion that the registerDomain extension
-  // would create.
-  engagementFsm.setSanityCheck(
-    (action) => ck.sanityCheck('engagement', action)
-  );
+  // Wire engagement-fsm's governance ref (Item b, this turn).
+  // The FSM holds the governance ref so it can pass it to
+  // retry workers via the execution context. The workers use
+  // it to emit WORKER_OUTCOME_REPORTED. Workers no longer
+  // import governance at module load — they receive it
+  // through the context. The FSM is the only place that
+  // holds the ref. (fail-loud if null at invocation.)
+  engagementFsm.setGovernance(constitutional);
 
   // Wire execution bridge's governance reference for observation emission
   executionBridge.setGovernance(constitutional);
@@ -190,7 +186,7 @@ async function startAllWorkers() {
   // ctx shape matches what dispatch() passes to domain FSMs:
   // { validate, dispatchGlobal, getGlobalState }.
   const ckCtx = {
-    validate: (from, to, evt) => constitutional.validateDomainTransition('telemetry-coordination', from, to, evt),
+    validate: (from, to, evt) => constitutional.validateDomainTransition('telemetry-coordination-fsm', from, to, evt),
     dispatchGlobal: (evt) => constitutional.dispatch(evt),
     getGlobalState: () => constitutional.getState(),
   };

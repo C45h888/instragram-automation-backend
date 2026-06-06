@@ -62,23 +62,43 @@ const STATE_REGISTRY = {
 
 const TRANSITION_MAP = {
   // ── Cadence tick → sequence maintenance actions ────────────────────────
+  // Gated by ctx.sanityCheck (the universal gate). When the system
+  // is in DEGRADED state, the gate can veto the cadence tick's
+  // actions (e.g. fire REFRESH_LIFECYCLE, CHECK_SAFETY) but the
+  // FSM still acknowledges the tick. This is the "gate the
+  // emission, not the state" semantics (Item a follow-up).
   CADENCE_TICK: {
     target: () => _localState, // no state change — sequences actions
     guard: () => ({ allowed: true }),
-    buildActions: () => [
-      { type: 'REFRESH_LIFECYCLE' },
-      { type: 'CHECK_SAFETY' },
-      { type: 'REPORT_METRICS' },
-      { type: 'UPDATE_DOMAIN_LIST', domains: DOMAIN_LIST },
-    ],
+    buildActions: async (event, ctx) => {
+      const gate = await _resolveSanityCheck(ctx, {
+        operation: 'cadence_tick',
+        domain: 'scheduling',
+      });
+      if (!gate.allowed) return [];
+      return [
+        { type: 'REFRESH_LIFECYCLE' },
+        { type: 'CHECK_SAFETY' },
+        { type: 'REPORT_METRICS' },
+        { type: 'UPDATE_DOMAIN_LIST', domains: DOMAIN_LIST },
+      ];
+    },
   },
 
   // ── Maintenance acknowledgements ────────────────────────────────────────
+  // Gated by ctx.sanityCheck. When the system is overloaded, the
+  // gate can block account updates.
   LIFECYCLE_REFRESHED: {
     target: () => _localState,
     guard: () => ({ allowed: true }),
-    buildActions: (event) => {
+    buildActions: async (event, ctx) => {
       if (event.accountIds && event.accountIds.length > 0) {
+        const gate = await _resolveSanityCheck(ctx, {
+          operation: 'update_accounts',
+          domain: 'scheduling',
+          accountIds: event.accountIds,
+        });
+        if (!gate.allowed) return [];
         return [{ type: 'UPDATE_ACCOUNTS', accountIds: event.accountIds }];
       }
       return [];
@@ -132,6 +152,19 @@ const DOMAIN_LIST = [
   'publish:messaging',
 ];
 
+// ── Default fail-open sanity check (universal gate pattern) ─────────────
+// Same pattern as engagement-fsm. The ctx.sanityCheck is the
+// universal gate; the FSM calls it during emission. For tests /
+// non-CK dispatch, the default is always-allowed.
+const _defaultSanityCheck = async () => ({ allowed: true });
+
+function _resolveSanityCheck(ctx, action) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck(action);
+  }
+  return _defaultSanityCheck(action);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
 //
@@ -139,7 +172,7 @@ const DOMAIN_LIST = [
 // Lineage authority is held by the lineage worker (Phase 2).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function dispatch(event, ctx) {
+async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
@@ -192,7 +225,7 @@ function dispatch(event, ctx) {
     }
   } catch (_) {}
 
-  const actions = txn.buildActions ? txn.buildActions(event) : [];
+  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
 
   // ── Track cadence tick timestamp for reconciliation engine ──────────────
   if (event.type === 'CADENCE_TICK') {

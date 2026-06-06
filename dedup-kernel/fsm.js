@@ -61,6 +61,9 @@ const STATE_REGISTRY = {
 
 const TRANSITION_MAP = {
   // ── Evaluation begins → open dedup batch window ─────────────────────────
+  // Gated by ctx.sanityCheck. When the system is overloaded
+  // (DEGRADED, write backpressure), the gate can veto opening
+  // a new batch.
   DEDUP_BATCH_BEGIN: {
     target: 'ACTIVE',
     guard: (event) => {
@@ -69,7 +72,13 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event, ctx) => {
+      const gate = await _resolveSanityCheck(ctx, {
+        operation: 'dedup_batch_begin',
+        domain: 'dedup',
+        accountId: event.accountId,
+      });
+      if (!gate.allowed) return [];
       // Reset batch-level counters
       _batchMarks = 0;
       _batchReplays = 0;
@@ -191,14 +200,22 @@ const TRANSITION_MAP = {
   },
 
   // ── Conversation repair: route to repair substrate (Phase 5) ────────────
-  // Not state-gated — repairs can fire anytime. Dedup handled by substrate.
+  // Gated by ctx.sanityCheck. When the system is DEGRADED, the
+  // gate can block repair operations.
   REPAIR_CONVERSATION: {
     target: (event) => _localState, // stay in current state
     guard: (event) => {
       // Always allow — repair requests are always valid
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event, ctx) => {
+      const gate = await _resolveSanityCheck(ctx, {
+        operation: 'repair_conversation',
+        domain: 'dedup',
+        accountId: event.accountId,
+        threadId: event.threadId,
+      });
+      if (!gate.allowed) return [];
       return [{
         type: 'EXECUTE_CONVERSATION_REPAIR',
         threadId: event.threadId,
@@ -227,6 +244,19 @@ let _batchOrphans = 0;
 let _degradationCount = 0;             // cumulative degradation signals emitted
 const _replayResources = new Map();    // resourceId → [{ intentId, previousIntentId, ts }]
 
+// ── Default fail-open sanity check (universal gate pattern) ─────────────
+// Same pattern as engagement-fsm. The ctx.sanityCheck is the
+// universal gate; the FSM calls it during emission. For tests /
+// non-CK dispatch, the default is always-allowed.
+const _defaultSanityCheck = async () => ({ allowed: true });
+
+function _resolveSanityCheck(ctx, action) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck(action);
+  }
+  return _defaultSanityCheck(action);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch — process event, ask constitutional for validation, transition
 //
@@ -241,7 +271,7 @@ const _replayResources = new Map();    // resourceId → [{ intentId, previousIn
  * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
  * @returns {{ allowed: boolean, from?: string, to?: string, actions?: Array, reason?: string }}
  */
-function dispatch(event, ctx) {
+async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
@@ -308,7 +338,7 @@ function dispatch(event, ctx) {
   } catch (_) {}
 
   // 6. Build actions
-  const actions = txn.buildActions ? txn.buildActions(event) : [];
+  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
 
   console.log(`[dedup-fsm] ${from} → ${target}  (${event.type})`);
 

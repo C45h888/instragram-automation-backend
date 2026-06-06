@@ -24,7 +24,7 @@
 function _getObsDeps() {
   const observability = require('../../../control-plane/observability');
   const lineageLedger = require('../../../control-plane/governance/lineage-ledger');
-  const transitionWriters = require('../../substrates/projection/transition-writers');
+  const transitionWriters = require('../projection/transition-writers');
   return { observability, lineageLedger, transitionWriters };
 }
 

@@ -15,4 +15,5 @@ module.exports = {
   start: writer.start,
   stop: writer.stop,
   getHealth: writer.getHealth,
+  awaitPendingWrite: writer.awaitPendingWrite,
 };

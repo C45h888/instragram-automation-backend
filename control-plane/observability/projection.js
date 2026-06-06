@@ -618,7 +618,9 @@ function startSnapshotTimer() {
 /**
  * Stop the periodic snapshot timer and persist final snapshot.
  */
-async function stopSnapshotTimer() {
+async function stop() {
+  _writeHooks.clear(); // clear all subscriptions — prevents stale hooks from firing after stop()
+  _transitionLog.splice(0, _transitionLog.length); // clear in-memory log — prevents stale entries from Phase A leaking into Phase B
   if (_snapshotTimer) {
     clearInterval(_snapshotTimer);
     _snapshotTimer = null;
@@ -635,6 +637,18 @@ async function init() {
   startSnapshotTimer();
 }
 
+/**
+ * Hard reset — clears all in-memory state (transition log, state index, domain index).
+ * Used between test phases when the observability plane is stopped and re-initialized
+ * to prevent Phase A entries from leaking into Phase B via rehydration from Redis.
+ */
+function reset() {
+  _transitionLog.splice(0, _transitionLog.length);
+  _stateIndex.clear();
+  _domainIndex.clear();
+  _entityLog.clear();
+}
+
 module.exports = {
   project,
   getState,
@@ -644,8 +658,9 @@ module.exports = {
   getCrossDomain,
   snapshot,
   init,
+  reset,
   startSnapshotTimer,
-  stopSnapshotTimer,
+  stop,
   getEntriesSince,
   getDomainEntriesSince,
   getLogSize,

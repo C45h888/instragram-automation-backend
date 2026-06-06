@@ -154,7 +154,7 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
     await sleep(200);
 
     // Trigger the coordination cycle — FSM reads intents, validates, serializes
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     // Wait for transition-writers to consume the FSM-emitted transition
     const entry = await waitForProjectionInLedger('health', 15000);
@@ -217,7 +217,7 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
     });
 
     // Trigger coordination — FSM should reject the unknown namespace
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     // Rejection log should have grown
     const logAfter = tcf.getRejectionLog();
@@ -238,7 +238,7 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
       correlationId: `phase6-t4-${Date.now()}`,
     });
 
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     const logAfter = tcf.getRejectionLog();
     expect(logAfter.length).toBeGreaterThan(logBefore);
@@ -264,7 +264,7 @@ describe('Phase 6: Ingress Gatekeeping — FSM as Sole Serializer', () => {
       correlationId: `phase6-t5-${Date.now()}`,
     });
 
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     const logAfter = tcf.getRejectionLog();
     expect(logAfter.length).toBeGreaterThan(logBefore);
@@ -311,7 +311,7 @@ describe('Phase 6: CK Authority Over FSM', () => {
     });
 
     // Attempt to process while HALTED
-    const processResult = CK.dispatch({ type: 'PROCESS_INTENTS' });
+    const processResult = await CK.dispatch({ type: 'PROCESS_INTENTS' });
     expect(processResult.allowed).toBe(false);
     expect(processResult.reason).toContain('Cannot process intents while HALTED');
 
@@ -334,7 +334,7 @@ describe('Phase 6: CK Authority Over FSM', () => {
     });
 
     // Now PROCESS_INTENTS should succeed
-    const processResult = CK.dispatch({ type: 'PROCESS_INTENTS' });
+    const processResult = await CK.dispatch({ type: 'PROCESS_INTENTS' });
     expect(processResult.allowed).toBe(true);
 
     // Verify the serialized transition reached the ledger
@@ -399,7 +399,7 @@ describe('Phase 6: FSM Determinism', () => {
     injectProjectionIntent({ namespace: 'authority', correlationId: `phase6-t9-auth-${ts}`, timestamp: ts });
     injectProjectionIntent({ namespace: 'integrity', correlationId: `phase6-t9-int-${ts}`, timestamp: ts });
 
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     // Wait for lineage ingestion
     await waitForLedgerEntryCount(1, 15000);
@@ -436,7 +436,7 @@ describe('Phase 6: FSM Determinism', () => {
       timestamp: ts,
     });
 
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     await waitForLedgerEntryCount(1, 15000);
 
@@ -479,7 +479,7 @@ describe('Phase 6: FSM Determinism', () => {
       timestamp: FIXED_TS,
     });
 
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
 
     await waitForLedgerEntryCount(1, 15000);
 
@@ -516,7 +516,7 @@ describe('Phase 6: FSM Determinism', () => {
         timestamp: FIXED_TS,
       });
     }
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
     await waitForLedgerEntryCount(1, 15000);
 
     const ledgerA = await lineageLedger.getLineage(200);
@@ -545,7 +545,7 @@ describe('Phase 6: FSM Determinism', () => {
         timestamp: FIXED_TS,
       });
     }
-    CK.dispatch({ type: 'PROCESS_INTENTS' });
+    await CK.dispatch({ type: 'PROCESS_INTENTS' });
     await waitForLedgerEntryCount(1, 15000);
 
     const ledgerB = await lineageLedger.getLineage(200);
@@ -739,9 +739,9 @@ describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
 
       // ── Coordination cycle timer ──────────────────────────────────
       const coordResults = [];
-      const coordTimer = setInterval(() => {
+      const coordTimer = setInterval(async () => {
         try {
-          CK.dispatch({ type: 'PROCESS_INTENTS' });
+          await CK.dispatch({ type: 'PROCESS_INTENTS' });
           coordCycleCount++;
           coordResults.push({
             cycle: coordCycleCount,

@@ -62,6 +62,7 @@ const MEMBRANE_AUTHORITY_MAP = {
   'acquisition-fsm':     ['acquisition'],
   'publishing-membrane': ['publishing'],
   'telemetry-worker':    ['telemetry'],
+  'telemetry-coordination-fsm': ['telemetry'],
   'reconciliation-fsm':  ['reconciliation'],
   'scheduling-fsm':      ['scheduling'],
   'graph-capability-fsm': ['graph-capability'],
@@ -575,15 +576,15 @@ const DOMAIN_EVENT_MAP = {
   DB_READ_COMPLETE: 'persist-telemetry',
 
   // Telemetry Coordination domain — deterministic semantic ingress plane
-  TELEMETRY_PROCESS_INTENTS: 'telemetry-coordination', // reactive trigger (routes through CK then to FSM)
-  PROCESS_INTENTS: 'telemetry-coordination',
-  HALT_TELEMETRY_COORDINATION: 'telemetry-coordination',
-  RESUME_TELEMETRY_COORDINATION: 'telemetry-coordination',
+  TELEMETRY_PROCESS_INTENTS: 'telemetry-coordination-fsm', // reactive trigger (routes through CK then to FSM)
+  PROCESS_INTENTS: 'telemetry-coordination-fsm',
+  HALT_TELEMETRY_COORDINATION: 'telemetry-coordination-fsm',
+  RESUME_TELEMETRY_COORDINATION: 'telemetry-coordination-fsm',
   // Phase 3: CK async validation — Phase 2 worker notifies CK post-write
-  PROJECTION_PERSISTED: 'telemetry-coordination',
+  PROJECTION_PERSISTED: 'telemetry-coordination-fsm',
   // Ingress lag retry orchestration
-  INGRESS_RETRY_REQUESTED: 'telemetry-coordination',
-  INGRESS_RESOLVED: 'telemetry-coordination',
+  INGRESS_RETRY_REQUESTED: 'telemetry-coordination-fsm',
+  INGRESS_RESOLVED: 'telemetry-coordination-fsm',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -804,11 +805,9 @@ const GLOBAL_TRANSITION_MAP = {
       return { allowed: true };
     },
     buildActions: (event, ctx) => {
-      const fsm = _domains.get('telemetry-coordination');
-      if (fsm) {
-        // Forward to FSM — FSM handles PROCESS_INTENTS logic
-        fsm.dispatch({ type: 'PROCESS_INTENTS', source: event.source || 'reactive' }, ctx);
-      }
+      // Forward through CK's normal domain routing so async FSM actions
+      // still flow through the standard emission path.
+      dispatch({ type: 'PROCESS_INTENTS', source: event.source || 'reactive' });
       // CK does not emit actions — FSM emits COORDINATION_CYCLE_COMPLETE etc.
       // which return to CK as normal domain FSM actions.
       return [];
@@ -1179,6 +1178,12 @@ function dispatch(event) {
       // Domain FSMs will query constitutional policy context via getGlobalState()
       // when POLICY_BROADCAST is implemented and ctx.getPolicy() is added.
       getGlobalState: () => _currentState,
+      // ctx.sanityCheck — the universal gate for every FSM.
+      // (Item a — this turn.) The ctx is the canonical interface.
+      // FSMs that need a sanity check call ctx.sanityCheck(action)
+      // during their evaluation. CK runs the extension + own check
+      // composition. The FSM does NOT need a module-level reference.
+      sanityCheck: (action) => sanityCheck(domainName, action),
     };
 
     const result = fsm.dispatch(event, ctx);
@@ -2031,9 +2036,22 @@ function _doSanityCheck(action) {
 }
 
 /**
- * Public sanity check entry. Delegates to a domain-registered
- * sanity check (if one was provided via registerDomain extensions)
- * or falls back to CK's own _constitutionalSanityCheck.
+ * Public sanity check entry. UNIVERSAL GATE for every FSM.
+ *
+ * Composition semantics (Item a, this turn):
+ *   - Domain extension is consulted FIRST. If it returns
+ *     { allowed: false, ... }, the overall result is rejection.
+ *   - If the extension returns { allowed: true, ... }, CK's own
+ *     _constitutionalSanityCheck runs ON TOP. Both must allow
+ *     for the action to proceed.
+ *   - If no domain extension is registered, CK's own check
+ *     runs directly.
+ *
+ * The gate is the central authority vector's interface for
+ * every FSM's operational decisions. The local intelligence
+ * (FSM) is subordinate to the gate. The gate answers
+ * "is this operation constitutionally permitted right now?"
+ * for every FSM in the system.
  *
  * @param {string} domainName
  * @param {object} action
@@ -2041,13 +2059,25 @@ function _doSanityCheck(action) {
  */
 async function sanityCheck(domainName, action) {
   const domainCheck = _domainSanityChecks.get(domainName);
+
+  // Step 1: domain extension (if registered)
   if (domainCheck) {
+    let domainResult;
     try {
-      return await domainCheck(action);
+      domainResult = await domainCheck(action);
     } catch (err) {
+      // Extension errored → reject (fail-closed for extensions)
       return { allowed: false, reason: 'domain_sanity_check_error: ' + err.message };
     }
+    // Extension rejected → final rejection
+    if (domainResult && domainResult.allowed === false) {
+      return domainResult;
+    }
+    // Extension allowed → run CK's own check on top (composition)
   }
+
+  // Step 2: CK's own constitutional check (always runs unless
+  // extension rejected above)
   return _constitutionalSanityCheck(action);
 }
 

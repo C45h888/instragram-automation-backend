@@ -99,6 +99,10 @@ function createTransitionWriter(namespace) {
     Object.values(ERROR_CATEGORIES).map(c => [c, 0])
   );
 
+  // Pending write tracker — stores the in-flight recordWorkerEntry promise
+  // so callers can await write completion before asserting ledger state.
+  let _pendingWrite = null;
+
   // ── Error tracking helper ────────────────────────────────────────────────
   function _recordError(err, category) {
     _lastError = err?.message ?? String(err);
@@ -138,17 +142,38 @@ function createTransitionWriter(namespace) {
       // ── Atomic write: ledger + CK dispatch ───────────────────────────────────
       // Ledger write is authoritative — if it succeeds, the entry IS persisted.
       // CK dispatch failure is secondary: mark FAILED rather than PENDING orphan.
-      lineageLedger.recordWorkerEntry(serializedEntry).then((ledgerEntry) => {
+      //
+      // _pendingWrite is stored so callers (tests) can await the full chain:
+      //   await transitionWriters.runtime.awaitPendingWrite()
+      // This eliminates the fire-and-forget race where setImmediate fires before rpush completes.
+      _pendingWrite = lineageLedger.recordWorkerEntry(serializedEntry).then((ledgerEntry) => {
         if (!ledgerEntry || !ledgerEntry.ledgerId) return;
         _lastLedgerId = ledgerEntry.ledgerId;
         _writeCount++;
 
         // Notify CK for async validation — fire-and-forget
-        CK.dispatch({
-          type: 'PROJECTION_PERSISTED',
-          ledgerId: _lastLedgerId,
-          entry: serializedEntry,
-        });
+        try {
+          return Promise.resolve(CK.dispatch({
+            type: 'PROJECTION_PERSISTED',
+            ledgerId: _lastLedgerId,
+            entry: serializedEntry,
+          })).catch((err) => {
+            const category = ERROR_CATEGORIES.CK_DISPATCH_FAILED;
+            _ckDispatchFailures++;
+            _errorCounts[category] = (_errorCounts[category] || 0) + 1;
+            _totalErrors++;
+            _recordError(err, category);
+            console.error(`[${namespace}-transition-writer] CK dispatch error [${category}]:`, err.message);
+          });
+        } catch (err) {
+          const category = ERROR_CATEGORIES.CK_DISPATCH_FAILED;
+          _ckDispatchFailures++;
+          _errorCounts[category] = (_errorCounts[category] || 0) + 1;
+          _totalErrors++;
+          _recordError(err, category);
+          console.error(`[${namespace}-transition-writer] CK dispatch error [${category}]:`, err.message);
+          return null;
+        }
       }).catch(async (err) => {
         // Ledger write failed — entry was never persisted.
         // Track, classify, short-circuit. No CK dispatch.
@@ -162,9 +187,24 @@ function createTransitionWriter(namespace) {
     });
   }
 
+  /**
+   * Await the in-flight write to complete before asserting ledger state.
+   * Eliminates fire-and-forget timing races in tests.
+   *
+   * @param {number} [timeoutMs=5000] — max ms to wait
+   * @returns {Promise<void>} resolves when write completes (success or failure), rejects on timeout
+   */
+  async function awaitPendingWrite(timeoutMs = 5000) {
+    if (!_pendingWrite) return;
+    await Promise.race([
+      _pendingWrite,
+      new Promise(r => setTimeout(r, timeoutMs)),
+    ]);
+ }
+
   function stop() {
     if (_unsubscribe) {
-      _unsubscribe();
+      try { _unsubscribe(); } catch (_) {}
       _unsubscribe = null;
     }
     console.log(
@@ -203,7 +243,7 @@ function createTransitionWriter(namespace) {
     };
   }
 
-  return { start, stop, getHealth, ERROR_CATEGORIES };
+  return { start, stop, getHealth, awaitPendingWrite, ERROR_CATEGORIES };
 }
 
 module.exports = { createTransitionWriter, ERROR_CATEGORIES, NAMESPACES };

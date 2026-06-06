@@ -369,7 +369,7 @@ const TRANSITION_MAP = {
   RETRY_REQUESTED: {
     target: () => _localState,  // no state change
     guard: () => ({ allowed: true }),
-    buildActions: async (event) => {
+    buildActions: async (event, ctx) => {
       const { accountId, domain, intentId, params, retryAfterMs } = event;
 
       const paired = retryCadenceStore.dispatch(
@@ -399,11 +399,12 @@ const TRANSITION_MAP = {
         policy: paired.policy,
         lastError: null,
         scheduledAt: null,
+        governance: _governance, // passed to worker on invocation
       };
 
       // If the caller provided a retryAfterMs (override), use it
       const actionTag = retryAfterMs ? { retryAfterMs } : null;
-      const scheduleResult = await _scheduleRetry(context, actionTag);
+      const scheduleResult = await _scheduleRetry(context, actionTag, ctx);
       if (!scheduleResult.scheduled) {
         return [{
           type: 'SANITY_CHECK_REJECTED',
@@ -548,7 +549,7 @@ const TRANSITION_MAP = {
   WORKER_OUTCOME_REPORTED: {
     target: () => _localState,  // observation does not change FSM state
     guard: () => ({ allowed: true }),
-    buildActions: async (event) => {
+    buildActions: async (event, ctx) => {
       const { accountId, domain, intentId, status, errorShape } = event;
 
       // Success — no engagement action needed; the next phase
@@ -608,9 +609,10 @@ const TRANSITION_MAP = {
               policy: paired.policy,
               lastError: errorShape,
               scheduledAt: null,
+              governance: _governance, // passed to worker on invocation
             };
 
-            const scheduleResult = await _scheduleRetry(context, actionTag);
+            const scheduleResult = await _scheduleRetry(context, actionTag, ctx);
             if (!scheduleResult.scheduled) {
               // Sanity check rejected the schedule. Emit
               // SANITY_CHECK_REJECTED for the FSM's own handler
@@ -764,18 +766,47 @@ const _executionContexts = new Map();
 // same account. Reset on AUTH_SUCCESS.
 const _rejectionCounts = new Map();
 
-// ── Sanity check reference (set by orchastrator at boot) ─────────────────
-// Module-level because the ctx.sanityCheck integration is deferred.
-// The orchastrator calls setSanityCheck(fn) with a function that
-// delegates to constitutional.sanityCheck(domainName, action).
-// Default: always-allowed (fail-open) so a missing wiring does not
-// halt the system.
-let _sanityCheckFn = async () => ({ allowed: true });
+// ── Sanity check reference (canonical: ctx.sanityCheck) ────────────────
+// The ctx.sanityCheck is the universal gate. The FSM calls
+// ctx.sanityCheck(action) during evaluation. No module-level
+// reference is needed — the ctx is the canonical interface.
+//
+// Default fallback (for tests calling dispatch without CK):
+// a no-op sanity check that always allows. This is fail-open
+// to preserve operational cadence in non-CK contexts.
+const _defaultSanityCheck = async () => ({ allowed: true });
 
-function setSanityCheck(fn) {
-  if (typeof fn === 'function') {
-    _sanityCheckFn = fn;
+/**
+ * Resolve the sanity check function from the ctx.
+ * If ctx is null/undefined (test mode), returns the
+ * default fail-open check.
+ */
+function _resolveSanityCheck(ctx) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck;
   }
+  return _defaultSanityCheck;
+}
+
+// ── Governance reference (set by orchastrator at boot) ────────────────
+// The FSM holds a governance ref (set via setGovernance) for
+// its own use during evaluation. The FSM also passes the
+// governance ref through the execution context to the
+// retry worker (so the worker can emit WORKER_OUTCOME_REPORTED).
+//
+// The orchastrator calls engagementFsm.setGovernance(governance)
+// at boot. Default: null (the FSM must not be used without
+// a governance ref in production — fail-loud in that case).
+let _governance = null;
+
+function setGovernance(governance) {
+  if (governance && typeof governance.dispatch === 'function') {
+    _governance = governance;
+  }
+}
+
+function getGovernance() {
+  return _governance;
 }
 
 // ── Worker error registry: namespace → { category, failedWrites, escalatedAt } ─
@@ -810,7 +841,7 @@ const ERROR_CATEGORY_ROUTING = {
 //   - the cancellation (clear timer, clear state)
 //
 // CK is the CENTRAL authority vector. Before scheduling or invoking,
-// the FSM calls _sanityCheckFn (which delegates to CK's sanityCheck).
+// the FSM calls ctx.sanityCheck (the universal gate).
 // CK may reject the operation. On rejection, the FSM emits
 // SANITY_CHECK_REJECTED and falls through to a safe default.
 
@@ -829,12 +860,14 @@ const retryCadenceStore = require('./index');
  *
  * @param {object} context — ExecutionContext
  * @param {object|null} actionTag — classification output (for delay override)
+ * @param {object|null} fsmCtx — the dispatch ctx (for ctx.sanityCheck)
  * @returns {{ scheduled: boolean, timeoutId: number|null, delayMs: number,
  *            sanityCheck: object }}
  */
-async function _scheduleRetry(context, actionTag) {
-  // Central authority vector gate
-  const sanity = await _sanityCheckFn({
+async function _scheduleRetry(context, actionTag, fsmCtx) {
+  // Central authority vector gate (universal — every FSM)
+  const sanityCheck = _resolveSanityCheck(fsmCtx);
+  const sanity = await sanityCheck({
     operation: 'schedule_retry',
     accountId: context.accountId,
     domain: context.domain,
@@ -861,7 +894,7 @@ async function _scheduleRetry(context, actionTag) {
     // Clear timeoutId from context — it's firing now
     const ctx = _executionContexts.get(context.intentId);
     if (ctx) ctx.timeoutId = null;
-    _executeRetry(context).catch((err) => {
+    _executeRetry(context, fsmCtx).catch((err) => {
       console.error(`[engagement-fsm] _executeRetry failed for ${context.intentId}:`, err.message);
     });
   }, delayMs);
@@ -887,10 +920,14 @@ async function _scheduleRetry(context, actionTag) {
  * Invokes the retryWorker directly. The worker emits
  * WORKER_OUTCOME_REPORTED when done. The FSM's main handler picks
  * it up from there.
+ *
+ * @param {object} context — ExecutionContext (must include governance)
+ * @param {object|null} fsmCtx — the dispatch ctx (for ctx.sanityCheck)
  */
-async function _executeRetry(context) {
-  // Sanity check before invocation too
-  const sanity = await _sanityCheckFn({
+async function _executeRetry(context, fsmCtx) {
+  // Sanity check before invocation (universal gate)
+  const sanityCheck = _resolveSanityCheck(fsmCtx);
+  const sanity = await sanityCheck({
     operation: 'invoke_worker',
     accountId: context.accountId,
     domain: context.domain,
@@ -909,9 +946,14 @@ async function _executeRetry(context) {
   }
 
   // Invoke. The worker is responsible for emitting
-  // WORKER_OUTCOME_REPORTED. This call returns when the worker
-  // returns (the worker does not await its own async I/O in some
-  // implementations — it may return immediately after dispatching).
+  // WORKER_OUTCOME_REPORTED. The worker receives the
+  // governance ref via the context — the FSM is the
+  // only place that holds the ref. The worker does
+  // NOT import it at module load (fail-loud if null).
+  if (!context.governance) {
+    console.error(`[engagement-fsm] No governance in context for ${context.intentId} — worker cannot dispatch`);
+    return;
+  }
   try {
     await context.retryWorker.execute(
       context.domain,
@@ -920,13 +962,9 @@ async function _executeRetry(context) {
       context.params,
       context.count,
       context.maxRetries,
-      // The governance reference: we use the module-level
-      // _sanityCheckFn's enclosing scope's governance. The
-      // orchastrator wires this when it sets the sanity check.
-      // For now, we pass null — the worker will use its own
-      // governance reference set at boot.
-      // TODO: pass the actual governance reference in context.
-      null,
+      // Governance reference — passed from FSM's context.
+      // The worker uses this to emit WORKER_OUTCOME_REPORTED.
+      context.governance,
     );
   } catch (err) {
     console.error(`[engagement-fsm] Retry worker threw for ${context.intentId}:`, err.message);
@@ -1071,7 +1109,7 @@ function dispatch(event, ctx) {
   } catch (_) {}
 
   // 6. Build actions
-  const actions = txn.buildActions ? txn.buildActions(event) : [];
+  const actions = txn.buildActions ? txn.buildActions(event, ctx) : [];
 
   console.log(`[engagement-fsm] ${from} → ${target}  (${event.type})`);
 
@@ -1263,7 +1301,8 @@ module.exports = {
   name: 'engagement',
   dispatch,
   init,
-  setSanityCheck,
+  setGovernance,
+  getGovernance,
   getState,
   exportState,
   getHealth,

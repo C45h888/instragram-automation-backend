@@ -42,11 +42,10 @@
 //
 // Local states:
 //   IDLE         — no coordination cycle in progress
-//   VALIDATING   — reading intents from observability, validating ownership
-//   ORDERING     — deterministically ordering validated intents
-//   SERIALIZING  — transforming intents to canonical transitions
-//   EMITTING     — emitting validated transitions to observability
 //   HALTED       — CK-ordered halt, no processing allowed
+//   INGRESS_LAG_RETRYING    — lag detected, retry cadence active
+//   INGRESS_ESCALATED        — 3+ retries in 60s window
+//   INGRESS_DEGRADED        — 6+ retries in 60s window, bounded worker dispatched
 
 const { createRequire } = require('module');
 const _require = createRequire(__filename);
@@ -58,7 +57,7 @@ let _observability = null;
 function _obs() {
   if (!_observability) {
     try { _observability = _require('../../control-plane/observability/emitters/transition-emitter'); }
-    catch (_) { _observability = null; }
+    catch (_) {}
   }
   return _observability;
 }
@@ -129,6 +128,8 @@ const STATE_REGISTRY = {
   },
 };
 
+const INTENT_NAMESPACES = Object.freeze(['runtime', 'integrity', 'authority', 'health', 'systemic']);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. Domain Transition Map — event → target + guard + action builder
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -141,84 +142,102 @@ const TRANSITION_MAP = {
       if (_localState === 'HALTED') {
         return { allowed: false, reason: 'Cannot process intents while HALTED' };
       }
+      if (_coordinationInFlight) {
+        return { allowed: false, reason: 'Coordination cycle already in flight' };
+      }
       if (_localState !== 'IDLE') {
         return { allowed: false, reason: `Cannot process intents from ${_localState}` };
       }
       return { allowed: true };
     },
     buildActions: async (event, ctx) => {
-      // 1. Read intents from all domain-bounded partitions via per-namespace cursors
-      const { intents, newCursors } = await _readIntents();
-      _intentCursors = newCursors;
-      // Persist cursors to Redis after each coordination cycle.
-      // Prevents replay storm on restart — FSM resumes from where it left off.
-      await _persistCursors(newCursors);
+      _coordinationInFlight = true;
+      const cycle = _beginCoordinationCycle(event);
 
-      if (intents.length === 0) {
-        _priorCycleOutputCount = 0;
-        return [{ type: 'COORDINATION_NO_INTENTS', cursors: _intentCursors }];
-      }
+      try {
+        // 1. Read intents from all domain-bounded partitions via per-namespace cursors
+        const { intents, newCursors, dedupedCount } = await _readIntents();
+        cycle.dedupedCount = dedupedCount;
+        _intentCursors = newCursors;
 
-      // Backpressure check
-      if (intents.length > MAX_BUFFERED_INTENTS) {
-        _backpressureSignaled = true;
-        if (ctx && ctx.dispatchGlobal) {
-          ctx.dispatchGlobal({
-            type: 'BACKPRESSURE_DETECTED',
-            reason: `Coordination FSM intent buffer saturated: ${intents.length} pending (threshold: ${MAX_BUFFERED_INTENTS})`,
-            evidence: { pendingIntentCount: intents.length },
-          });
+        // Persist cursors to Redis after each coordination cycle.
+        // Prevents replay storm on restart — FSM resumes from where it left off.
+        const cursorPersistence = await _persistCursors(newCursors);
+
+        if (intents.length === 0) {
+          _clearBackpressure();
+          _priorCycleOutputCount = 0;
+          _completeCoordinationCycle({ emittedCount: 0, dedupedCount: 0 });
+          return [{ type: 'COORDINATION_NO_INTENTS', cursors: _intentCursors }];
         }
-      }
 
-      // 2. Validate intents
-      const { valid, rejected } = _validateIntents(intents);
-      _rejectedIntentCount = rejected.length;
+        // Backpressure check
+        _maybeSignalBackpressure(intents.length, ctx);
 
-      if (valid.length === 0) {
-        return [{
-          type: 'COORDINATION_ALL_REJECTED',
+        // 2. Validate intents
+        const { valid, rejected } = _validateIntents(intents);
+        _rejectedIntentCount += rejected.length;
+
+        if (valid.length === 0) {
+          _clearBackpressure();
+          _completeCoordinationCycle({ emittedCount: 0, dedupedCount: cycle.dedupedCount });
+          return [{
+            type: 'COORDINATION_ALL_REJECTED',
+            rejectedCount: rejected.length,
+            violations: rejected.slice(0, 10),
+          }];
+        }
+
+        // 3. Deterministically order
+        const ordered = _orderIntents(valid);
+
+        // 4. Serialize to canonical transitions
+        const transitions = ordered.map(intent => _serializeIntent(intent));
+        _serializedTransitionCount += transitions.length;
+
+        // 5. Emit validated transitions to observability
+        let emittedCount = 0;
+        for (const t of transitions) {
+          const emitted = _emitTransition(t);
+          if (emitted) emittedCount++;
+        }
+
+        _priorCycleOutputCount = emittedCount;
+        _completeCoordinationCycle({ emittedCount, dedupedCount: cycle.dedupedCount });
+
+        const actions = [{
+          type: 'COORDINATION_CYCLE_COMPLETE',
+          readCount: intents.length,
+          validatedCount: valid.length,
           rejectedCount: rejected.length,
-          violations: rejected.slice(0, 10),
+          emittedCount,
+          dedupedCount: cycle.dedupedCount,
+          cycleEpoch: cycle.epoch,
+          cursors: _intentCursors,
         }];
-      }
 
-      // 3. Deterministically order
-      const ordered = _orderIntents(valid);
-
-      // 4. Serialize to canonical transitions
-      const transitions = ordered.map(intent => _serializeIntent(intent));
-      _serializedTransitionCount = transitions.length;
-
-      // 5. Emit validated transitions to observability
-      let emittedCount = 0;
-      for (const t of transitions) {
-        const emitted = _emitTransition(t);
-        if (emitted) emittedCount++;
-      }
-
-      _priorCycleOutputCount = emittedCount;
-
-      const actions = [{
-        type: 'COORDINATION_CYCLE_COMPLETE',
-        readCount: intents.length,
-        validatedCount: valid.length,
-        rejectedCount: rejected.length,
-        emittedCount,
-        cursors: _intentCursors,
-      }];
-
-      if (_backpressureSignaled && emittedCount > 0) {
-        _backpressureSignaled = false;
-        if (ctx && ctx.dispatchGlobal) {
-          ctx.dispatchGlobal({
-            type: 'BACKPRESSURE_CLEARED',
-            reason: `Coordination FSM processed ${emittedCount} intents — buffer drained`,
+        if (cursorPersistence.ok === false) {
+          actions.push({
+            type: 'LOG_DEGRADED',
+            substate: 'CURSOR_PERSISTENCE_FAILED',
+            reason: `Telemetry cursor persistence failed after ${cursorPersistence.attempts} attempts: ${cursorPersistence.error}`,
           });
         }
-      }
 
-      return actions;
+        if (_backpressureSignaled && emittedCount > 0) {
+          _clearBackpressure();
+          if (ctx && ctx.dispatchGlobal) {
+            ctx.dispatchGlobal({
+              type: 'BACKPRESSURE_CLEARED',
+              reason: `Coordination FSM processed ${emittedCount} intents — buffer drained`,
+            });
+          }
+        }
+
+        return actions;
+      } finally {
+        _coordinationInFlight = false;
+      }
     },
   },
 
@@ -256,7 +275,7 @@ const TRANSITION_MAP = {
 
   // ── Phase 3: Async constitutional validation (triggered by Phase 2 worker) ──
   PROJECTION_PERSISTED: {
-    target: 'IDLE',
+    target: () => _localState,
     guard: (event) => {
       // Always allowed — async validation proceeds regardless of state
       return { allowed: true };
@@ -416,19 +435,16 @@ const TRANSITION_MAP = {
 
   // ── Transition Writer Health — worker layer degraded ─────────────────────
   TRANSITION_WRITER_HEALTH_CHANGED: {
-    target: (event) => {
-      if (!event.health || event.health.ok) return _localState;
-      if (event.health.status === 'FAILED' || event.health.status === 'STOPPED') {
-        return 'WORKER_DEGRADED';
-      }
-      return 'WORKER_DEGRADED';
-    },
+    target: () => _localState,
     guard: () => ({ allowed: true }),
     buildActions: (event, ctx) => {
       const { health } = event;
       const actions = [];
+      _writerHealthSignal = health || null;
+      _writerHealthState = !health ? 'UNKNOWN' : (health.ok ? 'OK' : health.status || 'DEGRADED');
+      _writerHealthChangedAt = Date.now();
 
-      if (!health.ok) {
+      if (health && !health.ok) {
         const worstCat = health.worstCategory;
         const escalationLevel =
           worstCat === 'REDIS_UNAVAILABLE' ? 'DEGRADED' :
@@ -463,7 +479,7 @@ const TRANSITION_MAP = {
           escalationState: escalationLevel,
           source: 'worker',
         });
-      } else {
+      } else if (health && health.ok) {
         if (ctx && ctx.dispatchGlobal) {
           ctx.dispatchGlobal({
             type: 'RETRY_CADENCE_CLEAR',
@@ -488,6 +504,10 @@ const TRANSITION_MAP = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _localState = 'IDLE';
+let _coordinationEpoch = 0;
+let _coordinationInFlight = false;
+let _lastCycleStartedAt = null;
+let _lastCycleFinishedAt = null;
 
 let _intentCursors = {
   runtime: 0,
@@ -502,12 +522,19 @@ let _cycleCount = 0;
 let _rejectedIntentCount = 0;
 let _serializedTransitionCount = 0;
 let _priorCycleOutputCount = 0;
+let _priorCycleDedupedCount = 0;
 let _backpressureSignaled = false;
 
 // ── Ingress retry escalation budget
 let _retryAttempts = 0;
 let _retryWindowStart = null;
 let _retryEscalationState = 'IDLE';
+
+let _writerHealthState = 'UNKNOWN';
+let _writerHealthChangedAt = null;
+let _writerHealthSignal = null;
+let _lastCursorPersistError = null;
+let _cursorPersistenceFailures = 0;
 
 // ── Rejection log
 const _rejectionLog = [];
@@ -519,6 +546,7 @@ const MAX_REJECTION_LOG = 50;
 
 let _unsubscribeOnWrite = null;
 let _coordinationPending = false;
+let _reactiveCoordinationQueued = false;
 let _ckContext = null;
 
 function _onTransitionLogWrite(transition) {
@@ -527,7 +555,10 @@ function _onTransitionLogWrite(transition) {
 }
 
 function _triggerReactiveCoordination() {
-  if (_coordinationPending) return;
+  if (_coordinationPending || _coordinationInFlight) {
+    _reactiveCoordinationQueued = true;
+    return;
+  }
   _coordinationPending = true;
 
   setImmediate(() => {
@@ -541,6 +572,10 @@ function _triggerReactiveCoordination() {
       console.error('[telemetry-coordination-fsm] Reactive coordination error:', err.message);
     } finally {
       _coordinationPending = false;
+      if (_reactiveCoordinationQueued) {
+        _reactiveCoordinationQueued = false;
+        _triggerReactiveCoordination();
+      }
     }
   });
 }
@@ -552,11 +587,10 @@ function _triggerReactiveCoordination() {
 async function _readIntents() {
   try {
     const observability = require('../../control-plane/observability/index.js');
-    const NAMESPACES = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
     const allIntents = [];
     const newCursors = { ..._intentCursors };
 
-    for (const namespace of NAMESPACES) {
+    for (const namespace of INTENT_NAMESPACES) {
       const cursor = newCursors[namespace];
       const { entries, nextCursor } = await observability.query.getDomainEntriesSince(namespace, cursor);
 
@@ -569,26 +603,46 @@ async function _readIntents() {
       newCursors[namespace] = nextCursor;
     }
 
-    return { intents: allIntents, newCursors };
+    const deduped = _dedupeIntents(allIntents);
+    return {
+      intents: deduped,
+      newCursors,
+      dedupedCount: Math.max(0, allIntents.length - deduped.length),
+    };
   } catch (err) {
     console.error('[telemetry-coordination-fsm] Failed to read intents:', err.message);
-    return { intents: [], newCursors: _intentCursors };
+    return { intents: [], newCursors: _intentCursors, dedupedCount: 0 };
   }
 }
 
 async function _persistCursors(newCursors) {
-  try {
-    const redis = require('../../control-plane/config/redis').getRedisClient();
-    if (!redis || redis.status !== 'ready') return;
+  const attempts = 3;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const redis = require('../../control-plane/config/redis').getRedisClient();
+      if (!redis || redis.status !== 'ready') {
+        _lastCursorPersistError = 'redis_not_ready';
+        return { ok: false, attempts: attempt, error: _lastCursorPersistError };
+      }
 
-    const pipeline = redis.pipeline();
-    for (const [namespace, cursor] of Object.entries(newCursors)) {
-      pipeline.set(`governance:telemetry:fsm:cursor:${namespace}`, String(cursor), 'EX', 86400);
+      const pipeline = redis.pipeline();
+      for (const [namespace, cursor] of Object.entries(newCursors)) {
+        pipeline.set(`governance:telemetry:fsm:cursor:${namespace}`, String(cursor), 'EX', 86400);
+      }
+      await pipeline.exec();
+      _lastCursorPersistError = null;
+      return { ok: true, attempts: attempt, error: null };
+    } catch (err) {
+      _lastCursorPersistError = err.message;
+      if (attempt >= attempts) {
+        _cursorPersistenceFailures++;
+        console.error('[telemetry-coordination-fsm] _persistCursors error:', err.message);
+        return { ok: false, attempts: attempt, error: err.message };
+      }
+      await _sleep(25 * attempt);
     }
-    await pipeline.exec();
-  } catch (err) {
-    console.error('[telemetry-coordination-fsm] _persistCursors error:', err.message);
   }
+  return { ok: false, attempts, error: _lastCursorPersistError || 'unknown_cursor_persistence_error' };
 }
 
 async function _restoreCursors() {
@@ -597,8 +651,7 @@ async function _restoreCursors() {
     if (!redis || redis.status !== 'ready') return null;
 
     const result = {};
-    const NAMESPACES = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
-    for (const ns of NAMESPACES) {
+    for (const ns of INTENT_NAMESPACES) {
       const saved = await redis.get(`governance:telemetry:fsm:cursor:${ns}`);
       result[ns] = saved ? parseInt(saved, 10) : 0;
     }
@@ -723,24 +776,36 @@ function _orderIntents(intents) {
     const typeB = rawB.projectionType || '';
     if (typeA !== typeB) return typeA.localeCompare(typeB);
 
-    const traceA = a.traceId || '';
-    const traceB = b.traceId || '';
+    const timeA = _getIntentTimestamp(a);
+    const timeB = _getIntentTimestamp(b);
+    if (timeA !== timeB) return timeA - timeB;
+
+    const corrA = _getIntentCorrelationId(a);
+    const corrB = _getIntentCorrelationId(b);
+    if (corrA !== corrB) return corrA.localeCompare(corrB);
+
+    const traceA = _getIntentTraceId(a);
+    const traceB = _getIntentTraceId(b);
     return traceA.localeCompare(traceB);
   });
 }
 
 function _serializeIntent(intent) {
   const raw = intent.raw || {};
+  const correlationId = _getIntentCorrelationId(intent);
+  const causationId = _getIntentTraceId(intent);
+  const timestamp = _getIntentTimestamp(intent);
 
   const contentForHash = JSON.stringify({
     projectionNamespace: raw.projectionNamespace,
     projectionType: raw.projectionType,
     projectionVersion: raw.projectionVersion,
     projectionPayload: raw.projectionPayload,
-    correlationId: intent.correlationId,
-    timestamp: intent.timestamp,
+    correlationId,
+    timestamp,
   });
   const traceId = crypto.createHash('sha256').update(contentForHash).digest('hex');
+  const projectionId = traceId;
 
   return {
     domain: raw.projectionNamespace,
@@ -750,12 +815,12 @@ function _serializeIntent(intent) {
     nextState: `${raw.projectionType}:projected`,
     authority: 'telemetry-coordination-fsm',
     traceId,
-    correlationId: intent.correlationId || null,
-    causationId: intent.traceId || null,
+    correlationId,
+    causationId,
     parentTransitionId: null,
     raw: {
       entryType: 'SEMANTIC_PROJECTION_TRANSITION',
-      projectionId: crypto.randomUUID(),
+      projectionId,
       projectionType: raw.projectionType,
       projectionVersion: raw.projectionVersion || '1.0.0',
       projectionNamespace: raw.projectionNamespace,
@@ -763,9 +828,89 @@ function _serializeIntent(intent) {
       confidence: raw.confidence,
       integrityScore: raw.integrityScore,
       sourceTelemetryWindow: raw.sourceTelemetryWindow,
-      originalIntentTraceId: intent.traceId,
+      originalIntentTraceId: causationId,
+      coordinationEpoch: _coordinationEpoch,
     },
   };
+}
+
+function _dedupeIntents(intents) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const intent of intents) {
+    const identity = _getIntentIdentity(intent);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    deduped.push(intent);
+  }
+
+  return deduped;
+}
+
+function _getIntentIdentity(intent) {
+  const raw = intent?.raw || {};
+  return [
+    raw.projectionNamespace || '',
+    raw.projectionType || '',
+    _getIntentCorrelationId(intent),
+    _getIntentTraceId(intent),
+    _getIntentTimestamp(intent),
+  ].join('|');
+}
+
+function _getIntentTraceId(intent) {
+  return intent?.traceId || intent?.raw?.traceId || '';
+}
+
+function _getIntentCorrelationId(intent) {
+  return intent?.correlationId || intent?.raw?.correlationId || '';
+}
+
+function _getIntentTimestamp(intent) {
+  return intent?.timestamp ||
+    intent?.raw?.timestamp ||
+    intent?.raw?.sourceTelemetryWindow?.closedAt ||
+    0;
+}
+
+function _beginCoordinationCycle(event) {
+  _coordinationEpoch++;
+  _lastCycleStartedAt = Date.now();
+  const cycle = {
+    epoch: _coordinationEpoch,
+    dedupedCount: 0,
+    source: event?.source || 'cadence',
+  };
+  return cycle;
+}
+
+function _completeCoordinationCycle({ emittedCount, dedupedCount }) {
+  _lastCycleFinishedAt = Date.now();
+  if (typeof dedupedCount === 'number') {
+    _priorCycleDedupedCount = dedupedCount;
+  }
+  _priorCycleOutputCount = emittedCount;
+}
+
+function _maybeSignalBackpressure(intentCount, ctx) {
+  if (intentCount <= MAX_BUFFERED_INTENTS) return;
+  _backpressureSignaled = true;
+  if (ctx && ctx.dispatchGlobal) {
+    ctx.dispatchGlobal({
+      type: 'BACKPRESSURE_DETECTED',
+      reason: `Coordination FSM intent buffer saturated: ${intentCount} pending (threshold: ${MAX_BUFFERED_INTENTS})`,
+      evidence: { pendingIntentCount: intentCount },
+    });
+  }
+}
+
+function _clearBackpressure() {
+  _backpressureSignaled = false;
+}
+
+function _sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function _emitTransition(transition) {
@@ -848,10 +993,44 @@ function dispatch(event, ctx) {
 
   const priorState = _localState;
   _localState = target;
-
-  const actions = txn.buildActions ? txn.buildActions(event, ctx) : [];
   _cycleCount++;
+  _emitFsmTransition(priorState, target, event);
 
+  const actionResult = txn.buildActions ? txn.buildActions(event, ctx) : [];
+  if (actionResult && typeof actionResult.then === 'function') {
+    return actionResult.then((actions) => {
+      console.log(`[telemetry-coordination-fsm] ${priorState} → ${target}  (${event.type}) cycles=${_cycleCount}`);
+      return {
+        allowed: true,
+        from: priorState,
+        to: target,
+        actions: Array.isArray(actions) ? actions : [],
+      };
+    }).catch((err) => {
+      console.error('[telemetry-coordination-fsm] buildActions error:', err.message);
+      return {
+        allowed: true,
+        from: priorState,
+        to: target,
+        actions: [{
+          type: 'LOG_DEGRADED',
+          substate: 'COORDINATION_ERROR',
+          reason: err.message,
+        }],
+      };
+    });
+  }
+
+  console.log(`[telemetry-coordination-fsm] ${priorState} → ${target}  (${event.type}) cycles=${_cycleCount}`);
+  return {
+    allowed: true,
+    from: priorState,
+    to: target,
+    actions: Array.isArray(actionResult) ? actionResult : [],
+  };
+}
+
+function _emitFsmTransition(priorState, target, event) {
   try {
     const obs = _obs();
     if (obs) {
@@ -865,6 +1044,7 @@ function dispatch(event, ctx) {
         raw: {
           intent: event.type,
           cycleCount: _cycleCount,
+          coordinationEpoch: _coordinationEpoch,
           rejectedIntentCount: _rejectedIntentCount,
           serializedTransitionCount: _serializedTransitionCount,
           priorCycleOutputCount: _priorCycleOutputCount,
@@ -872,15 +1052,6 @@ function dispatch(event, ctx) {
       });
     }
   } catch (_) {}
-
-  console.log(`[telemetry-coordination-fsm] ${priorState} → ${target}  (${event.type}) cycles=${_cycleCount}`);
-
-  return {
-    allowed: true,
-    from: priorState,
-    to: target,
-    actions,
-  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -902,12 +1073,12 @@ async function init(rehydratedState) {
       _intentCursors = restored;
       console.log(`[telemetry-coordination-fsm] Consumer registered — cursors restored: ${JSON.stringify(_intentCursors)}, log size ${observability.query.getLogSize()}`);
     } else {
-      _intentCursors = { runtime: 0, integrity: 0, authority: 0, health: 0, systemic: 0 };
+      _intentCursors = _emptyIntentCursors();
       console.log(`[telemetry-coordination-fsm] Consumer registered — cursors reset to 0, log size ${observability.query.getLogSize()}`);
     }
   } catch (_) {
     console.warn('[telemetry-coordination-fsm] Failed to register consumer:', _.message);
-    _intentCursors = { runtime: 0, integrity: 0, authority: 0, health: 0, systemic: 0 };
+    _intentCursors = _emptyIntentCursors();
   }
 }
 
@@ -927,11 +1098,13 @@ function start(ctx) {
 
 function stop() {
   if (_unsubscribeOnWrite) {
-    _unsubscribeOnWrite();
+    try { _unsubscribeOnWrite(); } catch (_) {}
     _unsubscribeOnWrite = null;
     console.log('[telemetry-coordination-fsm] onWrite subscription stopped');
   }
   _coordinationPending = false;
+  _coordinationInFlight = false;
+  _reactiveCoordinationQueued = false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -947,10 +1120,19 @@ function exportState() {
     state: _localState,
     intentCursors: _intentCursors,
     cycleCount: _cycleCount,
+    coordinationEpoch: _coordinationEpoch,
+    coordinationInFlight: _coordinationInFlight,
+    lastCycleStartedAt: _lastCycleStartedAt,
+    lastCycleFinishedAt: _lastCycleFinishedAt,
     rejectedIntentCount: _rejectedIntentCount,
     serializedTransitionCount: _serializedTransitionCount,
     priorCycleOutputCount: _priorCycleOutputCount,
+    priorCycleDedupedCount: _priorCycleDedupedCount,
     backpressureSignaled: _backpressureSignaled,
+    writerHealthState: _writerHealthState,
+    writerHealthChangedAt: _writerHealthChangedAt,
+    cursorPersistenceFailures: _cursorPersistenceFailures,
+    lastCursorPersistError: _lastCursorPersistError,
     rejectionLogSize: _rejectionLog.length,
   };
 }
@@ -961,7 +1143,10 @@ function getHealth() {
     signals: {
       state: _localState,
       cycleCount: _cycleCount,
+      coordinationInFlight: _coordinationInFlight,
       backpressureSignaled: _backpressureSignaled,
+      writerHealthState: _writerHealthState,
+      cursorPersistenceFailures: _cursorPersistenceFailures,
       rejectionRate: _cycleCount > 0
         ? _rejectedIntentCount / Math.max(1, _rejectedIntentCount + _serializedTransitionCount)
         : 0,
@@ -985,8 +1170,18 @@ function getIngressRetryState() {
   };
 }
 
+function _emptyIntentCursors() {
+  return {
+    runtime: 0,
+    integrity: 0,
+    authority: 0,
+    health: 0,
+    systemic: 0,
+  };
+}
+
 module.exports = {
-  name: 'telemetry-coordination',
+  name: 'telemetry-coordination-fsm',
   dispatch,
   init,
   start,

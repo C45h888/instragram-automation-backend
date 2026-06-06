@@ -106,6 +106,20 @@ function stopAll() {
 }
 
 /**
+ * Await the in-flight write to complete for a specific namespace.
+ * Eliminates fire-and-forget timing races in tests.
+ *
+ * @param {string} namespace — runtime | integrity | authority | health | systemic
+ * @param {number} [timeoutMs=5000]
+ */
+async function awaitPendingWrite(namespace, timeoutMs = 5000) {
+  const writer = writers[namespace];
+  if (writer && typeof writer.awaitPendingWrite === 'function') {
+    await writer.awaitPendingWrite(timeoutMs);
+  }
+}
+
+/**
  * Return health signals for all writers.
  * @returns {object} per-namespace health status keyed by namespace name
  */
@@ -196,4 +210,5 @@ module.exports = {
   stopAll,
   getAllHealth,
   getHealth,
+  awaitPendingWrite,
 };

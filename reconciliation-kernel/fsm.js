@@ -72,6 +72,8 @@ const STATE_REGISTRY = {
 
 const TRANSITION_MAP = {
   // ── Cycle initiation — orchestrator timer fires RECONCILIATION_TICK ──────
+  // Gated by ctx.sanityCheck. When the system is DEGRADED, the
+  // gate can veto initiating a new reconciliation cycle.
   RECONCILIATION_TICK: {
     target: 'RECONCILING',
     guard: (event) => {
@@ -80,7 +82,12 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event, ctx) => {
+      const gate = await _resolveSanityCheck(ctx, {
+        operation: 'reconciliation_tick',
+        domain: 'reconciliation',
+      });
+      if (!gate.allowed) return [];
       // Reset per-cycle slate
       _cycleObservations = [];
       _cycleWorstSeverity = 0;
@@ -246,6 +253,19 @@ let _cycleDriftedDomains = [];
 let _lastEpochHash = null;
 let _hashMismatchDetected = false;
 
+// ── Default fail-open sanity check (universal gate pattern) ─────────────
+// Same pattern as engagement-fsm. The ctx.sanityCheck is the
+// universal gate; the FSM calls it during emission. For tests /
+// non-CK dispatch, the default is always-allowed.
+const _defaultSanityCheck = async () => ({ allowed: true });
+
+function _resolveSanityCheck(ctx, action) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck(action);
+  }
+  return _defaultSanityCheck(action);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch — process event, ask constitutional for validation, transition
 //
@@ -264,7 +284,7 @@ let _hashMismatchDetected = false;
  * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
  * @returns {{ allowed: boolean, from?: string, to?: string, actions?: Array, reason?: string }}
  */
-function dispatch(event, ctx) {
+async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
@@ -329,7 +349,7 @@ function dispatch(event, ctx) {
   } catch (_) {}
 
   // 6. Build actions
-  const actions = txn.buildActions ? txn.buildActions(event, ctx) : [];
+  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
 
   // 7. HSM signaling — FSM recommends, HSM decides
   //    Process RECONCILIATION_SIGNAL_ESCALATE and RECONCILIATION_SIGNAL_CLEAR

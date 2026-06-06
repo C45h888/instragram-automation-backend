@@ -213,13 +213,18 @@ async function init() {
  * @returns {Promise<void>}
  */
 async function stop() {
-  await projection.stopSnapshotTimer();
+  await projection.stop();
   console.log('[observability] Plane stopped — final snapshot persisted');
 }
 
 module.exports = {
   transition,
   capture,
+  onWrite,
+  init,
+  reset,
+  stop,
+  getSnapshot,
   query: {
     getState,
     getDomainState,
@@ -234,8 +239,4 @@ module.exports = {
     updateConsumerCursor,
     getConsumerLag,
   },
-  getSnapshot,
-  onWrite,
-  init,
-  stop,
 };
