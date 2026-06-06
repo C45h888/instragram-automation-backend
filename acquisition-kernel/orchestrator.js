@@ -7,58 +7,15 @@
 //               execution intelligence, credential resolution logic.
 //
 // Constitutional purity: this orchestrator is a PACKET ROUTER.
-// It mechanically dispatches EXECUTE_ACQUISITION / RETRY_ACQUISITION to the
-// retry worker. It NEVER interprets what a domain means.
-// All execution intelligence lives in governance + substrate registry.
+// It mechanically forwards EXECUTE_ACQUISITION to CK as RETRY_REQUESTED
+// — the engagement-fsm is the sole execution authority. The orchestrator
+// never invokes workers directly.
 
 const { getRedisClient } = require('../config/redis');
 const substrateRegistry = require('./substrate-registry');
-const retryWorker = require('./retry-worker');
-// Note (Step 7): the orchastrator no longer imports the
-// credential-resolver. The substrate resolves credentials
-// internally. The orchastrator's role is dispatch only.
 const syncSubstrate = require('../substrates/sync-substrate');
 const retrySubstrate = require('../substrates/retry');
 const rateLimiter = require('../substrates/rate-limiter');
-
-/**
- * Execute a single bounded acquisition attempt via retry worker.
- * Governance evaluates WORKER_OUTCOME_REPORTED and decides next action.
- *
- * @param {string} accountId
- * @param {string} domain
- * @param {string} intentId
- * @param {object} params
- */
-async function executeAcquisition(gov, accountId, domain, intentId, params) {
-  const substrate = substrateRegistry.lookup(domain);
-  if (!substrate) {
-    console.error(`[acquisition-orchestrator] Unknown acquisition domain: ${domain}`);
-    gov.dispatch({
-      type: 'ACQUISITION_COMPLETE', accountId, domain, intentId,
-      result: { status: 'failed', count: 0, error: `unknown domain: ${domain}` },
-    });
-    return;
-  }
-
-  gov.dispatch({ type: 'ACQUISITION_EXECUTING', accountId, domain, intentId });
-
-  // Wire substrate fetch with credential resolution for retry-worker.
-  // retry-worker handles ONE bounded I/O call (fetch) and dispatches
-  // to parsing substrate for parse→normalize→persist. It is
-  // semantically blind — no error classification, no engagement
-  // state mutation, no lifecycle emission.
-  //
-  // Step 7: the substrate resolves credentials internally. The
-  // routing binding is now a direct pass-through (no creds wrapper).
-  const wiredRouting = {
-    fetch: async (acctId, execParams) => {
-      return substrate.fetch(acctId, execParams);
-    },
-  };
-
-  await retryWorker.executeSingle(accountId, domain, params, intentId, gov, wiredRouting);
-}
 
 /**
  * Write acquisition result to Redis for agent consumption.
@@ -92,6 +49,10 @@ async function writeAcquisitionResult(accountId, domain, intentId, result) {
  * @param {object} [acquisitionFsm] — acquisition domain FSM (for state queries)
  */
 function wire(gov, acquisitionFsm) {
+  // ── EXECUTE_ACQUISITION → RETRY_REQUESTED (canonical retry path) ──
+  // The orchestrator mechanically forwards to CK. engagement-fsm owns
+  // all execution decisions (circuit breaker, retry counting, auth strikes).
+  // The orchestrator never calls a worker directly.
   gov.subscribeAction('EXECUTE_ACQUISITION', (action) => {
     _emitTransition({
       domain: 'acquisition', entity: 'acquisition_intent', entityId: action.intentId,
@@ -99,7 +60,14 @@ function wire(gov, acquisitionFsm) {
       authority: 'acquisition-orchestrator',
       raw: { accountId: action.accountId, domain: action.domain },
     });
-    executeAcquisition(gov, action.accountId, action.domain, action.intentId, action.params);
+    // Forward to canonical retry path — engagement-fsm handles execution
+    gov.dispatch({
+      type: 'RETRY_REQUESTED',
+      accountId: action.accountId,
+      domain: action.domain,
+      intentId: action.intentId,
+      params: action.params || {},
+    });
   });
 
   gov.subscribeAction('WRITE_ACQUISITION_RESULT', (action) => {

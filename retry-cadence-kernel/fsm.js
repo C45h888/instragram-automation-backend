@@ -375,7 +375,9 @@ const TRANSITION_MAP = {
       const paired = retryCadenceStore.dispatch(
         domain, accountId, intentId, params || {});
       const existing = _executionContexts.get(intentId);
-      const newCount = (existing?.count || 0) + 1;
+      // First attempt (no existing context) → count=0
+      // Retry (existing context) → count = previous count + 1
+      const newCount = existing ? existing.count + 1 : 0;
       const maxRetries = paired.maxRetries || 0;
 
       if (newCount > maxRetries) {
@@ -493,7 +495,7 @@ const TRANSITION_MAP = {
 
   // ── Circuit breaker query — pre-flight check routed through FSM via CK ─
   // This replaces the direct isCircuitBreakerActive() call in execution-bridge
-  // and retry-worker. The FSM is the authority; execution layers must dispatch
+  // The FSM is the sole execution authority; all execution flows through RETRY_REQUESTED
   // through CK to get the answer rather than querying state directly.
   // Returns { circuitBreakerActive: boolean } in the dispatch result.
   CIRCUIT_BREAKER_CHECK: {
@@ -577,7 +579,9 @@ const TRANSITION_MAP = {
             const paired = retryCadenceStore.dispatch(
               domain, accountId, intentId, event.params || {});
             const existing = _executionContexts.get(intentId);
-            const newCount = (existing?.count || 0) + 1;
+            // First attempt (no existing context) → count=0
+            // Retry (existing context) → count = previous count + 1
+            const newCount = existing ? existing.count + 1 : 0;
             const maxRetries = paired.maxRetries || 0;
 
             if (newCount > maxRetries) {

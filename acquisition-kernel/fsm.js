@@ -7,7 +7,7 @@
 //
 // Constitutional purity: acquisition-fsm is a PURE intent lifecycle domain.
 // Engagement signals (AUTH_FAILURE_STRIKE, RATE_LIMIT_DETECTED, RETRY_EXHAUSTED,
-// AUTH_SUCCESS, RETRY_COUNT_INCREMENTED) are emitted by retry-worker/execution-bridge
+// AUTH_SUCCESS, RETRY_COUNT_INCREMENTED) are emitted by retry-cadence workers
 // directly to CK. DOMAIN_EVENT_MAP routes them to engagement-fsm independently.
 // Acquisition-fsm never emits engagement-domain events.
 //
@@ -29,7 +29,7 @@ function _obs() {
 //   Membranes ↓  → actions returned to constitutional for emission to orchestrators
 //
 // Acquisition-fsm is a PURE intent lifecycle domain. It does NOT emit cross-domain
-// events. Engagement signals are emitted by retry-worker/execution-bridge directly
+// events. Engagement signals are emitted by retry-cadence workers directly
 // to CK and routed via DOMAIN_EVENT_MAP to engagement-fsm.
 //
 // Domain FSMs emit state transitions through the observability plane.
@@ -237,7 +237,7 @@ const TRANSITION_MAP = {
   // ── Execution observations — intent lifecycle only ──────────────────────────
 // Constitutional purity: acquisition-fsm owns ONLY intent lifecycle (IDLE ↔ ACQUIRING).
 // Engagement signals (auth_failure, rate_limit, retry_exhausted) are emitted by
-// retry-worker/execution-bridge directly to CK. DOMAIN_EVENT_MAP routes them to
+// retry-cadence workers to CK. DOMAIN_EVENT_MAP routes them to
 // engagement-fsm independently. Acquisition-fsm never emits engagement-domain events.
 
   // ── EXECUTION_OBSERVATION — REMOVED in Step 4 of authority centralisation ─

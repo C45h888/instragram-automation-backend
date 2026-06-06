@@ -5,7 +5,7 @@
 // Does NOT own: fetch, transport, orchestration, governance policy.
 //
 // Workers run asynchronously via setImmediate. dispatch() returns immediately.
-// The retry-worker should NOT await the result — it emits PARSING_DISPATCHED
+// The retry-cadence worker should NOT await the result — it emits PARSING_DISPATCHED
 // to CK and continues. When the worker completes, it emits PARSING_COMPLETE.
 //
 // Constitutional rule: domain→worker binding is owned by substrate-registry.

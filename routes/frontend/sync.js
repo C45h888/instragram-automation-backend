@@ -8,9 +8,9 @@ const router = express.Router();
 const { logAudit: logAuditService } = require('../../config/supabase');
 const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
 const dispatchWrite = require('../../postgres-telemetry-kernel/writers').dispatchWrite;
-const { mapRawPostToUgcContent } = require('../../acquisition-kernel/substrates/ugc/normalizer');
-const ugcTransport = require('../../acquisition-kernel/substrates/ugc/transport');
-const contentTransport = require('../../acquisition-kernel/substrates/content/transport');
+const { mapRawPostToUgcContent } = require('../../acquisition-kernel/substrates/ugc-content-substrate/ugc-normalizer');
+const ugcTransport = require('../../acquisition-kernel/substrates/ugc-content-substrate/ugc-transport');
+const contentTransport = require('../../acquisition-kernel/substrates/ugc-content-substrate/content-transport');
 
 const logAudit = logAuditService;
 

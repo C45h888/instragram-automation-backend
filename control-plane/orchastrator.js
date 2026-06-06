@@ -16,7 +16,6 @@
 // No module imports another module directly — all wiring lives here.
 
 const constitutional = require('./governance/constitutional-kernel');
-const executionBridge = require('./execution-bridge');
 const substrateRegistry = require('../acquisition-kernel/substrate-registry');
 const metricsSubstrate = require('../substrates/metrics-substrate');
 const { getRedisClient } = require('../config/redis');
@@ -31,7 +30,7 @@ const transitionWriters = require('../telemetry-kernel/substrates/projection/tra
 
 const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
-const parsing = require('../acquisition-kernel/parsing');
+const parsing = require('../acquisition-kernel/substrates/parsing-substrate');
 const retryCadence = require('../retry-cadence-kernel/index');
 const dbWriters = require('../postgres-telemetry-kernel/writers');
 const dbReaders = require('../postgres-telemetry-kernel/readers');
@@ -86,9 +85,6 @@ function _wire() {
   // through the context. The FSM is the only place that
   // holds the ref. (fail-loud if null at invocation.)
   engagementFsm.setGovernance(constitutional);
-
-  // Wire execution bridge's governance reference for observation emission
-  executionBridge.setGovernance(constitutional);
 
   // Wire each membrane orchestrator
   cadenceOrchestrator.wire(constitutional);

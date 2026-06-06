@@ -536,6 +536,19 @@ let _writerHealthSignal = null;
 let _lastCursorPersistError = null;
 let _cursorPersistenceFailures = 0;
 
+// ── Default fail-open sanity check (universal gate pattern) ─────────────
+// The ctx.sanityCheck is the universal gate. The FSM calls it
+// during emission. For tests / non-CK dispatch, the default is
+// always-allowed (fail-open to preserve operational cadence).
+const _defaultSanityCheck = async () => ({ allowed: true });
+
+function _resolveSanityCheck(ctx, action) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck(action);
+  }
+  return _defaultSanityCheck(action);
+}
+
 // ── Rejection log
 const _rejectionLog = [];
 const MAX_REJECTION_LOG = 50;

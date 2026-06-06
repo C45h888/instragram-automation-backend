@@ -31,7 +31,7 @@
 const quota = require('../substrates/quota');
 const telemetry = require('../substrates/telemetry');
 const metricsSubstrate = require('../substrates/metrics-substrate');
-const parsing = require('./substrates/parsing-substrate');
+const parsing = require('./parsing');
 
 /**
  * Execute a single bounded attempt for one acquisition intent.
