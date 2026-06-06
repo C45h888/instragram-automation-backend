@@ -2,13 +2,17 @@
 // Content bounded substrate: owns worker factory, rate limiter, execution loop.
 //
 // Owns: factory-creating content workers, pre-flight checks, per-item iteration,
-//        outcome→CK signal classification. Zero internal retry.
-// Does NOT own: IG API calls (delegates to worker), credentials (receives from
-//               orchestrator), retry policy (engagement-fsm domain), state.
+//        outcome→CK signal classification, credential resolution. Zero internal
+//        retry.
+// Does NOT own: IG API calls (delegates to worker), retry policy (engagement-fsm
+//               domain), state.
 //
-// Contract:
-//   execute(accountId, items, governance, credentials) → void
-//   All outcomes dispatched as CK signals upward. No return value.
+// Contract (Step 7 — credential resolution normalisation):
+//   execute(accountId, items, governance) → void
+//   Credentials are resolved INTERNALLY by the substrate from
+//   graph-capability-kernel. The orchastrator does NOT pass
+//   credentials. The substrate is the I/O layer; the substrate
+//   owns the credential resolution.
 //
 // Workers:
 //   'posts'   → ContentWorker('publish_post') or ContentWorker('repost_ugc')
@@ -16,18 +20,24 @@
 
 const ContentWorker = require('./worker');
 const rateLimiter = require('./rate-limiter');
+const { resolveAccountCredentials } =
+  require('../../../graph-capability-kernel/substrates/credential-resolver');
 
 /**
  * Execute a batch of content publishing items.
  * Iterates items sequentially — each item gets pre-flight checks, worker
- * factory creation, one bounded IG API call, and outcome signal dispatch.
+ * factory creation, credential resolution, one bounded IG API call, and
+ * outcome signal dispatch.
  *
  * @param {string} accountId
  * @param {Array<{worker: string, actionType: string, record: object}>} items
  * @param {object} governance — CK module (for dispatch + subscribeAction)
- * @param {{igUserId: string, pageToken: string}} credentials
  */
-async function execute(accountId, items, governance, credentials) {
+async function execute(accountId, items, governance) {
+  // Resolve credentials ONCE per batch (same accountId, same session).
+  // If resolution fails, the batch fails uniformly. Each item does NOT
+  // re-resolve (that would be redundant).
+  const credentials = await resolveAccountCredentials(accountId);
   for (const item of items) {
     await _executeItem(accountId, item, governance, credentials);
   }

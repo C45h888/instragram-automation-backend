@@ -24,7 +24,11 @@ const dedupSubstrate = require('../dedup-kernel/substrates/dedup');
 const mutationSubstrate = require('../control-plane/mutation-substrate');
 const contentSubstrate = require('./substrates/content');
 const engagementSubstrate = require('./substrates/engagement');
-const { resolveAccountCredentials } = require('../graph-capability-kernel/substrates/credential-resolver');
+const publishErrorParser = require('../retry-cadence-kernel/workers/publish-error-parser');
+// NOTE (Step 7): The emission-orchestrator no longer imports the
+// credential-resolver. The publish substrates resolve their own
+// credentials internally. The orchastrator's role is dispatch
+// only — no credential handling.
 
 const MUTATION_POLICY = {
   scheduled_posts: {
@@ -197,35 +201,117 @@ function wire(governance) {
     });
   });
 
-  // ── EXECUTE_CONTENT: publishing-fsm → bounded content substrate → IG API ──
+  // ── EXECUTE_CONTENT: publishing-fsm → bounded content substrate → IG API
+  //    Failure path: dual emission (Step 6).
+  //      - WORKER_OUTCOME_REPORTED → engagement-fsm (for retry path)
+  //      - PUBLISH_FAILURE → observability subscribers (lineage,
+  //        alerting) — does NOT enter a FSM.
+  //    The workers' emissions are FSM-only. The orchestrator's
+  //    emissions are observability-only. Two emitters, two audiences.
   governance.subscribeAction('EXECUTE_CONTENT', async (action) => {
-    const { accountId, items } = action;
+    const { accountId, items, intentId, domain } = action;
     if (!accountId || !items || !Array.isArray(items)) {
       console.warn('[emission-orchestrator] EXECUTE_CONTENT rejected: missing fields', action);
       return;
     }
+    const publishDomain = domain || 'publish:post';
     try {
-      const credentials = await resolveAccountCredentials(accountId);
-      await contentSubstrate.execute(accountId, items, governance, credentials);
+      // Step 7: substrate resolves its own credentials internally.
+      // Orchastrator does not touch credentials.
+      const result = await contentSubstrate.execute(accountId, items, governance);
+      if (result && !result.success) {
+        // Substrate returned a structured failure
+        const errorShape = publishErrorParser.parse(result, publishDomain);
+        governance.dispatch({
+          type: 'WORKER_OUTCOME_REPORTED',
+          accountId,
+          intentId: intentId || null,
+          domain: publishDomain,
+          status: 'failed',
+          errorShape,
+          error: result.error,
+        });
+        // Observability emission (does not route to a FSM)
+        governance.dispatch({
+          type: 'PUBLISH_FAILURE',
+          accountId,
+          domain: publishDomain,
+          intentId: intentId || null,
+          reason: result.error,
+        });
+      }
     } catch (err) {
-      console.error('[emission-orchestrator] EXECUTE_CONTENT error:', err.message);
-      governance.dispatch({ type: 'PUBLISH_FAILURE', accountId, reason: err.message });
+      // Substrate threw — wrap into errorShape
+      const errorShape = publishErrorParser.parseError(err, publishDomain);
+      governance.dispatch({
+        type: 'WORKER_OUTCOME_REPORTED',
+        accountId,
+        intentId: intentId || null,
+        domain: publishDomain,
+        status: 'failed',
+        errorShape,
+        error: err.message,
+      });
+      // Observability emission
+      governance.dispatch({
+        type: 'PUBLISH_FAILURE',
+        accountId,
+        domain: publishDomain,
+        intentId: intentId || null,
+        reason: err.message,
+      });
     }
   });
 
-  // ── EXECUTE_ENGAGEMENT: publishing-fsm → bounded engagement substrate → IG API ──
+  // ── EXECUTE_ENGAGEMENT: publishing-fsm → bounded engagement substrate → IG API
+  //    Same dual-emission pattern as EXECUTE_CONTENT.
   governance.subscribeAction('EXECUTE_ENGAGEMENT', async (action) => {
-    const { accountId, items } = action;
+    const { accountId, items, intentId, domain } = action;
     if (!accountId || !items || !Array.isArray(items)) {
       console.warn('[emission-orchestrator] EXECUTE_ENGAGEMENT rejected: missing fields', action);
       return;
     }
+    const publishDomain = domain || 'publish:comment';
     try {
-      const credentials = await resolveAccountCredentials(accountId);
-      await engagementSubstrate.execute(accountId, items, governance, credentials);
+      // Step 7: substrate resolves its own credentials internally.
+      const result = await engagementSubstrate.execute(accountId, items, governance);
+      if (result && !result.success) {
+        const errorShape = publishErrorParser.parse(result, publishDomain);
+        governance.dispatch({
+          type: 'WORKER_OUTCOME_REPORTED',
+          accountId,
+          intentId: intentId || null,
+          domain: publishDomain,
+          status: 'failed',
+          errorShape,
+          error: result.error,
+        });
+        governance.dispatch({
+          type: 'PUBLISH_FAILURE',
+          accountId,
+          domain: publishDomain,
+          intentId: intentId || null,
+          reason: result.error,
+        });
+      }
     } catch (err) {
-      console.error('[emission-orchestrator] EXECUTE_ENGAGEMENT error:', err.message);
-      governance.dispatch({ type: 'PUBLISH_FAILURE', accountId, reason: err.message });
+      const errorShape = publishErrorParser.parseError(err, publishDomain);
+      governance.dispatch({
+        type: 'WORKER_OUTCOME_REPORTED',
+        accountId,
+        intentId: intentId || null,
+        domain: publishDomain,
+        status: 'failed',
+        errorShape,
+        error: err.message,
+      });
+      governance.dispatch({
+        type: 'PUBLISH_FAILURE',
+        accountId,
+        domain: publishDomain,
+        intentId: intentId || null,
+        reason: err.message,
+      });
     }
   });
 

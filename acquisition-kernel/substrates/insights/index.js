@@ -1,8 +1,9 @@
 // substrates/insights/index.js
 // Insights substrate: factory-creates worker → bounded IG API read.
 //
-// Owns: worker factory + transport bridge. Pure delegation plane.
-// Does NOT own: retry, error classification, orchestration, credential resolution.
+// Owns: worker factory + transport bridge + credential resolution
+//        (Step 7 normalisation).
+// Does NOT own: retry, error classification, orchestration.
 //
 // Worker: InsightsWorker — 2-step: media feed → insights batch.
 // Persist: routes to persistence substrate (called by parsing workers asynchronously).
@@ -11,17 +12,21 @@ const InsightsWorker = require('./workers/insights');
 const { normalizeMediaInsight } = require('./normalizer');
 const { syncHashtagsFromCaptions } = require('../content/hashtag-sync');
 const { getSupabaseAdmin } = require('../../../config/supabase');
+const { resolveAccountCredentials } =
+  require('../../../graph-capability-kernel/substrates/credential-resolver');
 
 /**
  * Fetch raw data from Instagram API for insights domain.
  * Factory-creates an InsightsWorker and delegates the bounded call.
  *
+ * Step 7: substrate resolves credentials internally.
+ *
  * @param {string} accountId
  * @param {object} params — { since?, until? }
- * @param {object} credentials — pre-resolved
  * @returns {Promise<object>} raw transport response
  */
-async function fetch(accountId, params, credentials) {
+async function fetch(accountId, params) {
+  const credentials = await resolveAccountCredentials(accountId);
   const worker = new InsightsWorker();
   return worker.execute(accountId, params, credentials);
 }

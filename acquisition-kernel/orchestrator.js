@@ -14,7 +14,9 @@
 const { getRedisClient } = require('../config/redis');
 const substrateRegistry = require('./substrate-registry');
 const retryWorker = require('./retry-worker');
-const { resolveAccountCredentials } = require('../graph-capability-kernel/substrates/credential-resolver');
+// Note (Step 7): the orchastrator no longer imports the
+// credential-resolver. The substrate resolves credentials
+// internally. The orchastrator's role is dispatch only.
 const syncSubstrate = require('../substrates/sync-substrate');
 const retrySubstrate = require('../substrates/retry');
 const rateLimiter = require('../substrates/rate-limiter');
@@ -46,10 +48,12 @@ async function executeAcquisition(gov, accountId, domain, intentId, params) {
   // to parsing substrate for parse→normalize→persist. It is
   // semantically blind — no error classification, no engagement
   // state mutation, no lifecycle emission.
+  //
+  // Step 7: the substrate resolves credentials internally. The
+  // routing binding is now a direct pass-through (no creds wrapper).
   const wiredRouting = {
     fetch: async (acctId, execParams) => {
-      const creds = await resolveAccountCredentials(acctId);
-      return substrate.fetch(acctId, execParams, creds);
+      return substrate.fetch(acctId, execParams);
     },
   };
 
@@ -102,24 +106,17 @@ function wire(gov, acquisitionFsm) {
     writeAcquisitionResult(action.accountId, action.domain, action.intentId, action.result);
   });
 
-  gov.subscribeAction('RETRY_ACQUISITION', (action) => {
-    const { accountId, domain, intentId, params, delayMs } = action;
-    _emitTransition({
-      domain: 'acquisition', entity: 'acquisition_intent', entityId: intentId,
-      previousState: 'EXECUTING', nextState: 'RETRYING',
-      authority: 'acquisition-orchestrator',
-      raw: { accountId, domain, delayMs },
-    });
-    setTimeout(() => {
-      executeAcquisition(gov, accountId, domain, intentId, params);
-    }, delayMs || 30000);
-  });
-
+  // MARK_PERMANENT_FAILURE is emitted by engagement-fsm (RETRY_EXHAUSTED path)
+  // and routed through CK's _emitActions → _actionSubscribers. The orchestrator
+  // is the mechanical subscriber — it writes to Redis. The semantic decision
+  // (terminal failure) is owned by engagement-fsm. This is the canonical
+  // subscriber path: CK routes, FSM decides, orchestrator executes.
   gov.subscribeAction('MARK_PERMANENT_FAILURE', (action) => {
     writeAcquisitionResult(action.accountId, action.domain, action.intentId, {
       status: 'failed', count: 0, error: action.error || 'permanent_failure',
     });
   });
+
   gov.subscribeAction('ENGAGE_CIRCUIT_BREAKER', (action) => {
     const { accountId, cooldownMs = 3600000, substrate, affectedDomains } = action;
 

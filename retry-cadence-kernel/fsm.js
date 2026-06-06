@@ -619,10 +619,22 @@ const TRANSITION_MAP = {
               }];
             }
 
-            // Scheduled successfully. No external emission needed
-            // — the timer is the FSM's responsibility. The next
-            // WORKER_OUTCOME_REPORTED will arrive when the retry
-            // worker fires.
+            // Scheduled successfully. For publish:* domains,
+            // emit RETRY_IN_PROGRESS so publishing-fsm can hold
+            // its EXECUTING state while the retry chain is in
+            // flight (observability fidelity). For other domains
+            // (acquisition-side retries), no emission — the FSM
+            // is transparent to those.
+            if (domain && domain.startsWith('publish:')) {
+              return [{
+                type: 'RETRY_IN_PROGRESS',
+                accountId,
+                domain,
+                intentId,
+                retryCount: newCount,
+                delayMs: scheduleResult.delayMs,
+              }];
+            }
             return [];
           }
 

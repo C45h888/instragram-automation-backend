@@ -213,27 +213,6 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Retry from engagement-fsm ───────────────────────────────────────────
-  RETRY_PUBLISH: {
-    target: 'EXECUTING',
-    guard: (event) => {
-      if (_localState !== 'EXECUTING' && _localState !== 'IDLE') {
-        return { allowed: false, reason: `Cannot retry publish from ${_localState}` };
-      }
-      return { allowed: true };
-    },
-    buildActions: (event) => {
-      // Re-issue the same execute action with the original classification
-      const { accountId, domain, actionType, worker, record } = event;
-      const actionTypeKey = domain === 'engagement' ? 'EXECUTE_ENGAGEMENT' : 'EXECUTE_CONTENT';
-      return [{
-        type: actionTypeKey,
-        accountId,
-        items: [{ worker, actionType, record }],
-      }];
-    },
-  },
-
   // ── Permanent failure from engagement-fsm ───────────────────────────────
   PUBLISH_FAILURE: {
     target: 'IDLE',
@@ -249,6 +228,37 @@ const TRANSITION_MAP = {
         substate: 'RETRY_EXHAUSTED',
         reason: event.reason || 'Publishing failed permanently',
       }];
+    },
+  },
+
+  // ── RETRY_IN_PROGRESS (Step 6): engagement-fsm scheduled a retry ─────
+  // publishing-fsm stays in EXECUTING while the retry chain is in
+  // flight. This gives observability fidelity — the FSM shows that
+  // the publish is still in progress, not idle. The next
+  // PUBLISHING_OBSERVATION (success or terminal) transitions
+  // EXECUTING → IDLE.
+  //
+  // The event is emitted by engagement-fsm._scheduleRetry when the
+  // schedule succeeds for a publish:* domain. CK routes it to
+  // publishing-fsm via DOMAIN_EVENT_MAP.
+  //
+  // The handler is a pure state hold: no actions emitted. The
+  // publishing-fsm is transparent to the retry — the actual
+  // re-invocation of the publish substrate is driven by
+  // engagement-fsm's _executeRetry, not by publishing-fsm.
+  RETRY_IN_PROGRESS: {
+    target: 'EXECUTING',
+    guard: (event) => {
+      // Only valid from EXECUTING (the publish is already in flight
+      // when the retry schedule happens). If the FSM is in any other
+      // state, the event is stale — drop it.
+      if (_localState !== 'EXECUTING') {
+        return { allowed: false, reason: `RETRY_IN_PROGRESS from ${_localState}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      return [];
     },
   },
 };

@@ -156,8 +156,10 @@ const TRANSITION_MAP = {
 
       if (result.status === 'failed') {
         return [{
-          type: 'MARK_PERMANENT_FAILURE',
-          accountId, domain, intentId,
+          type: 'RETRY_EXHAUSTED',
+          accountId,
+          domain,
+          intentId,
           error: result.error || 'parsing_failed',
         }];
       }

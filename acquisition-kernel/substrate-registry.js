@@ -20,8 +20,19 @@ const content     = require('./substrates/content');
 const ugc         = require('./substrates/ugc');
 const insights    = require('./substrates/insights');
 
+// Publish substrates — for the publish:* domains, "fetch" is a
+// misnomer. The publishing substrates execute the outbound action
+// (post/story/comment/message). They are bound to the publish
+// retry workers (one per substrate, per the dual-binding pattern).
+const publishContent    = require('../publishing-kernel/substrates/content/index');
+const publishEngagement = require('../publishing-kernel/substrates/engagement/index');
+
 // Parsing workers — domain-bounded, registered here, looked up via
 // substrateRegistry.getParsingWorker(domain).
+//
+// Publish domains DO NOT have parsing workers (outbound actions —
+// no response shape to parse). The validate() function tolerates
+// missing parsing workers for domains not in PARSING_WORKER_MAP.
 const PARSING_WORKER_MAP = {
   comments:  './parsing/workers/comments-worker',
   messages:  './parsing/workers/messages-worker',
@@ -37,31 +48,54 @@ const PARSING_WORKER_MAP = {
 // classify errors, do not mutate engagement state. They report raw
 // outcomes to governance and stop.
 const RETRY_WORKER_MAP = {
-  comments:  '../retry-cadence-kernel/workers/engagement-retry-worker',
-  messages:  '../retry-cadence-kernel/workers/engagement-retry-worker',
-  ugc:       '../retry-cadence-kernel/workers/ugc-retry-worker',
-  insights:  '../retry-cadence-kernel/workers/insights-retry-worker',
-  media:     '../retry-cadence-kernel/workers/content-retry-worker',
+  comments:           '../retry-cadence-kernel/workers/engagement-retry-worker',
+  messages:           '../retry-cadence-kernel/workers/engagement-retry-worker',
+  ugc:                '../retry-cadence-kernel/workers/ugc-retry-worker',
+  insights:           '../retry-cadence-kernel/workers/insights-retry-worker',
+  media:              '../retry-cadence-kernel/workers/content-retry-worker',
+  // ── Publish retry workers (Step 6) ────────────────────────
+  // Two workers, bound to the two publish substrates. The
+  // dual-binding pattern: each publish:* domain has a dedicated
+  // retry worker that imports its substrate directly.
+  'publish:post':     '../retry-cadence-kernel/workers/publish-content-retry-worker',
+  'publish:story':    '../retry-cadence-kernel/workers/publish-content-retry-worker',
+  'publish:comment':  '../retry-cadence-kernel/workers/publish-engagement-retry-worker',
+  'publish:message':  '../retry-cadence-kernel/workers/publish-engagement-retry-worker',
 };
 
 // Classification workers — semantically blind, bounded. They receive
 // a raw error payload, run classification rules, return a classified
 // action tag. They do not decide retry vs skip vs break. They do not
 // mutate state. They only classify. The FSM consumes the classification.
+//
+// The same classification-worker module handles all domains (read and
+// publish) — the IG error shape is the same.
 const CLASSIFICATION_WORKER_MAP = {
-  comments:  '../retry-cadence-kernel/workers/classification-worker',
-  messages:  '../retry-cadence-kernel/workers/classification-worker',
-  ugc:       '../retry-cadence-kernel/workers/classification-worker',
-  insights:  '../retry-cadence-kernel/workers/classification-worker',
-  media:     '../retry-cadence-kernel/workers/classification-worker',
+  comments:           '../retry-cadence-kernel/workers/classification-worker',
+  messages:           '../retry-cadence-kernel/workers/classification-worker',
+  ugc:                '../retry-cadence-kernel/workers/classification-worker',
+  insights:           '../retry-cadence-kernel/workers/classification-worker',
+  media:              '../retry-cadence-kernel/workers/classification-worker',
+  'publish:post':     '../retry-cadence-kernel/workers/classification-worker',
+  'publish:story':    '../retry-cadence-kernel/workers/classification-worker',
+  'publish:comment':  '../retry-cadence-kernel/workers/classification-worker',
+  'publish:message':  '../retry-cadence-kernel/workers/classification-worker',
 };
 
+// DOMAIN_REGISTRY — the canonical set of domain names. Publish
+// domains are included so the validate() function can check the
+// worker maps. The `execute` field is the publish substrate's
+// execute (the outbound action).
 const DOMAIN_REGISTRY = {
-  comments:  { fetch: engagement.fetch.bind(engagement) },
-  messages:  { fetch: engagement.fetch.bind(engagement) },
-  ugc:       { fetch: ugc.fetch.bind(ugc) },
-  insights:  { fetch: insights.fetch.bind(insights) },
-  media:     { fetch: content.fetch.bind(content) },
+  comments:         { fetch: engagement.fetch.bind(engagement) },
+  messages:         { fetch: engagement.fetch.bind(engagement) },
+  ugc:              { fetch: ugc.fetch.bind(ugc) },
+  insights:         { fetch: insights.fetch.bind(insights) },
+  media:            { fetch: content.fetch.bind(content) },
+  'publish:post':   { execute: publishContent.execute.bind(publishContent) },
+  'publish:story':  { execute: publishContent.execute.bind(publishContent) },
+  'publish:comment':{ execute: publishEngagement.execute.bind(publishEngagement) },
+  'publish:message':{ execute: publishEngagement.execute.bind(publishEngagement) },
 };
 
 function lookup(domain) {
@@ -123,22 +157,39 @@ function allDomains() {
 /**
  * Boot-time validation: every domain in DOMAIN_REGISTRY has a binding
  * in every worker map. Catches drift at boot, not at runtime.
+ *
+ * Parsing workers are OPTIONAL: outbound (publish:*) domains have
+ * no parsing worker (no response shape to parse). The check for
+ * PARSING_WORKER_MAP only runs if the domain has a parsing entry.
  */
 function validate() {
   const domains = new Set(Object.keys(DOMAIN_REGISTRY));
   const issues = [];
 
-  for (const [mapName, map] of [
-    ['PARSING_WORKER_MAP', PARSING_WORKER_MAP],
-    ['RETRY_WORKER_MAP', RETRY_WORKER_MAP],
-    ['CLASSIFICATION_WORKER_MAP', CLASSIFICATION_WORKER_MAP],
-  ]) {
-    for (const d of domains) {
-      if (!map[d]) issues.push(`${mapName} missing domain: ${d}`);
+  // PARSING_WORKER_MAP: optional. Only validate that every entry
+  // in PARSING_WORKER_MAP corresponds to a known domain.
+  for (const k of Object.keys(PARSING_WORKER_MAP)) {
+    if (!domains.has(k)) issues.push(`PARSING_WORKER_MAP has unknown domain: ${k}`);
+  }
+
+  // RETRY_WORKER_MAP: required for every domain (every domain can
+  // fail and need a retry).
+  for (const d of domains) {
+    if (!RETRY_WORKER_MAP[d]) issues.push(`RETRY_WORKER_MAP missing domain: ${d}`);
+  }
+  for (const k of Object.keys(RETRY_WORKER_MAP)) {
+    if (!domains.has(k)) issues.push(`RETRY_WORKER_MAP has unknown domain: ${k}`);
+  }
+
+  // CLASSIFICATION_WORKER_MAP: required for every domain (every
+  // domain can fail and need classification).
+  for (const d of domains) {
+    if (!CLASSIFICATION_WORKER_MAP[d]) {
+      issues.push(`CLASSIFICATION_WORKER_MAP missing domain: ${d}`);
     }
-    for (const k of Object.keys(map)) {
-      if (!domains.has(k)) issues.push(`${mapName} has unknown domain: ${k}`);
-    }
+  }
+  for (const k of Object.keys(CLASSIFICATION_WORKER_MAP)) {
+    if (!domains.has(k)) issues.push(`CLASSIFICATION_WORKER_MAP has unknown domain: ${k}`);
   }
 
   if (issues.length > 0) {

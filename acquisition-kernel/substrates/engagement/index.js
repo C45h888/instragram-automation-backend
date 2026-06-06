@@ -1,9 +1,9 @@
 // substrates/engagement/index.js
 // Engagement substrate: factory-creates workers → bounded IG API read.
 //
-// Owns: worker factory + transport bridge + broad scan orchestration.
-// Does NOT own: retry, error classification, credential resolution,
-//               persistence.
+// Owns: worker factory + transport bridge + broad scan orchestration
+//        + credential resolution (Step 7 normalisation).
+// Does NOT own: retry, error classification, persistence.
 //
 // Workers: CommentsWorker, MessagesWorker, ConversationsWorker.
 // Persistence: handled by acquisition-kernel/parsing/workers/ which
@@ -13,6 +13,11 @@
 // declares only { fetch }. Any code path that previously called
 // engagement.persist() is dead and was removed in Step 2 of the
 // authority centralisation plan.
+//
+// Step 7: the substrate resolves credentials internally. The fetch
+// signature is now (accountId, params) — credentials are NOT a
+// parameter. The canonical resolver is graph-capability-kernel's
+// credential-resolver.js.
 
 const CommentsWorker = require('./workers/comments');
 const MessagesWorker = require('./workers/messages');
@@ -22,6 +27,8 @@ const { getRecentMedia } = require('../../../postgres-telemetry-kernel/readers')
 const { normalizeComment, transformMessage } = require('./normalizer');
 const conversationHydrator = require('./hydrators/conversation-hydrator');
 const mediaHydrator = require('./hydrators/media-hydrator');
+const { resolveAccountCredentials } =
+  require('../../../graph-capability-kernel/substrates/credential-resolver');
 
 /**
  * Fetch raw data from Instagram API for engagement domain.
@@ -29,10 +36,13 @@ const mediaHydrator = require('./hydrators/media-hydrator');
  *
  * @param {string} accountId
  * @param {object} params — { media_id?, conversation_id?, conversations?, limit?, maxPosts? }
- * @param {object} credentials — pre-resolved
  * @returns {Promise<object>} raw transport response
  */
-async function fetch(accountId, params, credentials) {
+async function fetch(accountId, params) {
+  // Step 7: substrate resolves credentials internally. Resolved
+  // ONCE per fetch (same accountId, same session).
+  const credentials = await resolveAccountCredentials(accountId);
+
   // Single media → comments
   if (params.media_id) {
     const worker = new CommentsWorker();

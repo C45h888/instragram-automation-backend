@@ -1,8 +1,9 @@
 // substrates/ugc/index.js
 // UGC substrate: factory-creates workers → bounded IG API read.
 //
-// Owns: worker factory + transport bridge. Pure delegation plane.
-// Does NOT own: retry, error classification, orchestration, credential resolution.
+// Owns: worker factory + transport bridge + credential resolution
+//        (Step 7 normalisation).
+// Does NOT own: retry, error classification, orchestration.
 //
 // Workers: HashtagWorker (hashtag search), TaggedWorker (tagged media).
 // Normalize: handles post → UgcContent mapping internally for persist.
@@ -10,6 +11,8 @@
 const HashtagWorker = require('./workers/hashtag');
 const TaggedWorker = require('./workers/tagged');
 const { mapRawPostToUgcContent } = require('./normalizer');
+const { resolveAccountCredentials } =
+  require('../../../graph-capability-kernel/substrates/credential-resolver');
 
 /**
  * Persist UGC data to Supabase.
@@ -39,12 +42,14 @@ async function persist(accountId, rawData, extra = {}) {
  * Fetch raw data from Instagram API for UGC domain.
  * Factory-creates a worker and delegates the bounded call.
  *
+ * Step 7: substrate resolves credentials internally.
+ *
  * @param {string} accountId
  * @param {object} params — { hashtag?: string, limit?: number }
- * @param {object} credentials — pre-resolved { igUserId, pageToken }
  * @returns {Promise<object>} raw transport response
  */
-async function fetch(accountId, params, credentials) {
+async function fetch(accountId, params) {
+  const credentials = await resolveAccountCredentials(accountId);
   if (params?.hashtag) {
     const worker = new HashtagWorker();
     return worker.execute(accountId, params, credentials);

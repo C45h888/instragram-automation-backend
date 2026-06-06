@@ -1,8 +1,9 @@
 // substrates/content/index.js
 // Content substrate: factory-creates worker → bounded IG API read.
 //
-// Owns: worker factory + transport bridge. Pure delegation plane.
-// Does NOT own: retry, error classification, orchestration, credential resolution.
+// Owns: worker factory + transport bridge + credential resolution
+//        (Step 7 normalisation).
+// Does NOT own: retry, error classification, orchestration.
 //
 // Worker: PostsWorker — one bounded fetchPosts() call.
 // Persist: routes to persistence substrate (called by parsing workers asynchronously).
@@ -11,17 +12,21 @@ const PostsWorker = require('./workers/posts');
 const { normalizeBusinessPost } = require('./normalizer');
 const { syncHashtagsFromCaptions } = require('./hashtag-sync');
 const { getSupabaseAdmin } = require('../../../config/supabase');
+const { resolveAccountCredentials } =
+  require('../../../graph-capability-kernel/substrates/credential-resolver');
 
 /**
  * Fetch raw data from Instagram API for content domain.
  * Factory-creates a PostsWorker and delegates the bounded call.
  *
+ * Step 7: substrate resolves credentials internally.
+ *
  * @param {string} accountId
  * @param {object} params — { limit?, since?, until?, maxPosts? }
- * @param {object} credentials — pre-resolved { igUserId, pageToken, userId }
  * @returns {Promise<object>} raw transport response
  */
-async function fetch(accountId, params, credentials) {
+async function fetch(accountId, params) {
+  const credentials = await resolveAccountCredentials(accountId);
   const worker = new PostsWorker();
   return worker.execute(accountId, params, credentials);
 }

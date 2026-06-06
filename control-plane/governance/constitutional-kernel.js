@@ -411,6 +411,8 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   'PROJECTION_UNSTABLE_DETECTED','PROJECTION_UNSTABLE_CLEARED',
   'GOVERNANCE_UNSTABLE_DETECTED','GOVERNANCE_UNSTABLE_CLEARED',
   'CROSS_DOMAIN_UNSTABLE_DETECTED','CROSS_DOMAIN_UNSTABLE_CLEARED',
+  // Engagement domain — FSM-emitted terminal actions
+  'MARK_PERMANENT_FAILURE','CREATE_SYSTEM_ALERT',
 ]);
 
 function _extractForeignAuthorityDomain(authority) {
@@ -531,8 +533,8 @@ const DOMAIN_EVENT_MAP = {
   PUBLISHING_DATA_AVAILABLE: 'publishing',
   READ_RESULT_AVAILABLE: 'publishing',
   PUBLISHING_OBSERVATION: 'publishing',
+  RETRY_IN_PROGRESS: 'publishing',
   EMISSION_OBSERVATION: 'publishing',
-  RETRY_PUBLISH: 'publishing',
   PUBLISH_FAILURE: 'publishing',
   DB_SCAN_EMITTED: 'publishing',
 

@@ -29,15 +29,31 @@ const POLICIES = {
     maxDelayMs:         600000,  // 10min
     backoffMultiplier:  2,
   },
+  // ── Publish (publish:*) — low frequency, very high value ───────
+  // Engagement is driven by posts, so a successful retry directly
+  // fuels downstream engagement. Conservative cadence: 2 retries
+  // with 60s base delay (60s, 120s) capped at 10min. Respects
+  // IG-code-specific classifier overrides.
+  publishing: {
+    maxRetries:         2,
+    baseDelayMs:        60000,   // 60s for first retry
+    maxDelayMs:         600000,  // 10min cap
+    backoffMultiplier:  2,
+    classifierOverride: true,
+  },
 };
 
 // Domain → substrate mapping
 const DOMAIN_TO_SUBSTRATE = {
-  comments: 'engagement',
-  messages: 'engagement',
-  ugc:      'ugc',
-  insights: 'insights',
-  media:    'content',
+  comments:        'engagement',
+  messages:        'engagement',
+  ugc:             'ugc',
+  insights:        'insights',
+  media:           'content',
+  'publish:post':  'publishing',
+  'publish:story': 'publishing',
+  'publish:comment': 'publishing',
+  'publish:message': 'publishing',
 };
 
 /**
