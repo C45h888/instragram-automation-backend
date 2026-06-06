@@ -19,9 +19,9 @@
 // parameter. The canonical resolver is graph-capability-kernel's
 // credential-resolver.js.
 
-const CommentsWorker = require('./workers/comments');
-const MessagesWorker = require('./workers/messages');
-const ConversationsWorker = require('./workers/conversations');
+const CommentsWorker = require('./fetch-workers/comments-fetcher');
+const MessagesWorker = require('./fetch-workers/messages-fetcher');
+const ConversationsWorker = require('./fetch-workers/conversations-fetcher');
 const transport = require('./transport');
 const { getRecentMedia } = require('../../../postgres-telemetry-kernel/readers');
 const { normalizeComment, transformMessage } = require('./normalizer');

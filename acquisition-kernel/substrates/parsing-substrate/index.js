@@ -12,7 +12,7 @@
 // This file MUST NOT maintain a sibling domain map. It calls
 // substrateRegistry.getParsingWorker(domain) to resolve.
 
-const substrateRegistry = require('../substrate-registry');
+const substrateRegistry = require('../../substrate-registry');
 const crypto = require('crypto');
 
 // ── Governance reference (set by orchastrator.js at boot) ────────────────────

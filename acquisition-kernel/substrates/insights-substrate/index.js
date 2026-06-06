@@ -8,9 +8,9 @@
 // Worker: InsightsWorker — 2-step: media feed → insights batch.
 // Persist: routes to persistence substrate (called by parsing workers asynchronously).
 
-const InsightsWorker = require('./workers/insights');
+const InsightsWorker = require('./fetch-workers/insights-fetcher');
 const { normalizeMediaInsight } = require('./normalizer');
-const { syncHashtagsFromCaptions } = require('../content/hashtag-sync');
+const { syncHashtagsFromCaptions } = require('../ugc-content-substrate/hashtag-sync');
 const { getSupabaseAdmin } = require('../../../config/supabase');
 const { resolveAccountCredentials } =
   require('../../../graph-capability-kernel/substrates/credential-resolver');

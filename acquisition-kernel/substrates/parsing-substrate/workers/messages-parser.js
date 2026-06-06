@@ -9,9 +9,9 @@
 // Phase 4: canonical path — uses domain substrate tools, no inline normalization.
 // Phase 5: conversation UUID resolution + repair dispatch for missing conversations.
 
-const { parseMessages, parseConversations } = require('../../substrates/engagement/parser');
-const { transformMessage } = require('../../substrates/engagement/normalizer');
-const { hydrate: hydrateConversations } = require('../../substrates/engagement/hydrators/conversation-hydrator');
+const { parseMessages, parseConversations } = require('../../engagement-substrate/parser');
+const { transformMessage } = require('../../engagement-substrate/normalizer');
+const { hydrate: hydrateConversations } = require('../../engagement-substrate/hydrators/conversation-hydrator');
 
 async function execute(rawData, accountId, intentId, extra = {}, governance) {
   const igUserId = rawData.igUserId || extra.igUserId;

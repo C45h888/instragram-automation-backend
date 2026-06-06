@@ -7,7 +7,7 @@
 // Contract: execute() → { success, posts, count, igUserId, pageToken?, _usagePct? }
 // Stateless. Created by content substrate (factory), destroyed after result.
 
-const transport = require('../transport');
+const transport = require('../content-transport');
 
 module.exports = class PostsWorker {
   /**

@@ -17,9 +17,9 @@
 //             maxRetries, governance } from engagement-fsm via
 //             retry-cadence-kernel/index.js schedule().
 
-const engagementTransport = require('../../acquisition-kernel/substrates/engagement/transport');
+const engagementTransport = require('../../acquisition-kernel/substrates/engagement-substrate/transport');
 const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
-const parsing = require('../../acquisition-kernel/parsing');
+const parsing = require('../../acquisition-kernel/substrates/parsing-substrate');
 
 /**
  * Execute a single bounded retry attempt for engagement domain.

@@ -484,20 +484,12 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── New acquisition intent → clear retry exhaustion state ─────────────
-  ACQUISITION_INTENT_RECEIVED: {
-    target: 'IDLE',
-    guard: () => ({
-      allowed: ['RETRY_EXHAUST', 'AUTH_EXHAUSTED', 'CIRCUIT_OPEN', 'CIRCUIT_COOLING', 'AUTH_STRIKING', 'IDLE'].includes(_localState),
-    }),
-    buildActions: (event) => {
-      const { intentId } = event;
-      // Cancel any held context for this intent (it has been
-      // re-issued — a new context will be built on the next attempt)
-      _cancelRetry(intentId);
-      return [];
-    },
-  },
+  // ACQUISITION_INTENT_RECEIVED entry REMOVED in Step 7.
+  // The event is routed by DOMAIN_EVENT_MAP → 'acquisition' domain.
+  // engagement-fsm should NEVER receive this event directly.
+  // If we ever need to clear retry state on a new acquisition
+  // intent, route a different event (e.g. ACQUISITION_INTENT_CLEARED
+  // → 'engagement') rather than reusing this event.
 
   // ── Circuit breaker query — pre-flight check routed through FSM via CK ─
   // This replaces the direct isCircuitBreakerActive() call in execution-bridge

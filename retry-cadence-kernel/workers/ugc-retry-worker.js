@@ -10,9 +10,9 @@
 //   - Does NOT call other workers.
 //   - Does NOT mutate engagement state.
 
-const ugcTransport = require('../../acquisition-kernel/substrates/ugc/transport');
+const ugcTransport = require('../../acquisition-kernel/substrates/ugc-content-substrate/ugc-transport');
 const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
-const parsing = require('../../acquisition-kernel/parsing');
+const parsing = require('../../acquisition-kernel/substrates/parsing-substrate');
 
 async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   const startTime = Date.now();

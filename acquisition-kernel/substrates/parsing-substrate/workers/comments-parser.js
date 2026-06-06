@@ -7,9 +7,9 @@
 //
 // Phase 4: canonical path — uses domain substrate tools, no inline normalization.
 
-const { parseComments } = require('../../substrates/engagement/parser');
-const { normalizeComment } = require('../../substrates/engagement/normalizer');
-const { hydrate: hydrateMedia } = require('../../substrates/engagement/hydrators/media-hydrator');
+const { parseComments } = require('../../engagement-substrate/parser');
+const { normalizeComment } = require('../../engagement-substrate/normalizer');
+const { hydrate: hydrateMedia } = require('../../engagement-substrate/hydrators/media-hydrator');
 
 async function execute(rawData, accountId, intentId, extra = {}, governance) {
   // ── Flatten: batches or direct records ───────────────────────────────────

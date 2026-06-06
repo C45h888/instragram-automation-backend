@@ -7,7 +7,7 @@
 //
 // Phase 4: canonical path — uses domain substrate tools, no inline normalization.
 
-const { normalizeMediaInsight } = require('../../substrates/insights/normalizer');
+const { normalizeMediaInsight } = require('../../insights-substrate/normalizer');
 
 async function execute(rawData, accountId, intentId, extra = {}, governance) {
   if (!rawData.insights || rawData.insights.length === 0) return { count: 0 };

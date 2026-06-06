@@ -9,7 +9,7 @@
 // DB operations route through dispatchWrite → CK → persist-telemetry-fsm.
 
 const { GRAPH_API_BASE } = require('../../../../substrates/transport/_shared');
-const { parseConversations } = require('../../../../acquisition-kernel/substrates/engagement/parser');
+const { parseConversations } = require('../../../../acquisition-kernel/substrates/engagement-substrate/parser');
 const { dispatchWrite } = require('../../../../postgres-telemetry-kernel/writers');
 const axios = require('axios');
 
@@ -60,7 +60,7 @@ module.exports = class ConversationRepairWorker {
 
     // Resolve customer_user_id if governance is available
     if (governance) {
-      const { hydrate } = require('../../../../acquisition-kernel/substrates/engagement/hydrators/conversation-hydrator');
+      const { hydrate } = require('../../../../acquisition-kernel/substrates/engagement-substrate/hydrators/conversation-hydrator');
       await hydrate(records, governance);
     }
 

@@ -15,10 +15,9 @@
 // Publish domains removed — migrated to pull-based publishing pipeline
 // (post-queue-worker under persist-telemetry-fsm governance).
 
-const engagement = require('./substrates/engagement');
-const content     = require('./substrates/content');
-const ugc         = require('./substrates/ugc');
-const insights    = require('./substrates/insights');
+const engagement = require('./substrates/engagement-substrate');
+const ugcContent   = require('./substrates/ugc-content-substrate');
+const insights    = require('./substrates/insights-substrate');
 
 // Publish substrates — for the publish:* domains, "fetch" is a
 // misnomer. The publishing substrates execute the outbound action
@@ -34,11 +33,11 @@ const publishEngagement = require('../publishing-kernel/substrates/engagement/in
 // no response shape to parse). The validate() function tolerates
 // missing parsing workers for domains not in PARSING_WORKER_MAP.
 const PARSING_WORKER_MAP = {
-  comments:  './parsing/workers/comments-worker',
-  messages:  './parsing/workers/messages-worker',
-  ugc:       './parsing/workers/ugc-worker',
-  insights:  './parsing/workers/insights-worker',
-  media:     './parsing/workers/content-worker',
+  comments:  './substrates/parsing-substrate/workers/comments-parser',
+  messages:  './substrates/parsing-substrate/workers/messages-parser',
+  ugc:       './substrates/parsing-substrate/workers/ugc-parser',
+  insights:  './substrates/parsing-substrate/workers/insights-parser',
+  media:     './substrates/parsing-substrate/workers/content-parser',
 };
 
 // Retry-substrate workers — domain-bounded, registered here, looked up
@@ -89,9 +88,9 @@ const CLASSIFICATION_WORKER_MAP = {
 const DOMAIN_REGISTRY = {
   comments:         { fetch: engagement.fetch.bind(engagement) },
   messages:         { fetch: engagement.fetch.bind(engagement) },
-  ugc:              { fetch: ugc.fetch.bind(ugc) },
+  ugc:              { fetch: ugcContent.fetch.bind(ugcContent) },
   insights:         { fetch: insights.fetch.bind(insights) },
-  media:            { fetch: content.fetch.bind(content) },
+  media:            { fetch: ugcContent.fetch.bind(ugcContent) },
   'publish:post':   { execute: publishContent.execute.bind(publishContent) },
   'publish:story':  { execute: publishContent.execute.bind(publishContent) },
   'publish:comment':{ execute: publishEngagement.execute.bind(publishEngagement) },

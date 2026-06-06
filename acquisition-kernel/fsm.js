@@ -65,6 +65,10 @@ const STATE_REGISTRY = {
 
 const TRANSITION_MAP = {
   // ── Intent received → begin acquisition ─────────────────────────────────
+  // Gated by ctx.sanityCheck (universal gate). When the system
+  // is DEGRADED, the gate can veto EXECUTE_ACQUISITION. The
+  // orchastrator subscriber won't fire, the substrate won't run.
+  // Telemetry is preserved via GATE_REJECTED emission.
   ACQUISITION_INTENT_RECEIVED: {
     target: 'ACQUIRING',
     guard: (event) => {
@@ -73,16 +77,36 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => [{
-      type: 'EXECUTE_ACQUISITION',
-      accountId: event.accountId,
-      domain: event.domain,
-      intentId: event.intentId,
-      params: event.params,
-    }],
+    buildActions: async (event, ctx) => {
+      const gate = await _resolveSanityCheck(ctx, {
+        operation: 'execute_acquisition',
+        accountId: event.accountId,
+        domain: event.domain,
+        intentId: event.intentId,
+      });
+      if (!gate.allowed) {
+        return [{
+          type: 'GATE_REJECTED',
+          operation: 'execute_acquisition',
+          accountId: event.accountId,
+          domain: event.domain,
+          intentId: event.intentId,
+          reason: gate.reason || 'gate_rejected',
+        }];
+      }
+      return [{
+        type: 'EXECUTE_ACQUISITION',
+        accountId: event.accountId,
+        domain: event.domain,
+        intentId: event.intentId,
+        params: event.params,
+      }];
+    },
   },
 
   // ── Execution started → stop intent discovery ───────────────────────────
+  // No gate on STOP_INTENT_DISCOVERY — system-level restart signal.
+  // Gating it could leave the system stuck.
   ACQUISITION_EXECUTING: {
     target: 'ACQUIRING', // stays in ACQUIRING — execution in progress
     guard: (event) => {
@@ -91,12 +115,15 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: () => [{
+    buildActions: async () => [{
       type: 'STOP_INTENT_DISCOVERY',
     }],
   },
 
   // ── Acquisition complete (success or permanent failure) → back to IDLE ──
+  // Gated on WRITE_ACQUISITION_RESULT emission. The orchastrator
+  // subscriber writes to Redis; the gate veto means no write.
+  // GATE_REJECTED preserves telemetry for the veto.
   ACQUISITION_COMPLETE: {
     target: 'IDLE',
     guard: (event) => {
@@ -105,16 +132,33 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event, ctx) => {
       const actions = [];
       if (event.result) {
-        actions.push({
-          type: 'WRITE_ACQUISITION_RESULT',
+        const gate = await _resolveSanityCheck(ctx, {
+          operation: 'write_acquisition_result',
           accountId: event.accountId,
           domain: event.domain,
           intentId: event.intentId,
-          result: event.result,
         });
+        if (!gate.allowed) {
+          actions.push({
+            type: 'GATE_REJECTED',
+            operation: 'write_acquisition_result',
+            accountId: event.accountId,
+            domain: event.domain,
+            intentId: event.intentId,
+            reason: gate.reason || 'gate_rejected',
+          });
+        } else {
+          actions.push({
+            type: 'WRITE_ACQUISITION_RESULT',
+            accountId: event.accountId,
+            domain: event.domain,
+            intentId: event.intentId,
+            result: event.result,
+          });
+        }
       }
       actions.push({ type: 'START_INTENT_DISCOVERY' });
       return actions;
@@ -122,6 +166,7 @@ const TRANSITION_MAP = {
   },
 
   // ── Parsing dispatched → parsing worker is running asynchronously ───────────
+  // No gate (no emission, just sets _pendingParsing Map).
   PARSING_DISPATCHED: {
     target: () => _localState, // stays in ACQUIRING — wait for PARSING_COMPLETE
     guard: (event) => {
@@ -130,7 +175,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event) => {
       _pendingParsing.set(event.intentId, {
         jobId: event.jobId,
         domain: event.domain,
@@ -142,6 +187,9 @@ const TRANSITION_MAP = {
   },
 
   // ── Parsing complete → worker finished, transition to IDLE ──────────────────
+  // Gated on RETRY_EXHAUSTED emission (terminal failure path).
+  // GATE_REJECTED preserves telemetry if the gate vetoes the
+  // terminal signal.
   PARSING_COMPLETE: {
     target: 'IDLE',
     guard: (event) => {
@@ -150,11 +198,27 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event, ctx) => {
       const { accountId, domain, intentId, result } = event;
       _pendingParsing.delete(intentId);
 
       if (result.status === 'failed') {
+        const gate = await _resolveSanityCheck(ctx, {
+          operation: 'parsing_failed_retry_exhausted',
+          accountId,
+          domain,
+          intentId,
+        });
+        if (!gate.allowed) {
+          return [{
+            type: 'GATE_REJECTED',
+            operation: 'parsing_failed_retry_exhausted',
+            accountId,
+            domain,
+            intentId,
+            reason: gate.reason || 'gate_rejected',
+          }];
+        }
         return [{
           type: 'RETRY_EXHAUSTED',
           accountId,
@@ -191,25 +255,6 @@ const TRANSITION_MAP = {
   // RETRY_EXHAUSTED arriving from engagement-fsm carries the terminal
   // signal for the failure path. It routes to ACQUISITION_COMPLETE
   // via the existing subscriber wiring (acquisition-orchestrator).
-
-  PARSING_DISPATCHED: {
-    target: () => _localState, // stays in ACQUIRING — wait for PARSING_COMPLETE
-    guard: (event) => {
-      if (_localState !== 'ACQUIRING') {
-        return { allowed: false, reason: `Cannot dispatch parsing from ${_localState}` };
-      }
-      return { allowed: true };
-    },
-    buildActions: (event) => {
-      _pendingParsing.set(event.intentId, {
-        jobId: event.jobId,
-        domain: event.domain,
-        accountId: event.accountId,
-        rawCount: event.rawCount || 0,
-      });
-      return [];
-    },
-  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -226,6 +271,19 @@ let _lastTransitionedAt = null; // last state change timestamp for temporal alig
 // counting moved to retry-cadence substrate, error state to engagement-fsm.
 const _pendingParsing = new Map();      // intentId → { jobId, domain, accountId, rawCount }
 
+// ── Default fail-open sanity check (universal gate pattern) ─────────────
+// The ctx.sanityCheck is the universal gate. The FSM calls it
+// during emission. For tests / non-CK dispatch, the default is
+// always-allowed (fail-open to preserve operational cadence).
+const _defaultSanityCheck = async () => ({ allowed: true });
+
+function _resolveSanityCheck(ctx, action) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck(action);
+  }
+  return _defaultSanityCheck(action);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch — process event, ask constitutional for validation, transition
 //
@@ -239,7 +297,7 @@ const _pendingParsing = new Map();      // intentId → { jobId, domain, account
  * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
  * @returns {{ allowed: boolean, from?: string, to?: string, lineageId?: string, actions?: Array, reason?: string }}
  */
-function dispatch(event, ctx) {
+async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
@@ -298,7 +356,7 @@ function dispatch(event, ctx) {
   } catch (_) {}
 
   // 7. Build actions
-  const actions = txn.buildActions ? txn.buildActions(event) : [];
+  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
 
   console.log(`[acquisition-fsm] ${from} → ${target}  (${event.type})`);
 

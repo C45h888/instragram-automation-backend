@@ -217,6 +217,10 @@ async function stop() {
   console.log('[observability] Plane stopped — final snapshot persisted');
 }
 
+function reset() {
+  return projection.reset();
+}
+
 module.exports = {
   transition,
   capture,

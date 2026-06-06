@@ -7,7 +7,7 @@
 //
 // Phase 4: canonical path — uses domain substrate tools, no inline normalization.
 
-const { normalizeBusinessPost } = require('../../substrates/content/normalizer');
+const { normalizeBusinessPost } = require('../../ugc-content-substrate/content-normalizer');
 
 async function execute(rawData, accountId, intentId, extra = {}, governance) {
   if (!rawData.posts || rawData.posts.length === 0) return { count: 0 };

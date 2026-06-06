@@ -98,6 +98,7 @@ function _classify(row) {
 
 const TRANSITION_MAP = {
   // ── Cognition scanner triggered → begin governed read ───────────────────
+  // No gate (state-lock risk on DB-read veto; reads are cheap).
   PUBLISHING_DATA_AVAILABLE: {
     target: 'FETCHING',
     guard: (event) => {
@@ -109,7 +110,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event) => {
       const { accountId } = event;
       const readId = crypto.randomUUID();
       return [
@@ -132,6 +133,9 @@ const TRANSITION_MAP = {
   },
 
   // ── Governed read completed → classify content type → dispatch ─────────
+  // Two gates: one for EXECUTE_CONTENT, one for EXECUTE_ENGAGEMENT.
+  // The state transition (FETCHING → EXECUTING) always happens.
+  // GATE_REJECTED preserves telemetry on veto.
   READ_RESULT_AVAILABLE: {
     target: 'EXECUTING',
     guard: (event) => {
@@ -143,7 +147,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event, ctx) => {
       const { accountId, readDomain, data } = event;
       const table = readDomain === 'db.scheduled-posts' ? 'scheduled_posts' : 'post_queue';
       const rows = data && Array.isArray(data) ? data : [];
@@ -164,28 +168,60 @@ const TRANSITION_MAP = {
 
       const actions = [];
 
+      // Gate 1: EXECUTE_CONTENT emission
       if (contentActions.length > 0) {
-        actions.push({
-          type: 'EXECUTE_CONTENT',
+        const gate = await _resolveSanityCheck(ctx, {
+          operation: 'execute_publish_content',
           accountId,
-          items: contentActions.map(a => ({
-            worker: a.worker,
-            actionType: a.actionType,
-            record: a.record,
-          })),
+          contentCount: contentActions.length,
         });
+        if (!gate.allowed) {
+          actions.push({
+            type: 'GATE_REJECTED',
+            operation: 'execute_publish_content',
+            accountId,
+            contentCount: contentActions.length,
+            reason: gate.reason || 'gate_rejected',
+          });
+        } else {
+          actions.push({
+            type: 'EXECUTE_CONTENT',
+            accountId,
+            items: contentActions.map(a => ({
+              worker: a.worker,
+              actionType: a.actionType,
+              record: a.record,
+            })),
+          });
+        }
       }
 
+      // Gate 2: EXECUTE_ENGAGEMENT emission
       if (engagementActions.length > 0) {
-        actions.push({
-          type: 'EXECUTE_ENGAGEMENT',
+        const gate = await _resolveSanityCheck(ctx, {
+          operation: 'execute_publish_engagement',
           accountId,
-          items: engagementActions.map(a => ({
-            worker: a.worker,
-            actionType: a.actionType,
-            record: a.record,
-          })),
+          engagementCount: engagementActions.length,
         });
+        if (!gate.allowed) {
+          actions.push({
+            type: 'GATE_REJECTED',
+            operation: 'execute_publish_engagement',
+            accountId,
+            engagementCount: engagementActions.length,
+            reason: gate.reason || 'gate_rejected',
+          });
+        } else {
+          actions.push({
+            type: 'EXECUTE_ENGAGEMENT',
+            accountId,
+            items: engagementActions.map(a => ({
+              worker: a.worker,
+              actionType: a.actionType,
+              record: a.record,
+            })),
+          });
+        }
       }
 
       return actions;
@@ -193,6 +229,7 @@ const TRANSITION_MAP = {
   },
 
   // ── Substrate execution completed → idle ────────────────────────────────
+  // No gate — observation is a fact, not a decision.
   PUBLISHING_OBSERVATION: {
     target: 'IDLE',
     guard: (event) => {
@@ -201,7 +238,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event) => {
       if (event.status === 'error') {
         return [{
           type: 'LOG_DEGRADED',
@@ -247,7 +284,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event) => {
       return [{
         type: 'LOG_DEGRADED',
         substate: 'PUBLISH_RETRY_EXHAUSTED',
@@ -285,7 +322,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event) => {
       return [];
     },
   },
@@ -298,11 +335,24 @@ const TRANSITION_MAP = {
 let _localState = 'IDLE';
 let _lastTransitionedAt = null;
 
+// ── Default fail-open sanity check (universal gate pattern) ─────────────
+// The ctx.sanityCheck is the universal gate. The FSM calls it
+// during emission. For tests / non-CK dispatch, the default is
+// always-allowed (fail-open to preserve operational cadence).
+const _defaultSanityCheck = async () => ({ allowed: true });
+
+function _resolveSanityCheck(ctx, action) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck(action);
+  }
+  return _defaultSanityCheck(action);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function dispatch(event, ctx) {
+async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
@@ -355,7 +405,7 @@ function dispatch(event, ctx) {
     }
   } catch (_) {}
 
-  const actions = txn.buildActions ? txn.buildActions(event) : [];
+  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
 
   console.log(`[publishing-fsm] ${from} → ${target}  (${event.type})`);
 

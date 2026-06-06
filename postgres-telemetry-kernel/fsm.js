@@ -97,7 +97,7 @@ const TRANSITION_MAP = {
   DB_READ_OBSERVED: {
     target: () => _localState,
     guard: () => ({ allowed: true }),
-    buildActions: () => [],
+    buildActions: async () => [],
     // Pure telemetry — no gate, no state change.
     // DB readers emit this fire-and-forget on every read for observability.
   },
@@ -117,7 +117,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event, ctx) => {
+    buildActions: async (event, ctx) => {
       const { readDomain, accountId, readId, params } = event;
 
       // Track in-flight
@@ -194,7 +194,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event, ctx) => {
+    buildActions: async (event, ctx) => {
       const { readDomain, accountId, readId, success, data, error, latencyMs } = event;
       _readsInFlight = Math.max(0, _readsInFlight - 1);
 
@@ -231,18 +231,60 @@ const TRANSITION_MAP = {
       return _localState === 'IDLE' ? 'WRITING' : _localState;
     },
     guard: () => ({ allowed: true }),
-    buildActions: (event, ctx) => {
+    buildActions: async (event, ctx) => {
       const { domain, accountId, intentId, table, operation, rows } = event;
 
-      // Gate: validate table whitelist
+      // Layer 1: table whitelist (existing — hard reject)
       if (!VALID_TABLES.has(table)) {
         return [{
           type: 'DB_WRITE_COMPLETE',
           domain, accountId, intentId,
           table, count: 0,
+          status: 'failed',  // Step 5 fix: caller checks status === 'failed'
           error: `rejected_table: ${table}`,
           authority: 'persist-telemetry-fsm',
         }];
+      }
+
+      // Layer 2: sanity gate (universal gate — defense-in-depth)
+      // Gating the DB write itself. The db.writers substrate
+      // is NOT called. GATE_REJECTED preserves telemetry.
+      // DB_WRITE_COMPLETE(status: failed) preserves chain
+      // integrity (the caller's PARSING_COMPLETE handler
+      // sees the failure).
+      const gate = await _resolveSanityCheck(ctx, {
+        operation: 'db_write',
+        accountId,
+        table,
+        intentId,
+        rowCount: rows?.length || 0,
+      });
+      if (!gate.allowed) {
+        // Track as in-flight so DB_WRITE_COMPLETE (the
+        // self-completion we emit) can transition the
+        // FSM back to IDLE. The _inFlight++ and
+        // DB_WRITE_COMPLETE pair matches the normal
+        // db.dispatchWrite path (which increments
+        // _inFlight and gets a real completion later).
+        _inFlight++;
+        return [
+          {
+            type: 'GATE_REJECTED',
+            operation: 'db_write',
+            accountId,
+            table,
+            intentId,
+            reason: gate.reason || 'gate_rejected',
+          },
+          {
+            type: 'DB_WRITE_COMPLETE',
+            domain, accountId, intentId,
+            table, count: 0,
+            status: 'failed',
+            error: `gate_rejected: ${gate.reason || 'gate_rejected'}`,
+            authority: 'persist-telemetry-fsm',
+          },
+        ];
       }
 
       // Track in-flight
@@ -275,7 +317,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event, ctx) => {
+    buildActions: async (event, ctx) => {
       const { domain, accountId, intentId, table, count, error } = event;
       _inFlight = Math.max(0, _inFlight - 1);
 
@@ -316,11 +358,24 @@ let _lastTransitionedAt = null;
 let _inFlight = 0;        // writes in flight
 let _readsInFlight = 0;   // reads in flight
 
+// ── Default fail-open sanity check (universal gate pattern) ─────────────
+// The ctx.sanityCheck is the universal gate. The FSM calls it
+// during emission. For tests / non-CK dispatch, the default is
+// always-allowed (fail-open to preserve operational cadence).
+const _defaultSanityCheck = async () => ({ allowed: true });
+
+function _resolveSanityCheck(ctx, action) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck(action);
+  }
+  return _defaultSanityCheck(action);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function dispatch(event, ctx) {
+async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
@@ -371,7 +426,7 @@ function dispatch(event, ctx) {
     }
   } catch (_) {}
 
-  const actions = txn.buildActions ? txn.buildActions(event, ctx) : [];
+  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
 
   console.log(`[persist-telemetry-fsm] ${from} → ${target}  (${event.type})`);
 
