@@ -61,4 +61,26 @@ function computeDelay(policy, retryCount) {
   return Math.min(raw, policy.maxDelayMs);
 }
 
-module.exports = { getPolicy, computeDelay };
+/**
+ * Compute the final retry delay, applying the classifier override.
+ * Used by engagement-fsm when scheduling retries. The policy-computed
+ * delay and the classifier-computed delay are both candidates. The
+ * LONGER of the two wins — the classifier override represents the
+ * IG-recommended wait, which should be respected even if the policy
+ * says a shorter wait is OK.
+ *
+ * @param {object} policy — per-substrate retry config
+ * @param {number} retryCount — 1-indexed attempt number
+ * @param {object|null} actionTag — classification-worker output
+ *   { type, retryAfterMs, retryAfterSeconds, igCode, ... }
+ * @returns {number} delay in milliseconds
+ */
+function computeRetryDelay(policy, retryCount, actionTag) {
+  const policyDelayMs = computeDelay(policy, retryCount);
+  if (actionTag && actionTag.retryAfterMs != null) {
+    return Math.max(policyDelayMs, actionTag.retryAfterMs);
+  }
+  return policyDelayMs;
+}
+
+module.exports = { getPolicy, computeDelay, computeRetryDelay };

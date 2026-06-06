@@ -1,113 +1,79 @@
-// substrates/retry-cadence/workers/insights-retry-worker.js
-// Insights retry worker: account insights + media insights retry logic.
+// retry-cadence-kernel/workers/insights-retry-worker.js
+// Insights retry worker: account insights + media insights retry execution.
 //
-// Owns: domain-specific fetch, error classification, retry scheduling
-//        for insights endpoints (account insights, per-media insights batch).
-// Does NOT own: circuit breaker gate (engagement-fsm), parsing, auth escalation.
-//
-// Policy: maxRetries=1, baseDelay=60s, maxDelay=10min, backoff=2x.
-// Error handling:
-//   - IG code 4, 17 (app-level): retry 1x, 60s base
-//   - ETIMEDOUT / 5xx: retry 1x, 60s base
-//   - auth_failure / permanent: no retry → exhaust immediately
-//   - Individual media insight fetch failures: ignored (batch handles internally)
-//   - Media feed step fails → retry whole pipeline
-//   - Insights batch step fails → retry from batch step only
+// CONSTITUTIONAL CONTRACT (Step 4 of authority centralisation):
+//   - Bounded single I/O call. Runs the transport fetch, emits
+//     WORKER_OUTCOME_REPORTED with raw outcome. That is all.
+//   - Does NOT classify errors. engagement-fsm classifies.
+//   - Does NOT decide retry vs skip vs break.
+//   - Does NOT schedule retries. engagement-fsm owns scheduling.
+//   - Does NOT call other workers.
+//   - Does NOT mutate engagement state.
 
-const retry = require('../../substrates/retry');
-const { getPolicy } = require('../policy');
 const insightsTransport = require('../../acquisition-kernel/substrates/insights/transport');
 const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
 const parsing = require('../../acquisition-kernel/parsing');
 
-/**
- * Schedule a retry for the insights domain.
- */
-function schedule(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
-  const policy = getPolicy(domain);
-  const delayMs = Math.min(
-    policy.baseDelayMs * Math.pow(policy.backoffMultiplier, retryCount - 1),
-    policy.maxDelayMs
-  );
-  const timeoutId = setTimeout(() => _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance), delayMs);
-  return timeoutId;
-}
+async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
+  const startTime = Date.now();
+  let result;
 
-async function _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   try {
     const creds = await resolveAccountCredentials(accountId);
     const sevenDaysAgo = params.since || Math.floor((Date.now() - 7 * 24 * 3600000) / 1000);
     const now = params.until || Math.floor(Date.now() / 1000);
 
-    // Step 1: media feed — if failed, retry from here
-    let feedResult;
-    if (!params._feedDone) {
-      feedResult = await insightsTransport.fetchMediaFeed(accountId, sevenDaysAgo, now, creds);
-      if (!feedResult || !feedResult.success) {
-        _handleFailure(feedResult || { success: false, error: 'feed_fetch_failed' }, domain, accountId, intentId,
-          { ...params, _feedDone: false }, retryCount, maxRetries, governance);
-        return;
+    // Step 1: media feed
+    const feedResult = await insightsTransport.fetchMediaFeed(accountId, sevenDaysAgo, now, creds);
+    if (!feedResult || !feedResult.success) {
+      result = feedResult || { success: false, error: 'feed_fetch_failed' };
+    } else {
+      const mediaList = feedResult.mediaList || [];
+      if (mediaList.length === 0) {
+        result = { success: true, insights: [], mediaList: [], _usagePct: feedResult._usagePct };
+      } else {
+        const insights = await insightsTransport.fetchMediaInsightsBatch(mediaList, creds.pageToken);
+        result = { success: true, insights, mediaList, _usagePct: feedResult._usagePct };
       }
     }
-
-    // Step 2: insights batch — if feed succeeded, fetch insights
-    const mediaList = feedResult.mediaList || params._mediaList || [];
-    if (mediaList.length === 0) {
-      if (governance) {
-        governance.dispatch({
-          type: 'EXECUTION_OBSERVATION',
-          accountId, intentId, domain,
-          status: 'completed', error_category: null,
-          retryable: false, count: 0, latencyMs: 0, error: null,
-        });
-      }
-      return;
-    }
-
-    const insights = await insightsTransport.fetchMediaInsightsBatch(mediaList, creds.pageToken);
-
-    // Success — both steps complete
-    const result = { success: true, insights, mediaList, _usagePct: feedResult._usagePct };
-    parsing.dispatch(domain, result, accountId, intentId, {
-      igUserId: feedResult.igUserId, pageToken: creds.pageToken,
-    });
-    if (governance) {
-      governance.dispatch({
-        type: 'EXECUTION_OBSERVATION',
-        accountId, intentId, domain,
-        status: 'completed', error_category: null,
-        retryable: false, count: 0, latencyMs: 0, error: null,
-      });
-    }
-
   } catch (err) {
-    console.error(`[insights-retry-worker] Retry execution failed for ${domain}/${accountId}:`, err.message);
-    if (governance) {
-      governance.dispatch({ type: 'RETRY_EXHAUSTED', accountId, domain, intentId, error: err.message });
-    }
-  }
-}
-
-/**
- * Handle failure — classify and decide retry or exhaust.
- */
-function _handleFailure(result, domain, accountId, intentId, params, retryCount, maxRetries, governance) {
-  const classification = retry.handleFetchError(result, accountId);
-
-  if (!classification.retryable || retryCount >= maxRetries) {
-    if (governance) {
-      governance.dispatch({
-        type: 'RETRY_EXHAUSTED',
-        accountId, domain, intentId,
-        error: result.error || (retryCount >= maxRetries ? 'max_retries_exceeded' : 'permanent_failure'),
-        error_category: result.error_category,
-        retryCount,
-      });
-    }
-    return;
+    result = {
+      success: false, count: 0,
+      error: err.message, code: null,
+      retryable: null, error_category: null, retry_after_seconds: null,
+    };
   }
 
-  schedule(domain, accountId, intentId, params, retryCount + 1, maxRetries, governance);
+  const latencyMs = Date.now() - startTime;
+
+  if (result.success) {
+    parsing.dispatch(domain, result, accountId, intentId, {
+      igUserId: result.igUserId, pageToken: result.pageToken,
+    });
+    governance.dispatch({
+      type: 'PARSING_DISPATCHED',
+      accountId, intentId, domain,
+      rawCount: result.count || 0,
+    });
+    result.count = 0;
+  }
+
+  governance.dispatch({
+    type: 'WORKER_OUTCOME_REPORTED',
+    accountId, intentId, domain,
+    status: result.success ? 'completed' : 'failed',
+    result: result.success ? { count: result.count || 0 } : null,
+    error: result.success ? null : (result.error || null),
+    errorShape: result.success ? null : {
+      category: result.error_category || null,
+      code: result.code || null,
+      retryable: result.retryable ?? null,
+      retryAfterSeconds: result.retry_after_seconds || null,
+    },
+    latencyMs,
+    retryCount,
+    transportMeta: { success: result.success },
+  });
 }
 
-module.exports = { schedule };
+module.exports = { execute };

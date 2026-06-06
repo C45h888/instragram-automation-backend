@@ -1,21 +1,19 @@
-// substrates/retry-cadence/registry.js
-// Retry-cadence registry: domain → retry worker module.
+// retry-cadence-kernel/registry.js
+// THIN GETTER. The single source of truth for domain→worker binding
+// lives in substrate-registry.js. This file exists only as a stable
+// import path for retry-cadence-kernel/index.js. All lookups delegate.
 //
-// Owns: mapping domain names to bounded retry workers.
-// Does NOT own: execution, policy, scheduling, governance.
+// Do NOT add a WORKER_MAP here. Drift is caught at boot by
+// substrate-registry.validate().
 
-const WORKER_MAP = {
-  comments:  './workers/engagement-retry-worker',
-  messages:  './workers/engagement-retry-worker',
-  ugc:       './workers/ugc-retry-worker',
-  insights:  './workers/insights-retry-worker',
-  media:     './workers/content-retry-worker',
-};
+const substrateRegistry = require('../acquisition-kernel/substrate-registry');
 
-function getWorker(domain) {
-  const path = WORKER_MAP[domain];
-  if (!path) return null;
-  return require(path);
+function getRetryWorker(domain) {
+  return substrateRegistry.getRetryWorker(domain);
 }
 
-module.exports = { getWorker };
+function getClassificationWorker(domain) {
+  return substrateRegistry.getClassificationWorker(domain);
+}
+
+module.exports = { getRetryWorker, getClassificationWorker };

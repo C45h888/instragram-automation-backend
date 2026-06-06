@@ -1,96 +1,67 @@
-// substrates/retry-cadence/workers/ugc-retry-worker.js
-// UGC retry worker: hashtag search + tagged media retry logic.
+// retry-cadence-kernel/workers/ugc-retry-worker.js
+// UGC retry worker: hashtag search + tagged media retry execution.
 //
-// Owns: domain-specific fetch, error classification, retry scheduling
-//        for UGC endpoints (hashtag search, tagged media).
-// Does NOT own: circuit breaker gate (engagement-fsm), parsing, auth escalation.
-//
-// Policy: maxRetries=1, baseDelay=60s, maxDelay=10min, backoff=2x.
-// Error handling:
-//   - IG code 4, 613 (app-level): retry 1x, 60s base
-//   - ETIMEDOUT / 5xx: retry 1x, 60s base
-//   - auth_failure / permanent: no retry → exhaust immediately
-//   - Hashtag not found: no retry (permanent — hashtag doesn't exist)
+// CONSTITUTIONAL CONTRACT (Step 4 of authority centralisation):
+//   - Bounded single I/O call. Runs the transport fetch, emits
+//     WORKER_OUTCOME_REPORTED with raw outcome. That is all.
+//   - Does NOT classify errors. engagement-fsm classifies.
+//   - Does NOT decide retry vs skip vs break.
+//   - Does NOT schedule retries. engagement-fsm owns scheduling.
+//   - Does NOT call other workers.
+//   - Does NOT mutate engagement state.
 
-const retry = require('../../substrates/retry');
-const { getPolicy } = require('../policy');
 const ugcTransport = require('../../acquisition-kernel/substrates/ugc/transport');
 const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
 const parsing = require('../../acquisition-kernel/parsing');
 
-/**
- * Schedule a retry for the UGC domain.
- */
-function schedule(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
-  const policy = getPolicy(domain);
-  const delayMs = Math.min(
-    policy.baseDelayMs * Math.pow(policy.backoffMultiplier, retryCount - 1),
-    policy.maxDelayMs
-  );
-  const timeoutId = setTimeout(() => _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance), delayMs);
-  return timeoutId;
-}
+async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
+  const startTime = Date.now();
+  let result;
 
-async function _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   try {
     const creds = await resolveAccountCredentials(accountId);
 
-    let result;
     if (params.hashtag) {
       result = await ugcTransport.fetchHashtagMedia(accountId, params.hashtag, params.limit, creds);
     } else {
       result = await ugcTransport.fetchTaggedMedia(accountId, params.limit, creds);
     }
-
-    if (result.success) {
-      parsing.dispatch(domain, result, accountId, intentId, {});
-      if (governance) {
-        governance.dispatch({
-          type: 'EXECUTION_OBSERVATION',
-          accountId, intentId, domain,
-          status: 'completed', error_category: null,
-          retryable: false, count: 0, latencyMs: 0, error: null,
-        });
-      }
-      return;
-    }
-
-    // Hashtag not found → permanent, no retry
-    if (result.error && result.error.startsWith('Hashtag not found')) {
-      if (governance) {
-        governance.dispatch({
-          type: 'RETRY_EXHAUSTED',
-          accountId, domain, intentId,
-          error: result.error,
-          error_category: 'permanent',
-        });
-      }
-      return;
-    }
-
-    const classification = retry.handleFetchError(result, accountId);
-
-    if (!classification.retryable || retryCount >= maxRetries) {
-      if (governance) {
-        governance.dispatch({
-          type: 'RETRY_EXHAUSTED',
-          accountId, domain, intentId,
-          error: result.error || (retryCount >= maxRetries ? 'max_retries_exceeded' : 'permanent_failure'),
-          error_category: result.error_category,
-          retryCount,
-        });
-      }
-      return;
-    }
-
-    schedule(domain, accountId, intentId, params, retryCount + 1, maxRetries, governance);
-
   } catch (err) {
-    console.error(`[ugc-retry-worker] Retry execution failed for ${domain}/${accountId}:`, err.message);
-    if (governance) {
-      governance.dispatch({ type: 'RETRY_EXHAUSTED', accountId, domain, intentId, error: err.message });
-    }
+    result = {
+      success: false, count: 0, records: [],
+      error: err.message, code: null,
+      retryable: null, error_category: null, retry_after_seconds: null,
+    };
   }
+
+  const latencyMs = Date.now() - startTime;
+
+  if (result.success) {
+    parsing.dispatch(domain, result, accountId, intentId, {});
+    governance.dispatch({
+      type: 'PARSING_DISPATCHED',
+      accountId, intentId, domain,
+      rawCount: result.count || 0,
+    });
+    result.count = 0;
+  }
+
+  governance.dispatch({
+    type: 'WORKER_OUTCOME_REPORTED',
+    accountId, intentId, domain,
+    status: result.success ? 'completed' : 'failed',
+    result: result.success ? { count: result.count || 0 } : null,
+    error: result.success ? null : (result.error || null),
+    errorShape: result.success ? null : {
+      category: result.error_category || null,
+      code: result.code || null,
+      retryable: result.retryable ?? null,
+      retryAfterSeconds: result.retry_after_seconds || null,
+    },
+    latencyMs,
+    retryCount,
+    transportMeta: { success: result.success },
+  });
 }
 
-module.exports = { schedule };
+module.exports = { execute };

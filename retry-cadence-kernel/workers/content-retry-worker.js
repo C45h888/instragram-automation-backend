@@ -1,74 +1,62 @@
-// substrates/retry-cadence/workers/content-retry-worker.js
-// Content retry worker: business media posts retry logic.
+// retry-cadence-kernel/workers/content-retry-worker.js
+// Content retry worker: business media posts retry execution.
 //
-// Owns: domain-specific fetch, error classification, retry scheduling
-//        for content endpoints (business media posts).
-// Does NOT own: circuit breaker gate (engagement-fsm), parsing, auth escalation.
-//
-// Policy: maxRetries=1, baseDelay=45s, maxDelay=5min, backoff=2x.
-// Error handling:
-//   - IG code 4 (app-level): retry 1x, 45s base
-//   - ETIMEDOUT / 5xx: retry 1x, 45s base
-//   - auth_failure / permanent: no retry → exhaust immediately
-//   - Posts API is simpler — fewer error modes than comments/messages
+// CONSTITUTIONAL CONTRACT (Step 4 of authority centralisation):
+//   - Bounded single I/O call. Runs the transport fetch, emits
+//     WORKER_OUTCOME_REPORTED with raw outcome. That is all.
+//   - Does NOT classify errors. engagement-fsm classifies.
+//   - Does NOT decide retry vs skip vs break.
+//   - Does NOT schedule retries. engagement-fsm owns scheduling.
+//   - Does NOT call other workers.
+//   - Does NOT mutate engagement state.
 
-const retry = require('../../substrates/retry');
-const { getPolicy } = require('../policy');
 const contentTransport = require('../../acquisition-kernel/substrates/content/transport');
 const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
 const parsing = require('../../acquisition-kernel/parsing');
 
-function schedule(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
-  const policy = getPolicy(domain);
-  const delayMs = Math.min(
-    policy.baseDelayMs * Math.pow(policy.backoffMultiplier, retryCount - 1),
-    policy.maxDelayMs
-  );
-  const timeoutId = setTimeout(() => _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance), delayMs);
-  return timeoutId;
-}
+async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
+  const startTime = Date.now();
+  let result;
 
-async function _execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   try {
     const creds = await resolveAccountCredentials(accountId);
-    const result = await contentTransport.fetchPosts(accountId, params.limit || 50, creds);
-
-    if (result.success) {
-      parsing.dispatch(domain, result, accountId, intentId, {});
-      if (governance) {
-        governance.dispatch({
-          type: 'EXECUTION_OBSERVATION',
-          accountId, intentId, domain,
-          status: 'completed', error_category: null,
-          retryable: false, count: 0, latencyMs: 0, error: null,
-        });
-      }
-      return;
-    }
-
-    const classification = retry.handleFetchError(result, accountId);
-
-    if (!classification.retryable || retryCount >= maxRetries) {
-      if (governance) {
-        governance.dispatch({
-          type: 'RETRY_EXHAUSTED',
-          accountId, domain, intentId,
-          error: result.error || (retryCount >= maxRetries ? 'max_retries_exceeded' : 'permanent_failure'),
-          error_category: result.error_category,
-          retryCount,
-        });
-      }
-      return;
-    }
-
-    schedule(domain, accountId, intentId, params, retryCount + 1, maxRetries, governance);
-
+    result = await contentTransport.fetchPosts(accountId, params.limit || 50, creds);
   } catch (err) {
-    console.error(`[content-retry-worker] Retry execution failed for ${domain}/${accountId}:`, err.message);
-    if (governance) {
-      governance.dispatch({ type: 'RETRY_EXHAUSTED', accountId, domain, intentId, error: err.message });
-    }
+    result = {
+      success: false, count: 0, posts: [],
+      error: err.message, code: null,
+      retryable: null, error_category: null, retry_after_seconds: null,
+    };
   }
+
+  const latencyMs = Date.now() - startTime;
+
+  if (result.success) {
+    parsing.dispatch(domain, result, accountId, intentId, {});
+    governance.dispatch({
+      type: 'PARSING_DISPATCHED',
+      accountId, intentId, domain,
+      rawCount: result.count || 0,
+    });
+    result.count = 0;
+  }
+
+  governance.dispatch({
+    type: 'WORKER_OUTCOME_REPORTED',
+    accountId, intentId, domain,
+    status: result.success ? 'completed' : 'failed',
+    result: result.success ? { count: result.count || 0 } : null,
+    error: result.success ? null : (result.error || null),
+    errorShape: result.success ? null : {
+      category: result.error_category || null,
+      code: result.code || null,
+      retryable: result.retryable ?? null,
+      retryAfterSeconds: result.retry_after_seconds || null,
+    },
+    latencyMs,
+    retryCount,
+    transportMeta: { success: result.success },
+  });
 }
 
-module.exports = { schedule };
+module.exports = { execute };

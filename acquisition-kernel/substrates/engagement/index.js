@@ -2,10 +2,17 @@
 // Engagement substrate: factory-creates workers → bounded IG API read.
 //
 // Owns: worker factory + transport bridge + broad scan orchestration.
-// Does NOT own: retry, error classification, credential resolution.
+// Does NOT own: retry, error classification, credential resolution,
+//               persistence.
 //
 // Workers: CommentsWorker, MessagesWorker, ConversationsWorker.
-// Persist: routes to persistence substrate (called by parsing workers asynchronously).
+// Persistence: handled by acquisition-kernel/parsing/workers/ which
+// are the canonical parse → hydrate → normalize → DB_WRITE_REQUESTED
+// path. There is NO persist() function in this substrate. The
+// substrate-registry binding (acquisition-kernel/substrate-registry.js)
+// declares only { fetch }. Any code path that previously called
+// engagement.persist() is dead and was removed in Step 2 of the
+// authority centralisation plan.
 
 const CommentsWorker = require('./workers/comments');
 const MessagesWorker = require('./workers/messages');
@@ -73,159 +80,4 @@ async function fetch(accountId, params, credentials) {
   return { success: true, batches, count: totalComments, _usagePct: maxUsagePct };
 }
 
-/**
- * Persist engagement data to Supabase.
- * Constitutional path: hydrate → normalize → CK(DB_WRITE_REQUESTED) → writer.
- *
- * Normalization is done via canonical normalizer — no inline field mapping.
- */
-async function persist(accountId, rawData, extra = {}) {
-  const governance = extra._governance;
-
-  if (rawData.batches) {
-    // ── Comments from media batches ────────────────────────────────────────
-    // Hydrate: resolve Instagram media IDs → DB UUIDs
-    const mediaIds = [...new Set(rawData.batches.map(b => b.mediaId).filter(Boolean))];
-    let mediaUUIDMap = new Map();
-
-    if (governance && mediaIds.length > 0) {
-      const { resolved, missing } = await mediaHydrator.hydrate(accountId, mediaIds, governance);
-      mediaUUIDMap = resolved;
-
-      // Create stubs for missing media IDs via constitutional dispatch
-      if (missing.size > 0) {
-        const stubs = [...missing].map(igId => ({
-          instagram_media_id: igId,
-          business_account_id: accountId,
-        }));
-        governance.dispatch({
-          type: 'DB_WRITE_REQUESTED',
-          domain: 'media', accountId, intentId: null,
-          table: 'instagram_media',
-          operation: 'batch_upsert_media_stubs',
-          rows: stubs,
-        });
-        // Assume stubs created; pass through Instagram ID as fallback
-        for (const igId of missing) {
-          mediaUUIDMap.set(igId, igId);
-        }
-      }
-    }
-
-    // Normalize via canonical normalizer
-    const allRecords = [];
-    for (const { mediaId, comments } of rawData.batches) {
-      const uuid = mediaUUIDMap.get(mediaId) || mediaId;
-      for (const c of comments) {
-        if (!c.id) continue;
-        allRecords.push(normalizeComment(c, uuid, accountId));
-      }
-    }
-    if (allRecords.length === 0) return { count: 0 };
-
-    governance?.dispatch({
-      type: 'DB_WRITE_REQUESTED',
-      domain: 'comments', accountId, intentId: null,
-      table: 'instagram_comments',
-      operation: 'batch_upsert_comments',
-      rows: allRecords,
-    });
-    return { count: allRecords.length };
-  }
-
-  if (rawData.records) {
-    // ── Direct comments (no media context) ─────────────────────────────────
-    const allRecords = [];
-    for (const c of rawData.records) {
-      if (!c.id) continue;
-      allRecords.push(normalizeComment(c, 'direct', accountId));
-    }
-    if (allRecords.length === 0) return { count: 0 };
-
-    governance?.dispatch({
-      type: 'DB_WRITE_REQUESTED',
-      domain: 'comments', accountId, intentId: null,
-      table: 'instagram_comments',
-      operation: 'batch_upsert_comments',
-      rows: allRecords,
-    });
-    return { count: allRecords.length };
-  }
-
-  if (rawData.rawMessages) {
-    // ── Messages ───────────────────────────────────────────────────────────
-    const igUserId = rawData.igUserId || extra.igUserId;
-    const pageId = rawData.pageId || extra.pageId || null;
-
-    // Hydrate: resolve conversation thread ID → DB UUID
-    let conversationUUID = null;
-    if (governance && rawData.conversationId) {
-      const convResult = await governance.governedRead('db.accounts', {
-        query: 'igThreadIdToUuid',
-        threadIds: [rawData.conversationId],
-      });
-      if (convResult.success && Array.isArray(convResult.data) && convResult.data.length > 0) {
-        conversationUUID = convResult.data[0].id;
-      }
-    }
-    // Fallback: use thread ID directly if governedRead unavailable or conversation not found
-    if (!conversationUUID) {
-      conversationUUID = rawData.conversationId || 'direct';
-    }
-
-    const rows = [];
-    for (const m of rawData.rawMessages) {
-      if (!m || !m.id) continue;
-      rows.push(transformMessage(m, conversationUUID, accountId, igUserId, pageId, null));
-    }
-    if (rows.length === 0) return { count: 0 };
-
-    governance?.dispatch({
-      type: 'DB_WRITE_REQUESTED',
-      domain: 'messages', accountId, intentId: null,
-      table: 'instagram_dm_messages',
-      operation: 'batch_upsert_messages',
-      rows,
-    });
-    return { count: rows.length };
-  }
-
-  if (rawData.rawConversations) {
-    // ── Conversations ──────────────────────────────────────────────────────
-    const igUserId = rawData.igUserId || extra.igUserId;
-    const pageId = rawData.pageId || extra.pageId || null;
-    const { parseConversations } = require('./parser');
-    const { records } = parseConversations(rawData.rawConversations, igUserId, pageId);
-    if (records.length === 0) return { count: 0 };
-
-    // Hydrate: resolve customer_user_id via governedRead
-    if (governance) {
-      await conversationHydrator.hydrate(records, governance);
-    }
-
-    const rows = records.map(r => ({
-      instagram_thread_id: r.id,
-      customer_instagram_id: r.customer_instagram_id,
-      customer_username: r.customer_username,
-      business_account_id: accountId,
-      customer_user_id: r.customer_user_id || null,
-      last_message_at: r.updated_time,
-      last_user_message_at: r.last_customer_message_at,
-      message_count: r.message_count,
-      conversation_status: 'active',
-    }));
-
-    governance?.dispatch({
-      type: 'DB_WRITE_REQUESTED',
-      domain: 'messages', accountId, intentId: null,
-      table: 'instagram_dm_conversations',
-      operation: 'batch_upsert_conversations',
-      rows,
-    });
-    return { count: rows.length };
-  }
-
-  return { count: 0 };
-}
-
-module.exports = { fetch, persist };
+module.exports = { fetch };

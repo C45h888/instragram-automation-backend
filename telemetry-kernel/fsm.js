@@ -48,13 +48,16 @@
 //   EMITTING     — emitting validated transitions to observability
 //   HALTED       — CK-ordered halt, no processing allowed
 
+const { createRequire } = require('module');
+const _require = createRequire(__filename);
+
 const crypto = require('crypto');
 
 // Lazy import to avoid circular dependency
 let _observability = null;
 function _obs() {
   if (!_observability) {
-    try { _observability = require('../../control-plane/observability/emitters/transition-emitter'); }
+    try { _observability = _require('../../control-plane/observability/emitters/transition-emitter'); }
     catch (_) { _observability = null; }
   }
   return _observability;
@@ -548,7 +551,7 @@ function _triggerReactiveCoordination() {
 
 async function _readIntents() {
   try {
-    const observability = require('../../control-plane/observability');
+    const observability = require('../../control-plane/observability/index.js');
     const NAMESPACES = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
     const allIntents = [];
     const newCursors = { ..._intentCursors };
@@ -891,7 +894,7 @@ async function init(rehydratedState) {
   }
 
   try {
-    const observability = require('../../control-plane/observability');
+    const observability = require('../../control-plane/observability/index.js');
     await observability.query.registerConsumer('telemetry-coordination-fsm');
 
     const restored = await _restoreCursors();
@@ -916,7 +919,7 @@ function start(ctx) {
 
   _ckContext = ctx || null;
 
-  const observability = require('../../control-plane/observability');
+  const observability = require('../../control-plane/observability/index.js');
   _unsubscribeOnWrite = observability.onWrite(_onTransitionLogWrite);
 
   console.log('[telemetry-coordination-fsm] Reactive mode active — onWrite subscription registered');

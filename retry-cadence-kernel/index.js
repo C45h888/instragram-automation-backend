@@ -1,16 +1,45 @@
-// substrates/retry-cadence/index.js
-// Retry-cadence substrate: entry point + retry state tracker.
+// retry-cadence-kernel/index.js
+// Retry-cadence kernel entry point: paired-dispatch state store +
+// per-substrate policy lookup.
 //
-// Owns: retry count tracking, dispatching to domain-specific workers,
-//        cancelRetry for interrupted intents.
-// Does NOT own: fetch execution, error classification, per-domain retry policy,
-//               circuit breaker decisions — delegated to bounded workers.
+// CONSTITUTIONAL CONTRACT (Step 4 of authority centralisation):
+//   - Owns: per-intent retry state (count, maxRetries, lastError,
+//            params). Per-substrate policy lookup. The pair of
+//            (retryWorker, classificationWorker) bound to each
+//            intent for paired-dispatch (refinement 1).
+//   - Does NOT own: scheduling (engagement-fsm owns timers).
+//   - Does NOT own: classification (classification-worker inside
+//            engagement-fsm call).
+//   - Does NOT own: state mutation (engagement-fsm owns _executionRetries).
+//
+// API:
+//   dispatch(domain, accountId, intentId, params)
+//     → looks up or creates the retry entry
+//     → returns { allowed, count, maxRetries, retryWorker,
+//                 classificationWorker, policy, lastError }
+//     → does NOT schedule, does NOT set a timer
+//   getRetryState(intentId)
+//     → returns the entry for FSM inspection
+//   clearRetry(intentId)
+//     → deletes the entry (called on RETRY_EXHAUSTED / AUTH_SUCCESS)
+//
+// The FSM holds the canonical retry count via _executionRetries.
+// This module holds the operational context (params, lastError,
+// the paired workers) so the FSM can invoke them with full state.
 
 const { getPolicy } = require('./policy');
-const { getWorker } = require('./registry');
+const substrateRegistry = require('../acquisition-kernel/substrate-registry');
 
-// ── Retry state ───────────────────────────────────────────────────────────────
-const _retries = new Map(); // intentId → { domain, accountId, params, count, maxRetries, timeoutId }
+// ── Retry state (count, params, lastError, paired workers) ──────────────
+// NOTE: timeoutId is intentionally NOT stored here. The FSM owns
+// timers now (refinement 2 of Step 4). The FSM tracks timeoutIds
+// in its own per-intent state. We track count + context.
+const _retries = new Map(); // intentId → { domain, accountId, params,
+                            //           count, maxRetries, lastError,
+                            //           classificationWorker,
+                            //           retryWorker, policy,
+                            //           createdAt, updatedAt }
+
 let _governance = null;
 
 /**
@@ -21,56 +50,157 @@ function setGovernance(gov) {
 }
 
 /**
- * Dispatch a domain-specific retry. Called by engagement-fsm after
- * circuit breaker gate passes.
+ * Look up or create a retry entry. Returns the paired-dispatch context.
+ * Does NOT schedule — the FSM owns scheduling.
  *
  * @param {string} domain
  * @param {string} accountId
  * @param {string} intentId
- * @param {object} params — fetch parameters from the original intent
- * @returns {{ scheduled: boolean, retryCount: number, delayMs: number }}
+ * @param {object} params
+ * @returns {{ allowed: boolean, count: number, maxRetries: number,
+ *            retryWorker: object|null, classificationWorker: object|null,
+ *            policy: object, lastError: object|null }}
  */
 function dispatch(domain, accountId, intentId, params) {
-  const worker = getWorker(domain);
-  if (!worker) {
-    console.error(`[retry-cadence] No worker for domain: ${domain}`);
-    if (_governance) {
-      _governance.dispatch({ type: 'RETRY_EXHAUSTED', accountId, domain, intentId, error: 'unknown_domain' });
-    }
-    return { scheduled: false, retryCount: 0, delayMs: 0 };
-  }
-
   const policy = getPolicy(domain);
-  const existing = _retries.get(intentId);
-  const retryCount = (existing ? existing.count : 0) + 1;
+  const retryWorker = substrateRegistry.getRetryWorker(domain);
+  const classificationWorker = substrateRegistry.getClassificationWorker(domain);
 
-  // Clear any previous pending timeout
-  if (existing && existing.timeoutId) {
-    clearTimeout(existing.timeoutId);
+  if (!retryWorker || !classificationWorker) {
+    console.error(`[retry-cadence] Missing worker pair for domain: ${domain}`);
+    return {
+      allowed: false, count: 0, maxRetries: 0,
+      retryWorker: null, classificationWorker: null,
+      policy, lastError: null,
+    };
   }
 
-  // Delegate to domain worker — worker handles fetch, classify, retry/recurse, exhaust
-  const timeoutId = worker.schedule(
-    domain, accountId, intentId, params, retryCount, policy.maxRetries, _governance
-  );
+  const existing = _retries.get(intentId);
+  const now = Date.now();
 
-  _retries.set(intentId, { domain, accountId, params, count: retryCount, maxRetries: policy.maxRetries, timeoutId });
+  if (existing) {
+    // Update existing entry — do not reset count. The FSM owns count
+    // decisions; this module just holds the context.
+    existing.updatedAt = now;
+    existing.params = params;
+    existing.retryWorker = retryWorker;
+    existing.classificationWorker = classificationWorker;
+    existing.policy = policy;
+    return {
+      allowed: existing.count < policy.maxRetries,
+      count: existing.count,
+      maxRetries: policy.maxRetries,
+      retryWorker,
+      classificationWorker,
+      policy,
+      lastError: existing.lastError || null,
+    };
+  }
 
-  const delayMs = Math.min(policy.baseDelayMs * Math.pow(policy.backoffMultiplier, retryCount - 1), policy.maxDelayMs);
-  console.log(`[retry-cadence] Retry #${retryCount}/${policy.maxRetries} for ${domain}/${accountId} in ${delayMs}ms`);
+  // New entry
+  const entry = {
+    domain,
+    accountId,
+    params,
+    count: 0,
+    maxRetries: policy.maxRetries,
+    lastError: null,
+    retryWorker,
+    classificationWorker,
+    policy,
+    createdAt: now,
+    updatedAt: now,
+  };
+  _retries.set(intentId, entry);
 
-  return { scheduled: true, retryCount, delayMs };
+  return {
+    allowed: true,
+    count: 0,
+    maxRetries: policy.maxRetries,
+    retryWorker,
+    classificationWorker,
+    policy,
+    lastError: null,
+  };
 }
 
 /**
- * Cancel a pending retry for an intent (called on ACQUISITION_COMPLETE).
+ * Update the lastError for an intent. Called by the FSM after a
+ * worker reports WORKER_OUTCOME_REPORTED with a failure.
+ *
+ * @param {string} intentId
+ * @param {object} errorShape
  */
-function cancelRetry(intentId) {
+function recordFailure(intentId, errorShape) {
   const entry = _retries.get(intentId);
-  if (entry && entry.timeoutId) {
-    clearTimeout(entry.timeoutId);
+  if (entry) {
+    entry.lastError = errorShape;
+    entry.updatedAt = Date.now();
   }
+}
+
+/**
+ * Increment the retry count for an intent. Called by the FSM
+ * when it has decided to schedule a retry. The count is the
+ * canonical attempt counter.
+ *
+ * @param {string} intentId
+ * @returns {number} new count
+ */
+function incrementCount(intentId) {
+  const entry = _retries.get(intentId);
+  if (!entry) return 0;
+  entry.count += 1;
+  entry.updatedAt = Date.now();
+  return entry.count;
+}
+
+/**
+ * Inspect the current retry state for an intent.
+ *
+ * @param {string} intentId
+ * @returns {object|null}
+ */
+function getRetryState(intentId) {
+  const entry = _retries.get(intentId);
+  if (!entry) return null;
+  // Return a snapshot — caller should not mutate
+  return {
+    domain: entry.domain,
+    accountId: entry.accountId,
+    params: entry.params,
+    count: entry.count,
+    maxRetries: entry.maxRetries,
+    lastError: entry.lastError,
+    policy: entry.policy,
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+  };
+}
+
+/**
+ * Clear a retry entry. Called by the FSM on terminal paths
+ * (RETRY_EXHAUSTED, AUTH_SUCCESS, DISCONNECT_ACCOUNT).
+ *
+ * @param {string} intentId
+ */
+function clearRetry(intentId) {
   _retries.delete(intentId);
 }
 
-module.exports = { dispatch, cancelRetry, setGovernance };
+/**
+ * Return all retry entries. For observability / reconciliation.
+ */
+function getAllRetries() {
+  return new Map(_retries);
+}
+
+module.exports = {
+  dispatch,
+  recordFailure,
+  incrementCount,
+  getRetryState,
+  clearRetry,
+  getAllRetries,
+  setGovernance,
+};

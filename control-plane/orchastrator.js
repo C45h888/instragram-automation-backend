@@ -17,6 +17,7 @@
 
 const constitutional = require('./governance/constitutional-kernel');
 const executionBridge = require('./execution-bridge');
+const substrateRegistry = require('../acquisition-kernel/substrate-registry');
 const metricsSubstrate = require('../substrates/metrics-substrate');
 const { getRedisClient } = require('../config/redis');
 const cadence = require('../scheduling-kernel/substrates/cadence/cadence');
@@ -63,7 +64,13 @@ const GOVERNANCE_TICK_MS = 10_000; // 10s watchdog tick
 // ── Wiring ───────────────────────────────────────────────────────────────────
 
 function _wire() {
-  // Register domain FSMs — must happen before wiring membranes
+  // Register domain FSMs — must happen before wiring membranes.
+  // engagement-fsm's sanity check is wired via setSanityCheck (below)
+  // because the module-level reference is what the FSM actually calls.
+  // The registerDomain extension is omitted to avoid an infinite
+  // recursion (the extension would call ck.sanityCheck, which would
+  // look up the extension, etc.). The setSanityCheck path uses a
+  // direct closure over ck.sanityCheck and is the active one.
   constitutional.registerDomain(acquisitionFsm);
   constitutional.registerDomain(publishingFsm);
   constitutional.registerDomain(graphCapabilityFsm);
@@ -73,6 +80,16 @@ function _wire() {
   constitutional.registerDomain(reconciliationFsm);
   constitutional.registerDomain(telemetryCoordinationFsm);
   constitutional.registerDomain(persistTelemetryFsm);
+
+  // Wire the FSM's sanity check function directly. The module-level
+  // _sanityCheckFn is what the FSM actually calls during evaluation.
+  // This is the deferred-ctx-integration path: the orchastrator wires
+  // the reference, the FSM uses it. The closure captures ck.sanityCheck
+  // directly to avoid the recursion that the registerDomain extension
+  // would create.
+  engagementFsm.setSanityCheck(
+    (action) => ck.sanityCheck('engagement', action)
+  );
 
   // Wire execution bridge's governance reference for observation emission
   executionBridge.setGovernance(constitutional);
@@ -90,6 +107,11 @@ function _wire() {
 async function startAllWorkers() {
   console.log('[orchestrator] Starting constitutional kernel with 5 domain FSMs...');
   _wire();
+
+  // Boot-time validation: every domain in DOMAIN_REGISTRY has a binding
+  // in every worker map (parsing, retry, classification). Catches
+  // registry drift at boot, not at runtime. Throws on failure.
+  substrateRegistry.validate();
 
   // Initialize the observability plane before any other subsystem starts
   const observability = require('./observability');

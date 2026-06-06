@@ -284,8 +284,17 @@ const TRANSITION_MAP = {
       allowed: ['AUTH_STRIKING', 'AUTH_EXHAUSTED', 'CIRCUIT_OPEN', 'CIRCUIT_COOLING'].includes(_localState),
     }),
     buildActions: (event) => {
-      _authFailureStrikes.delete(event.accountId);
-      _circuitBreakers.delete(event.accountId);
+      const { accountId } = event;
+      _authFailureStrikes.delete(accountId);
+      _circuitBreakers.delete(accountId);
+      // Clear any pending retries for this account
+      for (const [intentId, ctx] of _executionContexts.entries()) {
+        if (ctx.accountId === accountId) {
+          _cancelRetry(intentId);
+        }
+      }
+      // Clear sanity rejection counter
+      clearSanityRejections(accountId);
       return [];
     },
   },
@@ -296,7 +305,8 @@ const TRANSITION_MAP = {
     guard: () => ({ allowed: true }),
     buildActions: (event) => {
       const { accountId, domain, intentId, error } = event;
-      _executionRetries.delete(intentId);
+      // FSM owns the cancellation. Clear the held context.
+      _cancelRetry(intentId);
 
       return [
         {
@@ -317,13 +327,15 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Retry count incremented → stay in IDLE, track retry ────────────────
+  // ── Retry count incremented — DEPRECATED in Step 5. The FSM owns
+  //    the canonical count via _executionContexts. retry-cadence
+  //    workers no longer emit this event. Kept as a no-op for
+  //    backward compatibility with any external emitter.
   RETRY_COUNT_INCREMENTED: {
     target: 'IDLE',
     guard: () => ({ allowed: true }),
     buildActions: (event) => {
-      const { intentId, retryCount } = event;
-      _executionRetries.set(intentId, retryCount);
+      // No-op: the FSM increments its own count via _scheduleRetry.
       return [];
     },
   },
@@ -343,29 +355,65 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Retry requested → delegate to retry-cadence substrate ─────────────
-  // retry-cadence owns domain-specific retry policy, counting, backoff, scheduling.
-  // engagement-fsm gates: circuit breaker must not be active.
+  // ── Retry requested — external entry point for non-worker emissions ──
+  // The FSM is now the intelligence layer. The WORKER_OUTCOME_REPORTED
+  // handler is the primary path; this handler exists for any external
+  // emitter (e.g. a future orchestration source) that wants to
+  // request a retry without going through the worker report path.
+  //
+  // The handler applies the same logic:
+  //   - check retry budget
+  //   - call _scheduleRetry (which awaits sanity check)
+  //   - on rejection: emit SANITY_CHECK_REJECTED
+  //   - on success: no external emission (timer fires internally)
   RETRY_REQUESTED: {
     target: () => _localState,  // no state change
     guard: () => ({ allowed: true }),
-    buildActions: (event) => {
-      const { accountId, domain, intentId, params } = event;
+    buildActions: async (event) => {
+      const { accountId, domain, intentId, params, retryAfterMs } = event;
 
-      // Gate: if circuit breaker is open, reject retry
-      const breaker = _circuitBreakers.get(accountId);
-      if (breaker && breaker.until > Date.now()) {
+      const paired = retryCadenceStore.dispatch(
+        domain, accountId, intentId, params || {});
+      const existing = _executionContexts.get(intentId);
+      const newCount = (existing?.count || 0) + 1;
+      const maxRetries = paired.maxRetries || 0;
+
+      if (newCount > maxRetries) {
+        _cancelRetry(intentId);
         return [{
           type: 'RETRY_EXHAUSTED',
           accountId, domain, intentId,
-          error: 'circuit_breaker_active',
+          error: 'max_retries_exceeded',
+          retryCount: newCount,
         }];
       }
 
-      // Delegate to retry-cadence — async, own governance reference
-      const retryCadence = require('./index');
-      retryCadence.dispatch(domain, accountId, intentId, params);
+      const context = {
+        domain, accountId, intentId,
+        params: params || {},
+        count: newCount,
+        maxRetries,
+        timeoutId: null,
+        retryWorker: paired.retryWorker,
+        classificationWorker: paired.classificationWorker,
+        policy: paired.policy,
+        lastError: null,
+        scheduledAt: null,
+      };
 
+      // If the caller provided a retryAfterMs (override), use it
+      const actionTag = retryAfterMs ? { retryAfterMs } : null;
+      const scheduleResult = await _scheduleRetry(context, actionTag);
+      if (!scheduleResult.scheduled) {
+        return [{
+          type: 'SANITY_CHECK_REJECTED',
+          operation: 'schedule_retry',
+          accountId, domain, intentId,
+          retryCount: newCount,
+          reason: scheduleResult.sanityCheck.reason,
+          alternatives: scheduleResult.sanityCheck.alternatives,
+        }];
+      }
       return [];
     },
   },
@@ -443,7 +491,9 @@ const TRANSITION_MAP = {
     }),
     buildActions: (event) => {
       const { intentId } = event;
-      _executionRetries.delete(intentId);
+      // Cancel any held context for this intent (it has been
+      // re-issued — a new context will be built on the next attempt)
+      _cancelRetry(intentId);
       return [];
     },
   },
@@ -466,6 +516,209 @@ const TRANSITION_MAP = {
       return [];
     },
   },
+
+  // ── WORKER_OUTCOME_REPORTED — central classification entry point ─
+  // This is the primary path for worker-reported execution outcomes.
+  // Workers are operationally complete but semantically blind: they
+  // emit WORKER_OUTCOME_REPORTED with raw errorShape (response-shape
+  // categorisation from the IG transport). The engagement-fsm is
+  // the intelligence membrane — it calls the classification-worker
+  // to get a deterministic action tag, then EMITS the appropriate
+  // downstream signal. It does NOT mutate state and does NOT
+  // schedule — the downstream handlers (RETRY_REQUESTED,
+  // AUTH_FAILURE_STRIKE, RATE_LIMIT_DETECTED, RETRY_EXHAUSTED,
+  // AUTH_SUCCESS) are the state mutators. They do NOT call the
+  // classifier — the classifier runs ONCE here.
+  //
+  // The classification-worker is looked up per-call via
+  // substrateRegistry.getClassificationWorker(domain). This is the
+  // paired-dispatch property (refinement 1 of Step 4): the worker
+  // and the classifier are bound at the same domain scope, so the
+  // FSM has the classifier available the moment the worker reports.
+  //
+  // ASYNC HANDLER (Step 5): the dispatch function returns a Promise
+  // for this event type. CK's polymorphic await handles it.
+  //
+  // Loop closure: WORKER_OUTCOME_REPORTED is only emitted by workers.
+  // The downstream actions emitted in response flow to OTHER handlers
+  // in the same FSM, or to OTHER FSMs. They do NOT re-enter this
+  // handler. The classifier runs once per worker report. The chain
+  // terminates when the FSM emits RETRY_EXHAUSTED, AUTH_SUCCESS, or
+  // a strike threshold that triggers DISCONNECT_ACCOUNT.
+  WORKER_OUTCOME_REPORTED: {
+    target: () => _localState,  // observation does not change FSM state
+    guard: () => ({ allowed: true }),
+    buildActions: async (event) => {
+      const { accountId, domain, intentId, status, errorShape } = event;
+
+      // Success — no engagement action needed; the next phase
+      // (PARSING_COMPLETE) handles the result write.
+      if (status === 'completed' || status === 'skipped') {
+        return [];
+      }
+
+      // Failure path — classify the raw errorShape.
+      // The classifier is the FSM's tool, not an event. Called here,
+      // synchronously, during the FSM's evaluation. The result is
+      // consumed and emitted as a downstream action — the classifier
+      // itself does not propagate.
+      if (status === 'failed' && errorShape) {
+        const classificationWorker =
+          require('../acquisition-kernel/substrate-registry')
+            .getClassificationWorker(domain);
+        const actionTag = classificationWorker.classify(errorShape);
+
+        switch (actionTag.type) {
+          case 'TRANSIENT_RETRY': {
+            // FSM owns the scheduling decision. Build the
+            // execution context (or update an existing one),
+            // ask CK for permission, compute the delay,
+            // set the timer.
+            const paired = retryCadenceStore.dispatch(
+              domain, accountId, intentId, event.params || {});
+            const existing = _executionContexts.get(intentId);
+            const newCount = (existing?.count || 0) + 1;
+            const maxRetries = paired.maxRetries || 0;
+
+            if (newCount > maxRetries) {
+              // Budget exhausted — terminal
+              _cancelRetry(intentId);
+              return [{
+                type: 'RETRY_EXHAUSTED',
+                accountId, domain, intentId,
+                error: 'max_retries_exceeded',
+                retryCount: newCount,
+              }];
+            }
+
+            const context = {
+              domain, accountId, intentId,
+              params: event.params || {},
+              count: newCount,
+              maxRetries,
+              timeoutId: null,
+              retryWorker: paired.retryWorker,
+              classificationWorker: paired.classificationWorker,
+              policy: paired.policy,
+              lastError: errorShape,
+              scheduledAt: null,
+            };
+
+            const scheduleResult = await _scheduleRetry(context, actionTag);
+            if (!scheduleResult.scheduled) {
+              // Sanity check rejected the schedule. Emit
+              // SANITY_CHECK_REJECTED for the FSM's own handler
+              // to process (cancellation, state update).
+              return [{
+                type: 'SANITY_CHECK_REJECTED',
+                operation: 'schedule_retry',
+                accountId, domain, intentId,
+                retryCount: newCount,
+                reason: scheduleResult.sanityCheck.reason,
+                alternatives: scheduleResult.sanityCheck.alternatives,
+              }];
+            }
+
+            // Scheduled successfully. No external emission needed
+            // — the timer is the FSM's responsibility. The next
+            // WORKER_OUTCOME_REPORTED will arrive when the retry
+            // worker fires.
+            return [];
+          }
+
+          case 'AUTH_FAILURE':
+            // Any pending retry for this intent is now moot
+            _cancelRetry(intentId);
+            return [{
+              type: 'AUTH_FAILURE_STRIKE',
+              accountId,
+              error: event.error,
+              igCode: actionTag.igCode,
+            }];
+
+          case 'RATE_LIMIT':
+            // Do NOT cancel pending retry — the gate will block
+            // it on its next attempt. The existing
+            // RATE_LIMIT_DETECTED handler opens the breaker.
+            return [{
+              type: 'RATE_LIMIT_DETECTED',
+              accountId,
+              cooldownMs: actionTag.retryAfterMs,
+              domain,
+              substrate: require('../substrates/rate-limiter')
+                .getSubstrate(domain),
+              affectedDomains: [domain],
+              igCode: actionTag.igCode,
+            }];
+
+          case 'PERMANENT_FAILURE':
+            _cancelRetry(intentId);
+            return [{
+              type: 'RETRY_EXHAUSTED',
+              accountId, domain, intentId,
+              error: event.error || 'permanent_failure',
+              igCode: actionTag.igCode,
+            }];
+
+          default:
+            _cancelRetry(intentId);
+            return [{
+              type: 'RETRY_EXHAUSTED',
+              accountId, domain, intentId,
+              error: `unrecognised_classification: ${actionTag.type}`,
+            }];
+        }
+      }
+
+      // Failed with no errorShape (defensive)
+      _cancelRetry(intentId);
+      return [{
+        type: 'RETRY_EXHAUSTED',
+        accountId, domain, intentId,
+        error: event.error || 'no_error_shape',
+      }];
+    },
+  },
+
+  // ── SANITY_CHECK_REJECTED — the FSM's own reaction to its own rejections ─
+  // When CK rejects a scheduling or invocation decision, the FSM
+  // receives SANITY_CHECK_REJECTED. The FSM:
+  //   - cancels any held execution context for the intent
+  //     (no point keeping it if CK won't allow the schedule)
+  //   - tracks the rejection count for the account
+  //   - emits the appropriate terminal event:
+  //     * schedule_retry rejection → RETRY_EXHAUSTED with reason
+  //     * invoke_worker rejection → RETRY_EXHAUSTED with reason
+  //   - logs degraded state for observability
+  // The FSM does NOT retry the sanity check — CK's decision is final.
+  SANITY_CHECK_REJECTED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      const { accountId, intentId, operation, reason } = event;
+
+      // Cancel the held context (the decision was rejected, the
+      // intent is not going to retry)
+      _cancelRetry(intentId);
+
+      // Log the rejection for observability
+      return [
+        {
+          type: 'LOG_DEGRADED',
+          substate: 'SANITY_REJECTED',
+          reason: `${operation} rejected: ${reason}`,
+        },
+        {
+          type: 'RETRY_EXHAUSTED',
+          accountId,
+          domain: event.domain,
+          intentId,
+          error: `sanity_check_rejected: ${reason}`,
+          operation,
+        },
+      ];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -481,8 +734,34 @@ const _circuitBreakers = new Map();
 // ── Auth strike state: accountId → strike count ──────────────────────────────
 const _authFailureStrikes = new Map();
 
-// ── Execution retry state: intentId → retry count ───────────────────────────
-const _executionRetries = new Map();
+// ── Execution context state: intentId → ExecutionContext ─────────────────
+// The CANONICAL retry state. Promoted from _executionRetries in Step 5.
+// Each context holds the full operational state for an in-flight retry:
+//   { domain, accountId, intentId, params, count, maxRetries, timeoutId,
+//     retryWorker, classificationWorker, policy, lastError,
+//     scheduledAt }
+// The FSM owns the counter, the timer, the delay computation, the
+// dispatch decision, the cancellation. Single source of truth.
+const _executionContexts = new Map();
+
+// ── Sanity check rejection counter: accountId → rejection count ─────────
+// Used to escalate to DEGRADED if many sanity rejections for the
+// same account. Reset on AUTH_SUCCESS.
+const _rejectionCounts = new Map();
+
+// ── Sanity check reference (set by orchastrator at boot) ─────────────────
+// Module-level because the ctx.sanityCheck integration is deferred.
+// The orchastrator calls setSanityCheck(fn) with a function that
+// delegates to constitutional.sanityCheck(domainName, action).
+// Default: always-allowed (fail-open) so a missing wiring does not
+// halt the system.
+let _sanityCheckFn = async () => ({ allowed: true });
+
+function setSanityCheck(fn) {
+  if (typeof fn === 'function') {
+    _sanityCheckFn = fn;
+  }
+}
 
 // ── Worker error registry: namespace → { category, failedWrites, escalatedAt } ─
 // Populated when RETRY_CADENCE_REQUEST arrives from 'worker' source.
@@ -505,12 +784,176 @@ const ERROR_CATEGORY_ROUTING = {
 // Domain FSMs emit through observability plane (not lineage ledger).
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3.5. Retry orchestration — FSM-owned scheduling, timer, cancellation
+// ═══════════════════════════════════════════════
+// The FSM is the LOCAL intelligence layer. It owns:
+//   - the retry counter (canonical)
+//   - the timer (setTimeout, tracked by timeoutId)
+//   - the delay computation (policy + classifier override)
+//   - the dispatch decision (call worker directly or schedule)
+//   - the cancellation (clear timer, clear state)
+//
+// CK is the CENTRAL authority vector. Before scheduling or invoking,
+// the FSM calls _sanityCheckFn (which delegates to CK's sanityCheck).
+// CK may reject the operation. On rejection, the FSM emits
+// SANITY_CHECK_REJECTED and falls through to a safe default.
+
+const { computeRetryDelay } = require('./policy');
+const retryCadenceStore = require('./index');
+
+/**
+ * Schedule a retry attempt for an execution context.
+ * Computes the delay (policy + classifier override), sets a
+ * setTimeout, and tracks the timeoutId in the context.
+ *
+ * The timer fires _executeRetry which invokes the worker. The
+ * worker emits WORKER_OUTCOME_REPORTED when done, which re-enters
+ * the FSM's main handler. The chain continues until the FSM
+ * decides to exhaust, cancel, or succeed.
+ *
+ * @param {object} context — ExecutionContext
+ * @param {object|null} actionTag — classification output (for delay override)
+ * @returns {{ scheduled: boolean, timeoutId: number|null, delayMs: number,
+ *            sanityCheck: object }}
+ */
+async function _scheduleRetry(context, actionTag) {
+  // Central authority vector gate
+  const sanity = await _sanityCheckFn({
+    operation: 'schedule_retry',
+    accountId: context.accountId,
+    domain: context.domain,
+    intentId: context.intentId,
+    retryCount: context.count,
+    maxRetries: context.maxRetries,
+  });
+
+  if (!sanity.allowed) {
+    _recordRejection(context.accountId);
+    return {
+      scheduled: false,
+      timeoutId: null,
+      delayMs: 0,
+      sanityCheck: sanity,
+    };
+  }
+
+  // Compute delay — FSM owns this
+  const delayMs = computeRetryDelay(context.policy, context.count, actionTag);
+
+  // Set the timer. _executeRetry is the callback.
+  const timeoutId = setTimeout(() => {
+    // Clear timeoutId from context — it's firing now
+    const ctx = _executionContexts.get(context.intentId);
+    if (ctx) ctx.timeoutId = null;
+    _executeRetry(context).catch((err) => {
+      console.error(`[engagement-fsm] _executeRetry failed for ${context.intentId}:`, err.message);
+    });
+  }, delayMs);
+
+  // Update context with the new timeoutId
+  context.timeoutId = timeoutId;
+  context.scheduledAt = Date.now();
+  _executionContexts.set(context.intentId, context);
+
+  // Record failure in retry-cadence store
+  retryCadenceStore.recordFailure(context.intentId, context.lastError);
+
+  return {
+    scheduled: true,
+    timeoutId,
+    delayMs,
+    sanityCheck: sanity,
+  };
+}
+
+/**
+ * Execute a retry attempt. Called by the setTimeout in _scheduleRetry.
+ * Invokes the retryWorker directly. The worker emits
+ * WORKER_OUTCOME_REPORTED when done. The FSM's main handler picks
+ * it up from there.
+ */
+async function _executeRetry(context) {
+  // Sanity check before invocation too
+  const sanity = await _sanityCheckFn({
+    operation: 'invoke_worker',
+    accountId: context.accountId,
+    domain: context.domain,
+    intentId: context.intentId,
+    worker: context.retryWorker?.name || 'unknown',
+  });
+
+  if (!sanity.allowed) {
+    _recordRejection(context.accountId);
+    return;
+  }
+
+  if (!context.retryWorker || typeof context.retryWorker.execute !== 'function') {
+    console.error(`[engagement-fsm] No retryWorker in context for ${context.intentId}`);
+    return;
+  }
+
+  // Invoke. The worker is responsible for emitting
+  // WORKER_OUTCOME_REPORTED. This call returns when the worker
+  // returns (the worker does not await its own async I/O in some
+  // implementations — it may return immediately after dispatching).
+  try {
+    await context.retryWorker.execute(
+      context.domain,
+      context.accountId,
+      context.intentId,
+      context.params,
+      context.count,
+      context.maxRetries,
+      // The governance reference: we use the module-level
+      // _sanityCheckFn's enclosing scope's governance. The
+      // orchastrator wires this when it sets the sanity check.
+      // For now, we pass null — the worker will use its own
+      // governance reference set at boot.
+      // TODO: pass the actual governance reference in context.
+      null,
+    );
+  } catch (err) {
+    console.error(`[engagement-fsm] Retry worker threw for ${context.intentId}:`, err.message);
+  }
+}
+
+/**
+ * Cancel a pending retry. Clears the timer, removes the execution
+ * context, and notifies the retry-cadence store.
+ */
+function _cancelRetry(intentId) {
+  const context = _executionContexts.get(intentId);
+  if (context && context.timeoutId) {
+    clearTimeout(context.timeoutId);
+  }
+  _executionContexts.delete(intentId);
+  retryCadenceStore.clearRetry(intentId);
+}
+
+/**
+ * Track a sanity check rejection for an account.
+ * Used to escalate to DEGRADED if rejections pile up.
+ */
+function _recordRejection(accountId) {
+  const count = (_rejectionCounts.get(accountId) || 0) + 1;
+  _rejectionCounts.set(accountId, count);
+}
+
+function getSanityRejectionCount(accountId) {
+  return _rejectionCounts.get(accountId) || 0;
+}
+
+function clearSanityRejections(accountId) {
+  _rejectionCounts.delete(accountId);
+}
+
 /**
  * Process a domain event within the engagement FSM.
  *
  * @param {{ type: string, [key: string]: any }} event — domain event
  * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
- * @returns {{ allowed: boolean, from?: string, to?: string, lineageId?: string, actions?: Array, reason?: string }}
+ * @returns {{ allowed: boolean, from?: string, to?: string, lineageId?: string, actions?: Array, reason?: string } | Promise<...>}
  */
 function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
@@ -627,7 +1070,7 @@ function exportState() {
     activeCircuitBreakers: activeBreakers.length,
     circuitBreakers: activeBreakers,
     authFailureAccounts: Array.from(_authFailureStrikes.entries()).map(([accountId, strikes]) => ({ accountId, strikes })),
-    pendingRetries: _executionRetries.size,
+    pendingRetries: _executionContexts.size,
   };
 }
 
@@ -635,14 +1078,14 @@ function getHealth() {
   const now = Date.now();
   const breakerCount = Array.from(_circuitBreakers.values()).filter(b => b.until > now).length;
   const strikeCount = _authFailureStrikes.size;
-  const retryCount = _executionRetries.size;
+  const pendingContexts = _executionContexts.size;
 
   return {
-    ok: strikeCount === 0 && breakerCount === 0 && retryCount < 10,
+    ok: strikeCount === 0 && breakerCount === 0 && pendingContexts < 10,
     signals: {
       activeBreakers: breakerCount,
       authFailureAccounts: strikeCount,
-      pendingRetries: retryCount,
+      pendingRetries: pendingContexts,
     },
   };
 }
@@ -679,13 +1122,15 @@ function getAuthStrikes(accountId) {
 }
 
 /**
- * Returns the retry count for an intent.
+ * Returns the retry count for an intent (canonical, from
+ * _executionContexts).
  *
  * @param {string} intentId
  * @returns {number}
  */
 function getRetryCount(intentId) {
-  return _executionRetries.get(intentId) || 0;
+  const ctx = _executionContexts.get(intentId);
+  return ctx ? ctx.count : 0;
 }
 
 /**
@@ -719,7 +1164,21 @@ function getAuthStrikeMap() {
 }
 
 function getExecutionRetries() {
-  return new Map(_executionRetries);
+  // Return Map< intentId, count > for backward compatibility.
+  // The canonical state is _executionContexts (full contexts).
+  const m = new Map();
+  for (const [intentId, ctx] of _executionContexts.entries()) {
+    m.set(intentId, ctx.count);
+  }
+  return m;
+}
+
+/**
+ * Return the full execution contexts (the canonical state).
+ * Used by observability, reconciliation, and the orchastrator.
+ */
+function getExecutionContexts() {
+  return new Map(_executionContexts);
 }
 
 /**
@@ -735,7 +1194,9 @@ function getEngagementSnapshot() {
       .filter(([, b]) => b.until > now)
       .map(([accountId, b]) => ({ accountId, until: b.until, cooldownMs: b.cooldownMs, openedAt: b.openedAt })),
     authStrikes: Array.from(_authFailureStrikes.entries()).map(([accountId, strikes]) => ({ accountId, strikes })),
-    executionRetries: Array.from(_executionRetries.entries()).map(([intentId, count]) => ({ intentId, count })),
+    executionRetries: Array.from(_executionContexts.entries()).map(([intentId, ctx]) => ({
+      intentId, count: ctx.count, maxRetries: ctx.maxRetries,
+    })),
   };
 }
 
@@ -751,6 +1212,7 @@ module.exports = {
   name: 'engagement',
   dispatch,
   init,
+  setSanityCheck,
   getState,
   exportState,
   getHealth,
@@ -762,6 +1224,9 @@ module.exports = {
   getCircuitBreakers,
   getAuthStrikeMap,
   getExecutionRetries,
+  getExecutionContexts,
   getEngagementSnapshot,
   getLastTransitionedAt,
+  getSanityRejectionCount,
+  clearSanityRejections,
 };

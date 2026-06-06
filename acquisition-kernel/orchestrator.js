@@ -21,7 +21,7 @@ const rateLimiter = require('../substrates/rate-limiter');
 
 /**
  * Execute a single bounded acquisition attempt via retry worker.
- * Governance evaluates EXECUTION_OBSERVATION and decides next action.
+ * Governance evaluates WORKER_OUTCOME_REPORTED and decides next action.
  *
  * @param {string} accountId
  * @param {string} domain
@@ -41,16 +41,15 @@ async function executeAcquisition(gov, accountId, domain, intentId, params) {
 
   gov.dispatch({ type: 'ACQUISITION_EXECUTING', accountId, domain, intentId });
 
-  // Wire substrate fetch/persist with credential resolution for retry-worker.
-  // retry-worker handles error classification, engagement signals, telemetry.
+  // Wire substrate fetch with credential resolution for retry-worker.
+  // retry-worker handles ONE bounded I/O call (fetch) and dispatches
+  // to parsing substrate for parse→normalize→persist. It is
+  // semantically blind — no error classification, no engagement
+  // state mutation, no lifecycle emission.
   const wiredRouting = {
     fetch: async (acctId, execParams) => {
       const creds = await resolveAccountCredentials(acctId);
       return substrate.fetch(acctId, execParams, creds);
-    },
-    persist: async (acctId, rawData, execParams) => {
-      // Pipe governance through so hydrators can use governedRead
-      return substrate.persist(acctId, rawData, { ...execParams, _governance: gov });
     },
   };
 

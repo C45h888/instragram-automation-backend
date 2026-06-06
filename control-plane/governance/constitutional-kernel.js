@@ -508,7 +508,7 @@ const DOMAIN_EVENT_MAP = {
   ACQUISITION_INTENT_RECEIVED: 'acquisition',
   ACQUISITION_EXECUTING: 'acquisition',
   ACQUISITION_COMPLETE: 'acquisition',
-  EXECUTION_OBSERVATION: 'acquisition',
+  WORKER_OUTCOME_REPORTED: 'engagement',
   PARSING_DISPATCHED: 'acquisition',
   PARSING_COMPLETE: 'acquisition',
 
@@ -525,6 +525,7 @@ const DOMAIN_EVENT_MAP = {
   AUTH_STRIKES_RESET: 'engagement',
   AUTH_SUCCESS: 'engagement',
   RETRY_REQUESTED: 'engagement',
+  SANITY_CHECK_REJECTED: 'engagement',
 
   // Publishing domain
   PUBLISHING_DATA_AVAILABLE: 'publishing',
@@ -931,6 +932,7 @@ let _accountIds = [];
 
 // Domain registry
 const _domains = new Map(); // domainName → fsm
+const _domainSanityChecks = new Map(); // domainName → async (action) => { allowed, reason, alternatives }
 
 // Rehydrated domain states — populated during rehydrate() from lineage
 let _rehydratedDomainStates = null;
@@ -1064,13 +1066,23 @@ function validateDomainTransition(domainName, from, to, event) {
  * Initializes the FSM with rehydrated state if lineage was loaded from Redis.
  *
  * @param {object} fsm — domain FSM module
+ * @param {object} [extensions] — optional extensions
+ * @param {Function} [extensions.sanityCheck] — async permission check
+ *   (action) => Promise<{ allowed, reason, alternatives }>. Used by the
+ *   FSM during operational decisions (schedule retry, invoke worker).
+ *   The ctx.sanityCheck integration is deferred to a later phase.
  * @throws {Error} if fsm is invalid
  */
-function registerDomain(fsm) {
+function registerDomain(fsm, extensions = {}) {
   if (!fsm || typeof fsm !== 'object' || typeof fsm.name !== 'string' || typeof fsm.dispatch !== 'function') {
     throw new Error('[constitutional-kernel] registerDomain requires a valid domain FSM');
   }
   _domains.set(fsm.name, fsm);
+
+  // Register domain-specific sanity check extension (if provided)
+  if (extensions.sanityCheck && typeof extensions.sanityCheck === 'function') {
+    _domainSanityChecks.set(fsm.name, extensions.sanityCheck);
+  }
 
   // ── Wire reading-substrate when persist-telemetry FSM registers ────────
   if (fsm.name === 'persist-telemetry' && typeof fsm.setReadingSubstrate === 'function') {
@@ -1167,6 +1179,24 @@ function dispatch(event) {
     };
 
     const result = fsm.dispatch(event, ctx);
+
+    // ── Polymorphic await: FSMs may return sync (plain object) or
+    //    async (Promise) results. CK awaits Promises transparently.
+    if (result && typeof result.then === 'function') {
+      return result.then((awaited) => {
+        if (awaited.allowed && awaited.actions && awaited.actions.length > 0) {
+          _emitActions(awaited.actions);
+        }
+        return {
+          allowed: awaited.allowed,
+          from: awaited.from || null,
+          to: awaited.to || null,
+          lineageId: awaited.lineageId || null,
+          actionsEmitted: awaited.allowed && awaited.actions ? awaited.actions.length : 0,
+          reason: awaited.reason || null,
+        };
+      });
+    }
 
     if (result.allowed && result.actions && result.actions.length > 0) {
       _emitActions(result.actions);
@@ -1896,12 +1926,135 @@ function governedRead(readDomain, params = {}, timeoutMs = 15000) {
 // rather than rehydrating from an empty/potentially-stale Redis key.
 // Boot order: orchestrator → observability.init() → worker.start() → CK.rehydrate()
 
+/**
+ * CK's own sanity check — central authority vector for operational
+ * decisions. Async, bounded (5000ms), idempotent.
+ *
+ * Used by FSMs (via module-level reference set at boot) to ask
+ * "is this operation constitutionally permitted right now?"
+ *
+ * The check is NOT a state transition validator. It validates
+ * operational eligibility: global kernel state, circuit breaker,
+ * retry budget, worker liveness.
+ *
+ * @param {object} action — { operation, accountId, domain, intentId,
+ *   retryCount, maxRetries, delayMs, worker, ... }
+ * @returns {Promise<{ allowed: boolean, reason?: string,
+ *   alternatives?: object }>}
+ */
+async function _constitutionalSanityCheck(action) {
+  try {
+    return await _sanityCheckWithTimeout(action, 5000);
+  } catch (err) {
+    return { allowed: false, reason: 'sanity_check_error: ' + err.message };
+  }
+}
+
+function _sanityCheckWithTimeout(action, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ allowed: false, reason: 'sanity_check_timeout' });
+    }, timeoutMs);
+
+    Promise.resolve(_doSanityCheck(action)).then(
+      (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ allowed: false, reason: 'sanity_check_error: ' + err.message });
+      }
+    );
+  });
+}
+
+function _doSanityCheck(action) {
+  // Global state gate
+  if (_currentState === 'HALTED' || _currentState === 'DEAD') {
+    return { allowed: false, reason: `kernel_${_currentState.toLowerCase()}` };
+  }
+
+  if (action.operation === 'schedule_retry') {
+    // Retry budget gate
+    if (action.retryCount != null && action.maxRetries != null
+        && action.retryCount > action.maxRetries) {
+      return { allowed: false, reason: 'max_retries_exceeded' };
+    }
+    // Circuit breaker gate — delegate to engagement-fsm via dispatch
+    // (the FSM owns circuit breaker state; CK asks for projection)
+    try {
+      const cbCheck = dispatch({
+        type: 'CIRCUIT_BREAKER_CHECK',
+        accountId: action.accountId,
+        domain: action.domain,
+        intentId: action.intentId,
+      });
+      if (cbCheck && cbCheck.actions
+          && cbCheck.actions.some(a => a.type === 'CIRCUIT_BREAKER_ACTIVE')) {
+        return {
+          allowed: false,
+          reason: 'circuit_breaker_active',
+          alternatives: { wait_until_cooldown: true },
+        };
+      }
+    } catch (_) {
+      // If the projection read fails, allow the schedule (fail-open
+      // for scheduling; the gate check at worker invocation is the
+      // real enforcement)
+    }
+    return { allowed: true };
+  }
+
+  if (action.operation === 'invoke_worker') {
+    // Global state already checked above. Worker liveness check is
+    // out of scope for this turn (deferred to a later phase).
+    return { allowed: true };
+  }
+
+  if (action.operation === 'cancel_retry') {
+    return { allowed: true };
+  }
+
+  // Unknown operation — allow (fail-open)
+  return { allowed: true };
+}
+
+/**
+ * Public sanity check entry. Delegates to a domain-registered
+ * sanity check (if one was provided via registerDomain extensions)
+ * or falls back to CK's own _constitutionalSanityCheck.
+ *
+ * @param {string} domainName
+ * @param {object} action
+ * @returns {Promise<{ allowed, reason?, alternatives? }>}
+ */
+async function sanityCheck(domainName, action) {
+  const domainCheck = _domainSanityChecks.get(domainName);
+  if (domainCheck) {
+    try {
+      return await domainCheck(action);
+    } catch (err) {
+      return { allowed: false, reason: 'domain_sanity_check_error: ' + err.message };
+    }
+  }
+  return _constitutionalSanityCheck(action);
+}
+
 module.exports = {
   dispatch,
   subscribeAction,
   onAction,
   registerDomain,
   validateDomainTransition,
+  sanityCheck,
   tick,
   startLoop,
   stopLoop,

@@ -142,13 +142,17 @@ async function _rehydrate() {
 // ── Core projection write ──────────────────────────────────────────────────────
 
 /**
- * Write a transition entry to domain-bounded Redis partition keys.
- * Awaited by project() before onWrite fires — this is the synchronous ordering
- * guarantee that eliminates the reactive coordination race condition.
+ * Write a transition entry to the domain-bounded Redis partition.
  *
- * Writes to two keys:
- *   lineage:transitionLog:domain:{domain} — namespace-bounded partition
- *   lineage:transitionLog:entries          — global log (all transitions)
+ * Partition key: lineage:transitionLog:domain:{domain} — namespace-bounded partition
+ *                 lineage:transitionLog:entries          — global log (all transitions)
+ *
+ * Segmentation contract:
+ *   Only PROJECTION_INTENT entries are written to the namespace partition.
+ *   All other entries go to the global log only.
+ *   This eliminates the read-side filter + cursor-position decoupling bug
+ *   where the FSM had to filter in-memory and advance cursor by filtered count
+ *   (causing re-read of non-intent entries on every cycle).
  *
  * @param {object} transition — the transition entry to write
  * @param {string} domain — namespace: runtime | integrity | authority | health | systemic
@@ -157,13 +161,25 @@ async function _writeDomainPartition(transition, domain) {
   try {
     const redis = getRedisClient();
     if (!redis || redis.status !== 'ready') return;
-    const domainKey = `lineage:transitionLog:domain:${domain}`;
+
     const serialized = JSON.stringify(transition);
-    // Both writes must complete before onWrite fires — await both
-    await Promise.all([
-      redis.rpush(domainKey, serialized),
-      redis.rpush('lineage:transitionLog:entries', serialized),
-    ]);
+    const isProjectionIntent = transition.nextState === 'PROJECTION_INTENT';
+
+    if (isProjectionIntent) {
+      // Only PROJECTION_INTENT entries own a slot in the namespace partition.
+      // The FSM cursor tracks actual Redis list positions — no filtering needed on read.
+      const domainKey = `lineage:transitionLog:domain:${domain}`;
+      await Promise.all([
+        redis.rpush(domainKey, serialized),
+        redis.rpush('lineage:transitionLog:entries', serialized),
+      ]);
+    } else {
+      // All other transitions go to the global log only.
+      // Namespace partitions only ever contain PROJECTION_INTENT entries,
+      // so the FSM cursor position always equals the actual list length —
+      // no decoupled filtered count, no redundant re-reads.
+      await redis.rpush('lineage:transitionLog:entries', serialized);
+    }
   } catch (err) {
     // Log but do not re-throw — projection state is in-memory, Redis is supplementary
     console.error('[projection] _writeDomainPartition error:', err.message);

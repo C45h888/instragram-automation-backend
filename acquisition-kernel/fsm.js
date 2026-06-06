@@ -174,72 +174,38 @@ const TRANSITION_MAP = {
 // retry-worker/execution-bridge directly to CK. DOMAIN_EVENT_MAP routes them to
 // engagement-fsm independently. Acquisition-fsm never emits engagement-domain events.
 
-  EXECUTION_OBSERVATION: {
-    target: (event) => {
-      // If parsing is still pending, stay in ACQUIRING
-      if (event.intentId && _pendingParsing.has(event.intentId)) {
-        return _localState;
-      }
-      if (event.status === 'completed') return 'IDLE';
-      if (!event.retryable && event.status !== 'completed') return 'IDLE';
-      return _localState;
-    },
+  // ── EXECUTION_OBSERVATION — REMOVED in Step 4 of authority centralisation ─
+  // Acquisition-fsm no longer classifies worker outcomes. Workers emit
+  // WORKER_OUTCOME_REPORTED, which routes to engagement-fsm. engagement-fsm
+  // calls the classification-worker, decides the action, and emits the
+  // downstream signal (RETRY_REQUESTED, AUTH_FAILURE_STRIKE, RATE_LIMIT_DETECTED,
+  // RETRY_EXHAUSTED). Acquisition-fsm receives those via the existing handlers.
+  //
+  // The lifecycle here is:
+  //   1. PARSING_DISPATCHED (worker reports parsing job started)
+  //   2. PARSING_COMPLETE   (parsing job finished — success or failure)
+  //   3. ACQUISITION_COMPLETE (terminal — success or permanent failure)
+  //
+  // RETRY_EXHAUSTED arriving from engagement-fsm carries the terminal
+  // signal for the failure path. It routes to ACQUISITION_COMPLETE
+  // via the existing subscriber wiring (acquisition-orchestrator).
+
+  PARSING_DISPATCHED: {
+    target: () => _localState, // stays in ACQUIRING — wait for PARSING_COMPLETE
     guard: (event) => {
       if (_localState !== 'ACQUIRING') {
-        return { allowed: false };
+        return { allowed: false, reason: `Cannot dispatch parsing from ${_localState}` };
       }
       return { allowed: true };
     },
     buildActions: (event) => {
-      const { accountId, domain, intentId, status, error_category, retryable, count } = event;
-
-      // Track execution state for retry decisions
-      _executionState.set(intentId, { accountId, domain, lastError: event.error || null });
-
-      // ── Success → acquisition lifecycle complete ───────────────────────
-      if (status === 'completed') {
-        _executionRetries.delete(intentId);
-        _executionState.delete(intentId);
-        // AUTH_SUCCESS is emitted by retry-worker/execution-bridge directly to CK
-        // DOMAIN_EVENT_MAP routes it to engagement-fsm independently
-        return [{
-          type: 'WRITE_ACQUISITION_RESULT',
-          accountId, domain, intentId,
-          result: { status: 'completed', count: count || 0 },
-        }];
-      }
-
-      // ── Auth failure → engagement-fsm handles via CK routing ────────────
-      if (error_category === 'auth_failure') {
-        _executionRetries.delete(intentId);
-        _executionState.delete(intentId);
-        // AUTH_FAILURE_STRIKE is emitted by retry-worker/execution-bridge directly to CK
-        return [];
-      }
-
-      // ── Rate limit → engagement-fsm handles via CK routing ──────────────
-      if (error_category === 'rate_limit') {
-        _executionRetries.delete(intentId);
-        _executionState.delete(intentId);
-        // RATE_LIMIT_DETECTED is emitted by retry-worker/execution-bridge directly to CK
-        return [{ type: 'LOG_DEGRADED', substate: 'PARTIAL_FAILURE',
-                  reason: `Rate limit for ${accountId}/${domain} — engagement-fsm manages via CK routing` }];
-      }
-
-      // ── Transient/retryable → retry-cadence substrate handles via CK routing ──
-      // Retry counting, backoff, and scheduling are owned by retry-cadence substrate.
-      // retry-worker emits RETRY_REQUESTED → CK → engagement-fsm → retry-cadence.dispatch()
-      if (retryable) {
-        _executionRetries.delete(intentId);
-        _executionState.delete(intentId);
-        return [];  // no synchronous action — retry-cadence handles asynchronously
-      }
-
-      // ── Permanent failure (non-retryable, non-auth, non-rate) ───────────
-      _executionRetries.delete(intentId);
-      _executionState.delete(intentId);
-      return [{ type: 'MARK_PERMANENT_FAILURE', accountId, domain, intentId,
-                error: event.error || 'unknown' }];
+      _pendingParsing.set(event.intentId, {
+        jobId: event.jobId,
+        domain: event.domain,
+        accountId: event.accountId,
+        rawCount: event.rawCount || 0,
+      });
+      return [];
     },
   },
 };
@@ -252,8 +218,10 @@ let _localState = 'IDLE';
 let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
 
 // ── Execution state tracking ─────────────────────────────────────────────────
-const _executionRetries = new Map();    // intentId → retry count
-const _executionState = new Map();      // intentId → { accountId, domain, lastError }
+// _pendingParsing is the ONLY execution map acquisition-fsm still owns.
+// It tracks parsing jobs that have been dispatched but not yet completed.
+// _executionRetries and _executionState were removed in Step 3 — retry
+// counting moved to retry-cadence substrate, error state to engagement-fsm.
 const _pendingParsing = new Map();      // intentId → { jobId, domain, accountId, rawCount }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -368,15 +336,18 @@ function getState() {
 function exportState() {
   return {
     state: _localState,
-    pendingRetries: _executionRetries.size,
+    pendingParsing: _pendingParsing.size,
   };
 }
 
 function getHealth() {
+  // pendingParsing is the only execution map. A large count means
+  // parsing workers are stuck (no PARSING_COMPLETE arriving). Step 3
+  // of T5 in the plan: add timeout/cleanup. For now, signal at 10.
   return {
-    ok: _executionRetries.size < 10,
+    ok: _pendingParsing.size < 10,
     signals: {
-      pendingRetries: _executionRetries.size,
+      pendingParsing: _pendingParsing.size,
     },
   };
 }
@@ -387,8 +358,8 @@ function getLastTransitionedAt() {
   return _lastTransitionedAt;
 }
 
-function getExecutionRetries() {
-  return new Map(_executionRetries);
+function getPendingParsing() {
+  return new Map(_pendingParsing);
 }
 
 module.exports = {
@@ -399,5 +370,5 @@ module.exports = {
   exportState,
   getHealth,
   getLastTransitionedAt,
-  getExecutionRetries,
+  getPendingParsing,
 };
