@@ -402,6 +402,8 @@ const TRANSITION_MAP = {
         lastError: null,
         scheduledAt: null,
         governance: _governance, // passed to worker on invocation
+        invokeWorker: ctx.invokeWorker, // CTX gate — ownership, contract, sanity
+        workerName: _resolveWorkerName(domain),
       };
 
       // If the caller provided a retryAfterMs (override), use it
@@ -606,6 +608,8 @@ const TRANSITION_MAP = {
               lastError: errorShape,
               scheduledAt: null,
               governance: _governance, // passed to worker on invocation
+              invokeWorker: ctx.invokeWorker, // CTX gate — ownership, contract, sanity
+              workerName: _resolveWorkerName(domain),
             };
 
             const scheduleResult = await _scheduleRetry(context, actionTag, ctx);
@@ -805,6 +809,25 @@ function getGovernance() {
   return _governance;
 }
 
+// ── Worker registry (local) ───────────────────────────────────────────
+// Each FSM holds its own worker map. CK registration happens at boot
+// via constitutional.registerWorker(fsmName, workerName, worker).
+// The CTX gate (ctx.invokeWorker) validates ownership through CK.
+const _workers = new Map();
+
+function registerWorker(name, worker) {
+  _workers.set(name, worker);
+}
+
+function getWorker(name) {
+  return _workers.get(name) || null;
+}
+
+function getWorkers() {
+  return _workers;
+}
+
+
 // ── Worker error registry: namespace → { category, failedWrites, escalatedAt } ─
 // Populated when RETRY_CADENCE_REQUEST arrives from 'worker' source.
 // Used for alert routing and error classification.
@@ -912,15 +935,56 @@ async function _scheduleRetry(context, actionTag, fsmCtx) {
 }
 
 /**
+ * Resolve the registered worker name for a domain.
+ * Used to pass workerName through execution contexts so
+ * _executeRetry can call ctx.invokeWorker(workerName, params).
+ */
+function _resolveWorkerName(domain) {
+  const MAP = {
+    comments: 'engagement-retry',
+    messages: 'engagement-retry',
+    ugc: 'ugc-retry',
+    insights: 'insights-retry',
+    media: 'content-retry',
+    'publish:post': 'publish-content-retry',
+    'publish:story': 'publish-content-retry',
+    'publish:comment': 'publish-engagement-retry',
+    'publish:message': 'publish-engagement-retry',
+  };
+  return MAP[domain] || 'unknown';
+}
+
+/**
  * Execute a retry attempt. Called by the setTimeout in _scheduleRetry.
- * Invokes the retryWorker directly. The worker emits
- * WORKER_OUTCOME_REPORTED when done. The FSM's main handler picks
- * it up from there.
+ * Routes through the CTX gate (ctx.invokeWorker) when available —
+ * validates ownership, contract, and sanity before invocation.
+ * Falls back to direct retryWorker invocation if the gate is unset
+ * (legacy path — should not happen in production after CK gate wiring).
  *
  * @param {object} context — ExecutionContext (must include governance)
  * @param {object|null} fsmCtx — the dispatch ctx (for ctx.sanityCheck)
  */
 async function _executeRetry(context, fsmCtx) {
+  // ── CTX gate path — ownership, contract, sanity validated by CK ──────
+  if (context.invokeWorker && context.workerName) {
+    try {
+      await context.invokeWorker(context.workerName, {
+        domain: context.domain,
+        accountId: context.accountId,
+        intentId: context.intentId,
+        params: context.params,
+        retryCount: context.count,
+        maxRetries: context.maxRetries,
+        governance: context.governance,
+      });
+      return;
+    } catch (err) {
+      console.error(`[engagement-fsm] CTX gate blocked worker '${context.workerName}' for ${context.intentId}:`, err.message);
+      return;
+    }
+  }
+
+  // ── Fallback: direct invocation (legacy, no gate) ─────────────────────
   // Sanity check before invocation (universal gate)
   const sanityCheck = _resolveSanityCheck(fsmCtx);
   const sanity = await sanityCheck({
@@ -1299,6 +1363,9 @@ module.exports = {
   init,
   setGovernance,
   getGovernance,
+  registerWorker,
+  getWorker,
+  getWorkers,
   getState,
   exportState,
   getHealth,

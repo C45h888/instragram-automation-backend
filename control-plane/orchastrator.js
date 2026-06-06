@@ -77,14 +77,50 @@ function _wire() {
   constitutional.registerDomain(telemetryCoordinationFsm);
   constitutional.registerDomain(persistTelemetryFsm);
 
-  // Wire engagement-fsm's governance ref (Item b, this turn).
-  // The FSM holds the governance ref so it can pass it to
-  // retry workers via the execution context. The workers use
-  // it to emit WORKER_OUTCOME_REPORTED. Workers no longer
-  // import governance at module load — they receive it
-  // through the context. The FSM is the only place that
-  // holds the ref. (fail-loud if null at invocation.)
+  // Wire governance refs to all domain FSMs.
+  // Each FSM holds the governance ref so it can pass it to
+  // workers via execution contexts. Workers receive governance
+  // through the FSM — they never import it at module load.
+  acquisitionFsm.setGovernance(constitutional);
+  publishingFsm.setGovernance(constitutional);
+  graphCapabilityFsm.setGovernance(constitutional);
+  schedulingFsm.setGovernance(constitutional);
+  dedupFsm.setGovernance(constitutional);
   engagementFsm.setGovernance(constitutional);
+  reconciliationFsm.setGovernance(constitutional);
+  telemetryCoordinationFsm.setGovernance(constitutional);
+  persistTelemetryFsm.setGovernance(constitutional);
+
+  // ── Worker registration — canonical FSM→worker bindings ──────────────
+  // Each worker is registered with CK so the CTX gate (ctx.invokeWorker)
+  // can validate ownership, contract, and sanity before invocation.
+  // ── engagement-fsm — retry-cadence workers ────────────────────────────
+  constitutional.registerWorker('engagement', 'engagement-retry',
+    require('../retry-cadence-kernel/workers/engagement-retry-worker'));
+  constitutional.registerWorker('engagement', 'content-retry',
+    require('../retry-cadence-kernel/workers/content-retry-worker'));
+  constitutional.registerWorker('engagement', 'ugc-retry',
+    require('../retry-cadence-kernel/workers/ugc-retry-worker'));
+  constitutional.registerWorker('engagement', 'insights-retry',
+    require('../retry-cadence-kernel/workers/insights-retry-worker'));
+  constitutional.registerWorker('engagement', 'publish-content-retry',
+    require('../retry-cadence-kernel/workers/publish-content-retry-worker'));
+  constitutional.registerWorker('engagement', 'publish-engagement-retry',
+    require('../retry-cadence-kernel/workers/publish-engagement-retry-worker'));
+  constitutional.registerWorker('engagement', 'classification',
+    require('../retry-cadence-kernel/workers/classification-worker'));
+
+  // ── acquisition-fsm — parsing workers ─────────────────────────────────
+  constitutional.registerWorker('acquisition', 'comments-parser',
+    require('../acquisition-kernel/substrates/parsing-substrate/workers/comments-parser'));
+  constitutional.registerWorker('acquisition', 'messages-parser',
+    require('../acquisition-kernel/substrates/parsing-substrate/workers/messages-parser'));
+  constitutional.registerWorker('acquisition', 'content-parser',
+    require('../acquisition-kernel/substrates/parsing-substrate/workers/content-parser'));
+  constitutional.registerWorker('acquisition', 'ugc-parser',
+    require('../acquisition-kernel/substrates/parsing-substrate/workers/ugc-parser'));
+  constitutional.registerWorker('acquisition', 'insights-parser',
+    require('../acquisition-kernel/substrates/parsing-substrate/workers/insights-parser'));
 
   // Wire each membrane orchestrator
   cadenceOrchestrator.wire(constitutional);

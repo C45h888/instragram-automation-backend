@@ -63,6 +63,41 @@ function _obs() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Governance reference (set by CK at boot) ────────────────────────────
+// The FSM holds a governance ref for worker invocation and event dispatch.
+// engagement-fsm pattern: set at boot, passed through execution contexts.
+let _governance = null;
+
+function setGovernance(governance) {
+  if (governance && typeof governance.dispatch === 'function') {
+    _governance = governance;
+  }
+}
+
+function getGovernance() {
+  return _governance;
+}
+
+// ── Worker registry (local) ───────────────────────────────────────────
+// Each FSM holds its own worker map. CK registration happens at boot
+// via constitutional.registerWorker(fsmName, workerName, worker).
+// The CTX gate (ctx.invokeWorker) validates ownership through CK.
+const _workers = new Map();
+
+function registerWorker(name, worker) {
+  _workers.set(name, worker);
+}
+
+function getWorker(name) {
+  return _workers.get(name) || null;
+}
+
+function getWorkers() {
+  return _workers;
+}
+
+
 // 0. Governance Policy Constants — domain-owned thresholds
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -250,7 +285,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event) => {
       _priorCycleOutputCount = 0;
       return [{
         type: 'COORDINATION_HALTED',
@@ -268,7 +303,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: () => [{
+    buildActions: async () => [{
       type: 'COORDINATION_RESUMED',
     }],
   },
@@ -280,7 +315,7 @@ const TRANSITION_MAP = {
       // Always allowed — async validation proceeds regardless of state
       return { allowed: true };
     },
-    buildActions: (event, ctx) => {
+    buildActions: async (event, ctx) => {
       const { ledgerId, entry } = event;
       const actions = [];
 
@@ -351,7 +386,26 @@ const TRANSITION_MAP = {
       return 'INGRESS_LAG_RETRYING';
     },
     guard: () => ({ allowed: true }),
-    buildActions: (event, ctx) => {
+    buildActions: async (event, ctx) => {
+      // Gate: retry cadence activation is a system-level
+      // decision. CK can veto during DEGRADED. The veto
+      // means the system stays in its current cadence.
+      // No RETRY_CADENCE_REQUEST, no INGRESS_RETRY_ACTIVE.
+      const gate = await _resolveSanityCheck(ctx, {
+        operation: 'ingress_retry_requested',
+        lag: event.lag,
+        source: event.source,
+      });
+      if (!gate.allowed) {
+        return [{
+          type: 'GATE_REJECTED',
+          operation: 'ingress_retry_requested',
+          lag: event.lag,
+          source: event.source,
+          reason: gate.reason || 'gate_rejected',
+        }];
+      }
+
       const { lag, status } = event;
       const actions = [];
 
@@ -407,7 +461,7 @@ const TRANSITION_MAP = {
   INGRESS_RESOLVED: {
     target: 'IDLE',
     guard: () => ({ allowed: true }),
-    buildActions: (event, ctx) => {
+    buildActions: async (event, ctx) => {
       // Reset retry budget
       _retryAttempts = 0;
       _retryWindowStart = null;
@@ -437,7 +491,7 @@ const TRANSITION_MAP = {
   TRANSITION_WRITER_HEALTH_CHANGED: {
     target: () => _localState,
     guard: () => ({ allowed: true }),
-    buildActions: (event, ctx) => {
+    buildActions: async (event, ctx) => {
       const { health } = event;
       const actions = [];
       _writerHealthSignal = health || null;
@@ -1194,6 +1248,11 @@ function _emptyIntentCursors() {
 }
 
 module.exports = {
+  setGovernance,
+  getGovernance,
+  registerWorker,
+  getWorker,
+  getWorkers,
   name: 'telemetry-coordination-fsm',
   dispatch,
   init,

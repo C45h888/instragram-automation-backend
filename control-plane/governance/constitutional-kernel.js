@@ -62,10 +62,13 @@ const MEMBRANE_AUTHORITY_MAP = {
   'acquisition-fsm':     ['acquisition'],
   'publishing-membrane': ['publishing'],
   'telemetry-worker':    ['telemetry'],
-  'telemetry-coordination-fsm': ['telemetry'],
+  'telemetry-coordination-fsm': ['telemetry-coordination-fsm'],
   'reconciliation-fsm':  ['reconciliation'],
   'scheduling-fsm':      ['scheduling'],
   'graph-capability-fsm': ['graph-capability'],
+  'engagement-fsm':      ['engagement'],
+  'dedup-fsm':           ['dedup'],
+  'persist-telemetry-fsm': ['persist-telemetry'],
   'governance-kernel':   ['governance', 'execution', 'acquisition', 'publishing',
                           'scheduling', 'telemetry', 'reconciliation', 'projection'],
 };
@@ -935,6 +938,11 @@ let _accountIds = [];
 // Domain registry
 const _domains = new Map(); // domainName → fsm
 const _domainSanityChecks = new Map(); // domainName → async (action) => { allowed, reason, alternatives }
+// Worker registry — fsmName → Map<workerName, workerModule>
+// CK is the sole authority for worker→FSM bindings. Every worker
+// invocation flows through the CTX gate (ctx.invokeWorker) which
+// validates: ownership, contract, sanity check.
+const _workerRegistry = new Map();
 
 // Rehydrated domain states — populated during rehydrate() from lineage
 let _rehydratedDomainStates = null;
@@ -1076,8 +1084,8 @@ function validateDomainTransition(domainName, from, to, event) {
  * @throws {Error} if fsm is invalid
  */
 function registerDomain(fsm, extensions = {}) {
-  if (!fsm || typeof fsm !== 'object' || typeof fsm.name !== 'string' || typeof fsm.dispatch !== 'function') {
-    throw new Error('[constitutional-kernel] registerDomain requires a valid domain FSM');
+  if (!fsm || typeof fsm !== 'object' || typeof fsm.name !== 'string' || typeof fsm.dispatch !== 'function' || typeof fsm.getState !== 'function' || typeof fsm.exportState !== 'function' || typeof fsm.getHealth !== 'function') {
+    throw new Error('[constitutional-kernel] registerDomain requires a valid domain FSM (missing name, dispatch, getState, exportState, or getHealth)');
   }
   _domains.set(fsm.name, fsm);
 
@@ -1111,6 +1119,68 @@ function registerDomain(fsm, extensions = {}) {
   }
 
   console.log(`[constitutional-kernel] Registered domain: ${fsm.name}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 7b. Worker Registry — canonical FSM→worker binding
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Register a worker under a domain FSM.
+ * Validates the worker contract at registration time (fail-fast).
+ *
+ * @param {string} fsmName — domain FSM name
+ * @param {string} workerName — unique worker identifier
+ * @param {object} worker — worker module (must export execute())
+ */
+function registerWorker(fsmName, workerName, worker) {
+  if (!fsmName || typeof fsmName !== 'string') {
+    throw new Error('[constitutional-kernel] registerWorker requires a valid fsmName');
+  }
+  if (!workerName || typeof workerName !== 'string') {
+    throw new Error('[constitutional-kernel] registerWorker requires a valid workerName');
+  }
+  if (!worker || typeof worker !== 'object') {
+    throw new Error(`[constitutional-kernel] registerWorker requires a worker object for '${workerName}'`);
+  }
+  if (typeof worker.execute !== 'function') {
+    throw new Error(
+      `[constitutional-kernel] Worker '${workerName}' violates contract: missing execute()`
+    );
+  }
+  if (!_domains.has(fsmName)) {
+    throw new Error(
+      `[constitutional-kernel] Cannot register worker '${workerName}': FSM '${fsmName}' not registered`
+    );
+  }
+
+  if (!_workerRegistry.has(fsmName)) {
+    _workerRegistry.set(fsmName, new Map());
+  }
+  _workerRegistry.get(fsmName).set(workerName, worker);
+  console.log(`[constitutional-kernel] Registered worker '${workerName}' → '${fsmName}'`);
+}
+
+/**
+ * Resolve a worker by FSM name + worker name.
+ * Returns null if not found — caller handles the missing case.
+ *
+ * @param {string} fsmName
+ * @param {string} workerName
+ * @returns {object|null} worker module or null
+ */
+function resolveWorker(fsmName, workerName) {
+  const fsmWorkers = _workerRegistry.get(fsmName);
+  if (!fsmWorkers) return null;
+  return fsmWorkers.get(workerName) || null;
+}
+
+/**
+ * Return the full worker registry for observability.
+ * @returns {Map<string, Map<string, object>>}
+ */
+function getWorkerRegistry() {
+  return _workerRegistry;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1172,6 +1242,7 @@ function dispatch(event) {
     }
 
     const ctx = {
+      fsmName: domainName,
       validate: (from, to, evt) => validateDomainTransition(domainName, from, to, evt),
       dispatchGlobal: (globalEvent) => dispatch(globalEvent),
       // NOTE: getGlobalState is reserved for Phase 6 ctx.getPolicy() integration.
@@ -1184,6 +1255,41 @@ function dispatch(event) {
       // during their evaluation. CK runs the extension + own check
       // composition. The FSM does NOT need a module-level reference.
       sanityCheck: (action) => sanityCheck(domainName, action),
+      // ctx.getWorkerRegistry — introspection for observability
+      getWorkerRegistry: () => _workerRegistry,
+      // ctx.invokeWorker — the CTX gate for worker invocation.
+      // Three checks: ownership, contract, sanity. The FSM never
+      // calls a worker directly — every invocation flows through
+      // this gate. The gate validates before executing.
+      invokeWorker: async (workerName, params) => {
+        // Gate 1 — ownership: is this worker registered to this FSM?
+        const fsmWorkers = _workerRegistry.get(domainName);
+        const worker = fsmWorkers ? fsmWorkers.get(workerName) : null;
+        if (!worker) {
+          throw new Error(
+            `[CK:gate] Worker '${workerName}' not registered for FSM '${domainName}'`
+          );
+        }
+        // Gate 2 — contract: does the worker export execute()?
+        if (typeof worker.execute !== 'function') {
+          throw new Error(
+            `[CK:gate] Worker '${workerName}' violates contract: missing execute()`
+          );
+        }
+        // Gate 3 — sanity: universal system health check
+        const check = await sanityCheck(domainName, {
+          operation: 'invoke_worker',
+          worker: workerName,
+          fsm: domainName,
+        });
+        if (!check.allowed) {
+          throw new Error(
+            `[CK:gate] Worker '${workerName}' blocked by sanity check: ${check.reason}`
+          );
+        }
+        // Gate passed — invoke
+        return worker.execute(params);
+      },
     };
 
     const result = fsm.dispatch(event, ctx);
@@ -2086,6 +2192,9 @@ module.exports = {
   subscribeAction,
   onAction,
   registerDomain,
+  registerWorker,
+  resolveWorker,
+  getWorkerRegistry,
   validateDomainTransition,
   sanityCheck,
   tick,

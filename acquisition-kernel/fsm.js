@@ -47,6 +47,41 @@ function _obs() {
 // MAX_ACQUISITION_RETRIES removed — retry-cadence substrate owns per-substrate policy.
 
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Governance reference (set by CK at boot) ────────────────────────────
+// The FSM holds a governance ref for worker invocation and event dispatch.
+// engagement-fsm pattern: set at boot, passed through execution contexts.
+let _governance = null;
+
+function setGovernance(governance) {
+  if (governance && typeof governance.dispatch === 'function') {
+    _governance = governance;
+  }
+}
+
+function getGovernance() {
+  return _governance;
+}
+
+// ── Worker registry (local) ───────────────────────────────────────────
+// Each FSM holds its own worker map. CK registration happens at boot
+// via constitutional.registerWorker(fsmName, workerName, worker).
+// The CTX gate (ctx.invokeWorker) validates ownership through CK.
+const _workers = new Map();
+
+function registerWorker(name, worker) {
+  _workers.set(name, worker);
+}
+
+function getWorker(name) {
+  return _workers.get(name) || null;
+}
+
+function getWorkers() {
+  return _workers;
+}
+
+
 // 1. Local State Registry
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -423,6 +458,11 @@ function getPendingParsing() {
 }
 
 module.exports = {
+  setGovernance,
+  getGovernance,
+  registerWorker,
+  getWorker,
+  getWorkers,
   name: 'acquisition',
   dispatch,
   init,
