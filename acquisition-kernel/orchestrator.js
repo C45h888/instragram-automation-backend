@@ -17,6 +17,10 @@ const syncSubstrate = require('../substrates/sync-substrate');
 const retrySubstrate = require('../substrates/retry');
 const rateLimiter = require('../substrates/rate-limiter');
 
+// Note: acquisition-fsm is imported for future state query hooks.
+// Currently the FSM is dispatched via CK's domain FSM routing (constitutional-kernel.js).
+// setGovernance wire removed — FSM emits through observability plane directly.
+
 /**
  * Write acquisition result to Redis for agent consumption.
  * Pure mechanical routing — no policy interpretation.

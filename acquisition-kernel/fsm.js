@@ -12,8 +12,16 @@
 // Acquisition-fsm never emits engagement-domain events.
 //
 // Reports to: constitutional kernel for transition validation + global observability.
+//
+// ── Local intelligence enhancements (Phase 8 FSM enrichment) ────────────────
+// Per-intent state records replace the flat global state.
+// Global state (IDLE/ACQUIRING) is DERIVED from the intent record set.
+// 3-layer guards: state check → intent presence → payload shape.
+// Span events emit structured lifecycle telemetry per intent.
+// Gate telemetry accumulates structured veto reasons per intent.
+// Health surface is opaque — no raw Map exposure.
+// Timeout sweeper force-closes stale intents.
 
-// Lazy import to avoid circular dependency
 let _observability = null;
 function _obs() {
   if (!_observability) {
@@ -23,103 +31,353 @@ function _obs() {
   return _observability;
 }
 
-//
-// Architectural invariant:
-//   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
-//   Membranes ↓  → actions returned to constitutional for emission to orchestrators
-//
-// Acquisition-fsm is a PURE intent lifecycle domain. It does NOT emit cross-domain
-// events. Engagement signals are emitted by retry-cadence workers directly
-// to CK and routed via DOMAIN_EVENT_MAP to engagement-fsm.
-//
-// Domain FSMs emit state transitions through the observability plane.
-// The lineage worker consumes from the observability plane and writes to the
-// canonical lineage ledger. FSMs do NOT write to the lineage ledger directly.
-//
-// Local states:
-//   IDLE       — no acquisition in progress
-//   ACQUIRING  — acquisition intent received, execution in flight
+// ── Governance reference (REMOVED — dead wire, no consumer inside FSM) ───────
+// setGovernance/getGovernance removed in S9. FSM emits directly through _obs().
+// Governance (CK) is the authority plane for transition approval only.
+// The FSM does not need a governance ref for emission.
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 0. Execution Policy Constants — retry policy moved to retry-cadence/policy.js
+// 0. Timeout and telemetry configuration
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// MAX_ACQUISITION_RETRIES removed — retry-cadence substrate owns per-substrate policy.
+const TIMEOUT_CONFIG = {
+  parseTimeoutMs:        300_000,  // 5 min — PARSING phase max age before stale
+  intentTimeoutMs:        900_000,  // 15 min — total intent max age before force-close
+  gateVetoWindowMs:       60_000,  // 1 min — rate window for veto telemetry
+  historyRingSize:         10,       // bounded ring: phase history per intent record
+  gateVetoRingSize:        20,      // bounded ring: gate vetoes per intent
+  dedupFingerprintSize:  1000,      // LRU cap for intent fingerprints
+};
+
+let _timeoutConfig = { ...TIMEOUT_CONFIG };
+
+function setTimeoutConfig(overrides) {
+  _timeoutConfig = { ..._timeoutConfig, ...overrides };
+}
+
+function getTimeoutConfig() {
+  return { ..._timeoutConfig };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// ── Governance reference (set by CK at boot) ────────────────────────────
-// The FSM holds a governance ref for worker invocation and event dispatch.
-// engagement-fsm pattern: set at boot, passed through execution contexts.
-let _governance = null;
-
-function setGovernance(governance) {
-  if (governance && typeof governance.dispatch === 'function') {
-    _governance = governance;
-  }
-}
-
-function getGovernance() {
-  return _governance;
-}
-
-// ── Worker registry (local) ───────────────────────────────────────────
-// Each FSM holds its own worker map. CK registration happens at boot
-// via constitutional.registerWorker(fsmName, workerName, worker).
-// The CTX gate (ctx.invokeWorker) validates ownership through CK.
-const _workers = new Map();
-
-function registerWorker(name, worker) {
-  _workers.set(name, worker);
-}
-
-function getWorker(name) {
-  return _workers.get(name) || null;
-}
-
-function getWorkers() {
-  return _workers;
-}
-
-
 // 1. Local State Registry
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const STATE_REGISTRY = {
   IDLE: {
-    description: 'No acquisition in progress — ready for intents',
+    description: 'No active intents — ready for intake',
   },
   ACQUIRING: {
-    description: 'Acquisition intent received, execution in flight',
+    description: 'One or more intents in flight (ACQUIRING | PARSING | COMPLETING)',
   },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 2. Domain Transition Map — event → target + guard + action builder
+// 2. Intent record helpers (private)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function _makeRing(maxSize) {
+  return { _items: [], _max: maxSize };
+}
+
+function _ringPush(ring, item) {
+  if (ring && ring._max > 0) {
+    ring._items.push(item);
+    if (ring._items.length > ring._max) {
+      ring._items.shift();
+    }
+  }
+}
+
+function _createIntentRecord(event) {
+  const now = Date.now();
+  return {
+    intentId:            event.intentId,
+    accountId:            event.accountId,
+    domain:               event.domain,
+    params:               event.params || {},
+    intentFingerprint:    _computeFingerprint(event),
+    intakeAt:             now,
+    currentPhase:         'ACQUIRING',
+    lastTransitionAt:     now,
+    executionDispatchedAt: null,
+    parsingDispatchedAt:  null,
+    parsingJobId:         null,
+    rawCount:             0,
+    history:              _makeRing(_timeoutConfig.historyRingSize),
+    failureReason:        null,
+    gateVetoes:           _makeRing(_timeoutConfig.gateVetoRingSize),
+    outcome:              null,
+  };
+}
+
+function _deriveGlobalState() {
+  const active = Array.from(_intents.values()).filter(
+    (r) => r.currentPhase === 'ACQUIRING' || r.currentPhase === 'PARSING' || r.currentPhase === 'COMPLETING'
+  );
+  return active.length > 0 ? 'ACQUIRING' : 'IDLE';
+}
+
+function _computeFingerprint(event) {
+  try {
+    const key = `${event.domain || ''}:${event.accountId || ''}:${JSON.stringify(event.params || {})}`.replace(/\s/g, '');
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+    }
+    return String(Math.abs(hash));
+  } catch (_) {
+    return null;
+  }
+}
+
+function _enforceFingerprintCap() {
+  if (_fingerprintDedup.size >= _timeoutConfig.dedupFingerprintSize) {
+    let oldest = null;
+    let oldestAt = Infinity;
+    for (const [fp, entry] of _fingerprintDedup) {
+      if (entry.at < oldestAt) {
+        oldestAt = entry.at;
+        oldest = fp;
+      }
+    }
+    if (oldest) _fingerprintDedup.delete(oldest);
+  }
+}
+
+function _recordPhaseHistory(intentId, phase, eventType) {
+  const rec = _intents.get(intentId);
+  if (rec) {
+    rec.currentPhase = phase;
+    rec.lastTransitionAt = Date.now();
+    _ringPush(rec.history, { phase, eventType, at: Date.now() });
+  }
+}
+
+function _closeIntent(intentId, outcome, failureReason) {
+  const rec = _intents.get(intentId);
+  if (rec) {
+    rec.outcome = outcome;
+    rec.failureReason = failureReason || null;
+    rec.currentPhase = 'CLOSED';
+    rec.lastTransitionAt = Date.now();
+    _ringPush(rec.history, { phase: 'CLOSED', eventType: outcome, at: Date.now() });
+  }
+  // Remove fingerprint
+  for (const [fp, entry] of _fingerprintDedup) {
+    if (entry.intentId === intentId) { _fingerprintDedup.delete(fp); break; }
+  }
+}
+
+// ── Span event emitter (additive to existing transition record) ─────────────────
+// Spans ride the existing transition() infrastructure with entity='intent-span'.
+// This avoids modifying the observability plane — spans are structured as transitions.
+
+function _emitSpan(type, intentId, accountId, domain, extras = {}) {
+  const rec = intentId ? _intents.get(intentId) : null;
+  const at = Date.now();
+  try {
+    const obs = _obs();
+    if (obs && typeof obs.transition === 'function') {
+      obs.transition({
+        domain:   'acquisition',
+        entity:   'intent-span',
+        entityId: intentId || null,
+        previousState: null,
+        nextState:  type,
+        authority: 'acquisition-fsm',
+        raw: {
+          type,
+          intentId: intentId || null,
+          accountId: accountId || null,
+          domain:   domain   || null,
+          at,
+          ms_since_intake: rec ? at - rec.intakeAt : 0,
+          ...extras,
+        },
+      });
+    }
+  } catch (_) {}
+  return { type, intentId, accountId, domain, at, ms_since_intake: rec ? at - rec.intakeAt : 0, ...extras };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3. Domain-local runtime state (private)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Global state is DERIVED from the intent record set.
+let _localState = 'IDLE';
+let _lastTransitionedAt = null;
+
+// intentId → IntentRecord
+const _intents = new Map();
+
+// fingerprint → { intentId, at } for dedup
+const _fingerprintDedup = new Map();
+
+// ── Default fail-open sanity check (universal gate pattern) ──────────────────
+
+const _defaultSanityCheck = async () => ({ allowed: true });
+
+function _resolveSanityCheck(ctx, action) {
+  if (ctx && typeof ctx.sanityCheck === 'function') {
+    return ctx.sanityCheck(action);
+  }
+  return _defaultSanityCheck(action);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 4. Guard helpers (3-layer guards per transition)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Layer 1: global state check
+function _guardState(fromState, expected) {
+  if (fromState !== expected) {
+    return { allowed: false, reason: `Cannot transition from ${fromState}` };
+  }
+  return { allowed: true };
+}
+
+// Layer 2: intent presence check — returns the record if found, else null
+function _guardIntentExists(intentId, expectedPhase) {
+  const rec = _intents.get(intentId);
+  if (!rec) {
+    return { allowed: false, reason: `intent_not_found:${intentId}`, record: null };
+  }
+  if (expectedPhase && rec.currentPhase !== expectedPhase) {
+    return { allowed: false, reason: `intent_phase_mismatch:expected=${expectedPhase},actual=${rec.currentPhase}`, record: rec };
+  }
+  return { allowed: true, record: rec };
+}
+
+// Layer 3: payload shape checks
+const REQUIRED_PAYLOAD_FIELDS = {
+  ACQUISITION_INTENT_RECEIVED: ['accountId', 'domain', 'intentId'],
+  PARSING_DISPATCHED:           ['intentId', 'jobId', 'domain', 'accountId'],
+  PARSING_COMPLETE:             ['intentId', 'result'],
+  ACQUISITION_COMPLETE:         ['intentId'],
+  ACQUISITION_EXECUTING:         ['intentId'],
+};
+
+function _guardPayload(event) {
+  const required = REQUIRED_PAYLOAD_FIELDS[event.type];
+  if (!required) return { allowed: true };
+  for (const field of required) {
+    if (event[field] === undefined || event[field] === null) {
+      return { allowed: false, reason: `malformed_payload:missing_field=${field}` };
+    }
+  }
+  return { allowed: true };
+}
+
+// Combined 3-layer guard factory
+function _makeGuard(fromState, intentPhase = null) {
+  return (event) => {
+    // Layer 1: global state
+    const s = _deriveGlobalState();
+    const l1 = _guardState(s, fromState);
+    if (!l1.allowed) return l1;
+
+    // Layer 2: intent presence
+    if (intentPhase && event.intentId) {
+      const l2 = _guardIntentExists(event.intentId, intentPhase);
+      if (!l2.allowed) return l2;
+    }
+
+    // Layer 3: payload shape
+    const l3 = _guardPayload(event);
+    if (!l3.allowed) return l3;
+
+    return { allowed: true };
+  };
+}
+
+// ── Sanity gate resolver with intent-level veto tracking ─────────────────────
+
+async function _resolveSanityCheckWithTelemetry(ctx, action, intentId) {
+  const gate = await _resolveSanityCheck(ctx, action);
+  if (!gate.allowed) {
+    const reason = gate.reason || 'gate_rejected';
+    const at = Date.now();
+    if (intentId) {
+      const rec = _intents.get(intentId);
+      if (rec) {
+        _ringPush(rec.gateVetoes, { op: action.operation, reason, at });
+      }
+    }
+    _emitSpan('INTENT_GATE_VETO', intentId, action.accountId, action.domain, {
+      operation: action.operation,
+      reason,
+    });
+  }
+  return gate;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. Domain Transition Map
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRANSITION_MAP = {
+
   // ── Intent received → begin acquisition ─────────────────────────────────
-  // Gated by ctx.sanityCheck (universal gate). When the system
-  // is DEGRADED, the gate can veto EXECUTE_ACQUISITION. The
-  // orchastrator subscriber won't fire, the substrate won't run.
-  // Telemetry is preserved via GATE_REJECTED emission.
   ACQUISITION_INTENT_RECEIVED: {
     target: 'ACQUIRING',
     guard: (event) => {
-      if (_localState !== 'IDLE') {
-        return { allowed: false, reason: `Cannot acquire from ${_localState}` };
+      const s = _deriveGlobalState();
+      const l1 = _guardState(s, 'IDLE');
+      if (!l1.allowed) return l1;
+
+      const l3 = _guardPayload(event);
+      if (!l3.allowed) return l3;
+
+      // Dedup: check fingerprint within window
+      const fp = _computeFingerprint(event);
+      if (fp && _fingerprintDedup.has(fp)) {
+        const entry = _fingerprintDedup.get(fp);
+        const age = Date.now() - entry.at;
+        // Only reject if the prior intent is still active (not closed)
+        const priorRec = _intents.get(entry.intentId);
+        if (priorRec && priorRec.currentPhase !== 'CLOSED') {
+          _emitSpan('INTENT_DEDUP', event.intentId, event.accountId, event.domain, {
+            priorIntentId: entry.intentId,
+            fingerprintAgeMs: age,
+          });
+          return { allowed: false, reason: `duplicate_intent:fingerprint=${fp}` };
+        }
+        // Prior intent closed — allow; update dedup entry
+        _fingerprintDedup.delete(fp);
       }
+
       return { allowed: true };
     },
     buildActions: async (event, ctx) => {
-      const gate = await _resolveSanityCheck(ctx, {
+      // Create intent record
+      const rec = _createIntentRecord(event);
+      _intents.set(event.intentId, rec);
+
+      // Register fingerprint
+      const fp = rec.intentFingerprint;
+      if (fp) {
+        _enforceFingerprintCap();
+        _fingerprintDedup.set(fp, { intentId: event.intentId, at: Date.now() });
+      }
+
+      _emitSpan('INTENT_INTAKE', event.intentId, event.accountId, event.domain, {
+        fingerprint: fp,
+      });
+
+      const gate = await _resolveSanityCheckWithTelemetry(ctx, {
         operation: 'execute_acquisition',
         accountId: event.accountId,
         domain: event.domain,
         intentId: event.intentId,
-      });
+      }, event.intentId);
+
       if (!gate.allowed) {
+        rec.outcome = 'gated';
+        rec.currentPhase = 'CLOSED';
+        rec.failureReason = { code: gate.reason || 'gate_rejected', source: 'sanity_check' };
+        _ringPush(rec.history, { phase: 'CLOSED', eventType: 'INTENT_GATE_VETO', at: Date.now() });
         return [{
           type: 'GATE_REJECTED',
           operation: 'execute_acquisition',
@@ -129,6 +387,10 @@ const TRANSITION_MAP = {
           reason: gate.reason || 'gate_rejected',
         }];
       }
+
+      rec.executionDispatchedAt = Date.now();
+      _emitSpan('INTENT_DISPATCHED', event.intentId, event.accountId, event.domain);
+
       return [{
         type: 'EXECUTE_ACQUISITION',
         accountId: event.accountId,
@@ -140,189 +402,213 @@ const TRANSITION_MAP = {
   },
 
   // ── Execution started → stop intent discovery ───────────────────────────
-  // No gate on STOP_INTENT_DISCOVERY — system-level restart signal.
-  // Gating it could leave the system stuck.
   ACQUISITION_EXECUTING: {
-    target: 'ACQUIRING', // stays in ACQUIRING — execution in progress
-    guard: (event) => {
-      if (_localState !== 'ACQUIRING') {
-        return { allowed: false, reason: `Cannot execute from ${_localState}` };
-      }
-      return { allowed: true };
-    },
-    buildActions: async () => [{
-      type: 'STOP_INTENT_DISCOVERY',
-    }],
-  },
-
-  // ── Acquisition complete (success or permanent failure) → back to IDLE ──
-  // Gated on WRITE_ACQUISITION_RESULT emission. The orchastrator
-  // subscriber writes to Redis; the gate veto means no write.
-  // GATE_REJECTED preserves telemetry for the veto.
-  ACQUISITION_COMPLETE: {
-    target: 'IDLE',
-    guard: (event) => {
-      if (_localState !== 'ACQUIRING') {
-        return { allowed: false, reason: `Cannot complete from ${_localState}` };
-      }
-      return { allowed: true };
-    },
-    buildActions: async (event, ctx) => {
-      const actions = [];
-      if (event.result) {
-        const gate = await _resolveSanityCheck(ctx, {
-          operation: 'write_acquisition_result',
-          accountId: event.accountId,
-          domain: event.domain,
-          intentId: event.intentId,
-        });
-        if (!gate.allowed) {
-          actions.push({
-            type: 'GATE_REJECTED',
-            operation: 'write_acquisition_result',
-            accountId: event.accountId,
-            domain: event.domain,
-            intentId: event.intentId,
-            reason: gate.reason || 'gate_rejected',
-          });
-        } else {
-          actions.push({
-            type: 'WRITE_ACQUISITION_RESULT',
-            accountId: event.accountId,
-            domain: event.domain,
-            intentId: event.intentId,
-            result: event.result,
-          });
-        }
-      }
-      actions.push({ type: 'START_INTENT_DISCOVERY' });
-      return actions;
+    target: 'ACQUIRING',
+    guard: _makeGuard('ACQUIRING', 'ACQUIRING'),
+    buildActions: async (event) => {
+      _recordPhaseHistory(event.intentId, 'ACQUIRING', 'ACQUISITION_EXECUTING');
+      return [{ type: 'STOP_INTENT_DISCOVERY' }];
     },
   },
 
-  // ── Parsing dispatched → parsing worker is running asynchronously ───────────
-  // No gate (no emission, just sets _pendingParsing Map).
+  // ── Parsing dispatched → parsing worker in flight ───────────────────────
   PARSING_DISPATCHED: {
-    target: () => _localState, // stays in ACQUIRING — wait for PARSING_COMPLETE
+    target: 'ACQUIRING', // stays ACQUIRING — wait for PARSING_COMPLETE
     guard: (event) => {
-      if (_localState !== 'ACQUIRING') {
-        return { allowed: false, reason: `Cannot dispatch parsing from ${_localState}` };
+      const s = _deriveGlobalState();
+      const l1 = _guardState(s, 'ACQUIRING');
+      if (!l1.allowed) return l1;
+
+      const l3 = _guardPayload(event);
+      if (!l3.allowed) return l3;
+
+      // Intent must exist in ACQUIRING phase (not yet parsing)
+      const rec = _intents.get(event.intentId);
+      if (!rec) {
+        return { allowed: false, reason: `orphaned_parse_dispatch:intent=${event.intentId}` };
       }
+      if (rec.currentPhase !== 'ACQUIRING') {
+        return { allowed: false, reason: `intent_phase_mismatch:expected=ACQUIRING,actual=${rec.currentPhase}` };
+      }
+
       return { allowed: true };
     },
     buildActions: async (event) => {
-      _pendingParsing.set(event.intentId, {
+      const rec = _intents.get(event.intentId);
+      if (rec) {
+        rec.parsingDispatchedAt = Date.now();
+        rec.parsingJobId = event.jobId;
+        rec.rawCount = event.rawCount || 0;
+        _recordPhaseHistory(event.intentId, 'PARSING', 'PARSING_DISPATCHED');
+      }
+      _emitSpan('INTENT_PARSING_START', event.intentId, event.accountId, event.domain, {
         jobId: event.jobId,
-        domain: event.domain,
-        accountId: event.accountId,
         rawCount: event.rawCount || 0,
       });
       return [];
     },
   },
 
-  // ── Parsing complete → worker finished, transition to IDLE ──────────────────
-  // Gated on RETRY_EXHAUSTED emission (terminal failure path).
-  // GATE_REJECTED preserves telemetry if the gate vetoes the
-  // terminal signal.
+  // ── Parsing complete → worker finished ───────────────────────────────────
   PARSING_COMPLETE: {
-    target: 'IDLE',
+    target: 'ACQUIRING', // global state derived from intents; stays ACQUIRING if other intents active
     guard: (event) => {
-      if (_localState !== 'ACQUIRING') {
-        return { allowed: false, reason: `Cannot complete parsing from ${_localState}` };
+      const s = _deriveGlobalState();
+      const l1 = _guardState(s, 'ACQUIRING');
+      if (!l1.allowed) return l1;
+
+      const l3 = _guardPayload(event);
+      if (!l3.allowed) return l3;
+
+      // Intent must exist in PARSING phase
+      const rec = _intents.get(event.intentId);
+      if (!rec) {
+        return { allowed: false, reason: `stale_complete:intent=${event.intentId}` };
       }
+      if (rec.currentPhase !== 'PARSING') {
+        return { allowed: false, reason: `intent_phase_mismatch:expected=PARSING,actual=${rec.currentPhase}` };
+      }
+
       return { allowed: true };
     },
     buildActions: async (event, ctx) => {
       const { accountId, domain, intentId, result } = event;
-      _pendingParsing.delete(intentId);
+      const rec = _intents.get(intentId);
 
-      if (result.status === 'failed') {
-        const gate = await _resolveSanityCheck(ctx, {
-          operation: 'parsing_failed_retry_exhausted',
-          accountId,
-          domain,
-          intentId,
-        });
-        if (!gate.allowed) {
-          return [{
-            type: 'GATE_REJECTED',
-            operation: 'parsing_failed_retry_exhausted',
-            accountId,
-            domain,
-            intentId,
-            reason: gate.reason || 'gate_rejected',
-          }];
+      // Defensive: malformed/missing result
+      if (!result || typeof result !== 'object') {
+        if (rec) {
+          _closeIntent(intentId, 'failed', { code: 'missing_result', source: 'fsm_parse_complete' });
         }
+        _emitSpan('INTENT_PARSING_END', intentId, accountId, domain, {
+          status: 'malformed',
+          error: 'missing_result',
+        });
         return [{
           type: 'RETRY_EXHAUSTED',
           accountId,
           domain,
           intentId,
+          error: 'missing_result',
+        }];
+      }
+
+      _emitSpan('INTENT_PARSING_END', intentId, accountId, domain, {
+        status: result.status,
+        rawCount: result.rawCount || rec?.rawCount || 0,
+      });
+
+      if (result.status === 'failed') {
+        const gate = await _resolveSanityCheckWithTelemetry(ctx, {
+          operation: 'parsing_failed_retry_exhausted',
+          accountId, domain, intentId,
+        }, intentId);
+
+        if (!gate.allowed) {
+          if (rec) {
+            _ringPush(rec.gateVetoes, {
+              op: 'parsing_failed_retry_exhausted',
+              reason: gate.reason || 'gate_rejected',
+              at: Date.now(),
+            });
+          }
+          return [{
+            type: 'GATE_REJECTED',
+            operation: 'parsing_failed_retry_exhausted',
+            accountId, domain, intentId,
+            reason: gate.reason || 'gate_rejected',
+          }];
+        }
+
+        if (rec) {
+          rec.failureReason = { code: 'parsing_failed', source: 'parsing_worker', message: result.error || 'parsing_failed' };
+        }
+        return [{
+          type: 'RETRY_EXHAUSTED',
+          accountId, domain, intentId,
           error: result.error || 'parsing_failed',
         }];
       }
 
-      return [{
-        type: 'START_INTENT_DISCOVERY',
-      }];
+      // Success path: restart intent discovery
+      _recordPhaseHistory(intentId, 'ACQUIRING', 'PARSING_COMPLETE_SUCCESS');
+      return [{ type: 'START_INTENT_DISCOVERY' }];
     },
   },
 
-  // ── Execution observations — intent lifecycle only ──────────────────────────
-// Constitutional purity: acquisition-fsm owns ONLY intent lifecycle (IDLE ↔ ACQUIRING).
-// Engagement signals (auth_failure, rate_limit, retry_exhausted) are emitted by
-// retry-cadence workers to CK. DOMAIN_EVENT_MAP routes them to
-// engagement-fsm independently. Acquisition-fsm never emits engagement-domain events.
+  // ── Acquisition complete (terminal) ──────────────────────────────────────
+  ACQUISITION_COMPLETE: {
+    target: null, // derived after action building (depends on whether other intents exist)
+    guard: (event) => {
+      const s = _deriveGlobalState();
+      // Allow from ACQUIRING; also allow from IDLE if the intent exists (stale complete — defensive)
+      if (s !== 'ACQUIRING' && s !== 'IDLE') {
+        return { allowed: false, reason: `Cannot complete from ${s}` };
+      }
 
-  // ── EXECUTION_OBSERVATION — REMOVED in Step 4 of authority centralisation ─
-  // Acquisition-fsm no longer classifies worker outcomes. Workers emit
-  // WORKER_OUTCOME_REPORTED, which routes to engagement-fsm. engagement-fsm
-  // calls the classification-worker, decides the action, and emits the
-  // downstream signal (RETRY_REQUESTED, AUTH_FAILURE_STRIKE, RATE_LIMIT_DETECTED,
-  // RETRY_EXHAUSTED). Acquisition-fsm receives those via the existing handlers.
-  //
-  // The lifecycle here is:
-  //   1. PARSING_DISPATCHED (worker reports parsing job started)
-  //   2. PARSING_COMPLETE   (parsing job finished — success or failure)
-  //   3. ACQUISITION_COMPLETE (terminal — success or permanent failure)
-  //
-  // RETRY_EXHAUSTED arriving from engagement-fsm carries the terminal
-  // signal for the failure path. It routes to ACQUISITION_COMPLETE
-  // via the existing subscriber wiring (acquisition-orchestrator).
+      const l3 = _guardPayload(event);
+      if (!l3.allowed) return l3;
+
+      // If from IDLE, the intent must exist and be closable
+      if (s === 'IDLE' && event.intentId) {
+        const rec = _intents.get(event.intentId);
+        if (!rec) {
+          return { allowed: false, reason: `stale_complete:intent=${event.intentId}` };
+        }
+        if (rec.currentPhase === 'CLOSED') {
+          return { allowed: false, reason: `already_closed:intent=${event.intentId}` };
+        }
+      }
+
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { accountId, domain, intentId, result } = event;
+      const actions = [];
+      const rec = intentId ? _intents.get(intentId) : null;
+
+      if (result) {
+        const gate = await _resolveSanityCheckWithTelemetry(ctx, {
+          operation: 'write_acquisition_result',
+          accountId, domain, intentId,
+        }, intentId);
+
+        if (!gate.allowed) {
+          actions.push({
+            type: 'GATE_REJECTED',
+            operation: 'write_acquisition_result',
+            accountId, domain, intentId,
+            reason: gate.reason || 'gate_rejected',
+          });
+        } else {
+          actions.push({
+            type: 'WRITE_ACQUISITION_RESULT',
+            accountId, domain, intentId,
+            result: event.result,
+          });
+        }
+      }
+
+      // Close the intent record
+      if (rec) {
+        const outcome = result?.status === 'failed' ? 'failed' : 'success';
+        _closeIntent(intentId, outcome, result?.error ? { code: result.error, source: 'acquisition_complete' } : null);
+      }
+
+      _emitSpan('INTENT_COMPLETE', intentId, accountId, domain, {
+        outcome: rec?.outcome || (result?.status === 'failed' ? 'failed' : 'success'),
+        failureReason: rec?.failureReason || null,
+        gateVetoCount: rec?.gateVetoes?._items?.length || 0,
+      });
+
+      actions.push({ type: 'START_INTENT_DISCOVERY' });
+      return actions;
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 3. Domain-local runtime state (private)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-let _localState = 'IDLE';
-let _lastTransitionedAt = null; // last state change timestamp for temporal alignment in reconciliation
-
-// ── Execution state tracking ─────────────────────────────────────────────────
-// _pendingParsing is the ONLY execution map acquisition-fsm still owns.
-// It tracks parsing jobs that have been dispatched but not yet completed.
-// _executionRetries and _executionState were removed in Step 3 — retry
-// counting moved to retry-cadence substrate, error state to engagement-fsm.
-const _pendingParsing = new Map();      // intentId → { jobId, domain, accountId, rawCount }
-
-// ── Default fail-open sanity check (universal gate pattern) ─────────────
-// The ctx.sanityCheck is the universal gate. The FSM calls it
-// during emission. For tests / non-CK dispatch, the default is
-// always-allowed (fail-open to preserve operational cadence).
-const _defaultSanityCheck = async () => ({ allowed: true });
-
-function _resolveSanityCheck(ctx, action) {
-  if (ctx && typeof ctx.sanityCheck === 'function') {
-    return ctx.sanityCheck(action);
-  }
-  return _defaultSanityCheck(action);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 4. Dispatch — process event, ask constitutional for validation, transition
-//
-// Domain FSMs emit through observability plane (not lineage ledger).
+// 6. Dispatch — process event, ask constitutional for validation, transition
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -330,7 +616,7 @@ function _resolveSanityCheck(ctx, action) {
  *
  * @param {{ type: string, [key: string]: any }} event — domain event
  * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
- * @returns {{ allowed: boolean, from?: string, to?: string, lineageId?: string, actions?: Array, reason?: string }}
+ * @returns {{ allowed: boolean, from?: string, to?: string, actions?: Array, reason?: string }}
  */
 async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
@@ -352,16 +638,28 @@ async function dispatch(event, ctx) {
     }
   }
 
-  // 2. Resolve target state
-  const rawTarget = txn.target;
-  const target = typeof rawTarget === 'function' ? rawTarget(event) : rawTarget;
+  // 2. Build actions FIRST (before state mutation) — ACQUISITION_COMPLETE target is derived
+  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
 
-  // null target = no state change
-  if (target === null) {
+  // 3. Derive target state AFTER actions (ACQUISITION_COMPLETE may close the last intent)
+  const newGlobalState = _deriveGlobalState();
+  const rawTarget = txn.target;
+  let target;
+  if (rawTarget === null) {
+    target = newGlobalState;
+  } else if (typeof rawTarget === 'function') {
+    // Legacy: dynamic target function — call with new state
+    target = rawTarget(event);
+  } else {
+    target = rawTarget;
+  }
+
+  // 4. No-op if state hasn't changed
+  if (target === from && actions.length === 0) {
     return { allowed: true, from, to: from, actions: [], reason: 'no-transition' };
   }
 
-  // 3. Ask constitutional kernel for transition approval
+  // 5. Ask constitutional kernel for transition approval
   if (ctx && ctx.validate) {
     const validation = ctx.validate(from, target, event);
     if (!validation.allowed) {
@@ -369,12 +667,11 @@ async function dispatch(event, ctx) {
     }
   }
 
-  // 4. THEN materialize state
+  // 6. Materialize state
   _localState = target;
   _lastTransitionedAt = Date.now();
 
-  // 6. Emit observability transition for domain FSM state change
-  // Fire-and-forget — observability failures never affect domain FSM behavior
+  // 7. Emit observability transition for domain FSM state change
   try {
     const obs = _obs();
     if (obs) {
@@ -390,11 +687,6 @@ async function dispatch(event, ctx) {
     }
   } catch (_) {}
 
-  // 7. Build actions
-  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
-
-  console.log(`[acquisition-fsm] ${from} → ${target}  (${event.type})`);
-
   return {
     allowed: true,
     from,
@@ -404,24 +696,164 @@ async function dispatch(event, ctx) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. Initialization — called by constitutional kernel on boot with rehydrated state
+// 7. Timeout sweeper — force-closes stale intents
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Initialize the domain FSM with rehydrated state from lineage.
- * Called by the constitutional kernel after rehydrate() completes on boot.
- *
- * @param {string} rehydratedState — the domain state to restore (e.g., 'ACQUIRING', 'IDLE')
- */
-function init(rehydratedState) {
-  if (rehydratedState && typeof rehydratedState === 'string') {
-    _localState = rehydratedState;
-    console.log(`[acquisition-fsm] Initialized with rehydrated state: ${rehydratedState}`);
+let _sweepIntervalHandle = null;
+
+function _sweepTimeouts() {
+  const now = Date.now();
+  const parseDeadline = now - _timeoutConfig.parseTimeoutMs;
+  const intentDeadline = now - _timeoutConfig.intentTimeoutMs;
+  const closed = [];
+
+  for (const [intentId, rec] of _intents) {
+    if (rec.currentPhase === 'CLOSED') {
+      // Remove closed intents older than 5 minutes
+      if (rec.lastTransitionAt < intentDeadline) {
+        _intents.delete(intentId);
+        closed.push(intentId);
+      }
+      continue;
+    }
+
+    // Force-close if total intent age exceeded
+    if (rec.intakeAt < intentDeadline) {
+      rec.outcome = 'failed';
+      rec.failureReason = { code: 'intent_timeout', source: 'timeout_sweeper' };
+      rec.currentPhase = 'CLOSED';
+      rec.lastTransitionAt = now;
+      _emitSpan('INTENT_TIMEOUT', intentId, rec.accountId, rec.domain, {
+        ageMs: now - rec.intakeAt,
+        thresholdMs: _timeoutConfig.intentTimeoutMs,
+      });
+      closed.push(intentId);
+      continue;
+    }
+
+    // Flag stale parse (parsing phase overdue) but do not force-close — let the
+    // PARSING_COMPLETE event arrive naturally; sweeper only closes on total timeout.
+    if (rec.currentPhase === 'PARSING' && rec.parsingDispatchedAt && rec.parsingDispatchedAt < parseDeadline) {
+      // Stale signal goes into health, not a forced close
+    }
+  }
+
+  return closed;
+}
+
+function startTimeoutSweeper(intervalMs = 30_000) {
+  if (_sweepIntervalHandle) clearInterval(_sweepIntervalHandle);
+  _sweepIntervalHandle = setInterval(_sweepTimeouts, intervalMs);
+  // Immediate first sweep
+  _sweepTimeouts();
+}
+
+function stopTimeoutSweeper() {
+  if (_sweepIntervalHandle) {
+    clearInterval(_sweepIntervalHandle);
+    _sweepIntervalHandle = null;
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 6. Observability — domain state queries
+// 8. Gate telemetry surface
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getGateTelemetry() {
+  const now = Date.now();
+  const windowStart = now - _timeoutConfig.gateVetoWindowMs;
+  let totalVetoes = 0;
+  const vetoesByReason = {};
+  const vetoesByOp = {};
+  let lastVetoAt = null;
+  let lastVetoIntentId = null;
+
+  for (const rec of _intents.values()) {
+    const vetoes = rec.gateVetoes?._items || [];
+    for (const v of vetoes) {
+      totalVetoes++;
+      vetoesByReason[v.reason] = (vetoesByReason[v.reason] || 0) + 1;
+      vetoesByOp[v.op] = (vetoesByOp[v.op] || 0) + 1;
+      if (!lastVetoAt || v.at > lastVetoAt) {
+        lastVetoAt = v.at;
+        lastVetoIntentId = rec.intentId;
+      }
+    }
+  }
+
+  const vetoRate = _timeoutConfig.gateVetoWindowMs > 0
+    ? totalVetoes / (_timeoutConfig.gateVetoWindowMs / 1000)
+    : 0;
+
+  return {
+    totalVetoes,
+    vetoesByReason,
+    vetoesByOp,
+    vetoRate,
+    lastVetoAt,
+    lastVetoIntentId,
+    windowMs: _timeoutConfig.gateVetoWindowMs,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 9. Intent snapshot (reconciliation / observability consumers)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getIntentSnapshot(intentId) {
+  const rec = _intents.get(intentId);
+  if (!rec) return null;
+  return {
+    intentId:       rec.intentId,
+    accountId:      rec.accountId,
+    domain:         rec.domain,
+    intakeAt:       rec.intakeAt,
+    currentPhase:   rec.currentPhase,
+    lastTransitionAt: rec.lastTransitionAt,
+    outcome:        rec.outcome,
+    failureReason:  rec.failureReason,
+    gateVetoCount:  rec.gateVetoes?._items?.length || 0,
+    rawCount:       rec.rawCount,
+    history:        [...(rec.history?._items || [])],
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 10. Initialization
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Initialize the domain FSM with rehydrated state from lineage.
+ * @param {string} rehydratedState — 'ACQUIRING' or 'IDLE'
+ * @param {object} [opts] — { rehydratedIntents: IntentRecord[] }
+ */
+function init(rehydratedState, opts = {}) {
+  if (rehydratedState && typeof rehydratedState === 'string') {
+    _localState = rehydratedState;
+    console.log(`[acquisition-fsm] Initialized with rehydrated state: ${rehydratedState}`);
+  }
+  if (opts.rehydratedIntents && Array.isArray(opts.rehydratedIntents)) {
+    for (const rec of opts.rehydratedIntents) {
+      if (rec.intentId) {
+        _intents.set(rec.intentId, {
+          ...rec,
+          history:    _makeRing(_timeoutConfig.historyRingSize),
+          gateVetoes: _makeRing(_timeoutConfig.gateVetoRingSize),
+        });
+      }
+    }
+    console.log(`[acquisition-fsm] Rehydrated ${opts.rehydratedIntents.length} intent records`);
+  }
+}
+
+function clearIntents() {
+  _intents.clear();
+  _fingerprintDedup.clear();
+  _localState = 'IDLE';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 11. Observability — domain state queries
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function getState() {
@@ -431,44 +863,157 @@ function getState() {
 function exportState() {
   return {
     state: _localState,
-    pendingParsing: _pendingParsing.size,
+    activeIntents: Array.from(_intents.values())
+      .filter((r) => r.currentPhase !== 'CLOSED')
+      .length,
+    closedIntents: Array.from(_intents.values())
+      .filter((r) => r.currentPhase === 'CLOSED')
+      .length,
   };
 }
 
 function getHealth() {
-  // pendingParsing is the only execution map. A large count means
-  // parsing workers are stuck (no PARSING_COMPLETE arriving). Step 3
-  // of T5 in the plan: add timeout/cleanup. For now, signal at 10.
+  const now = Date.now();
+  const parseDeadline = now - _timeoutConfig.parseTimeoutMs;
+  const intentDeadline = now - _timeoutConfig.intentTimeoutMs;
+  const vetoWindowStart = now - _timeoutConfig.gateVetoWindowMs;
+
+  const allRecs = Array.from(_intents.values());
+  const activeRecs = allRecs.filter((r) => r.currentPhase !== 'CLOSED');
+  const parsingRecs = allRecs.filter((r) => r.currentPhase === 'PARSING');
+  const staleParseRecs = parsingRecs.filter(
+    (r) => r.parsingDispatchedAt && r.parsingDispatchedAt < parseDeadline
+  );
+
+  // Intent age stats
+  let oldestIntentAgeMs = 0;
+  let lastSuccessAt = null;
+  let lastFailureAt = null;
+  for (const rec of allRecs) {
+    const age = now - rec.intakeAt;
+    if (age > oldestIntentAgeMs) oldestIntentAgeMs = age;
+    if (rec.outcome === 'success' && (!lastSuccessAt || rec.lastTransitionAt > lastSuccessAt)) {
+      lastSuccessAt = rec.lastTransitionAt;
+    }
+    if (rec.outcome === 'failed' && (!lastFailureAt || rec.lastTransitionAt > lastFailureAt)) {
+      lastFailureAt = rec.lastTransitionAt;
+    }
+  }
+
+  // Gate veto rate (last window)
+  let recentVetoes = 0;
+  for (const rec of allRecs) {
+    const vetoes = rec.gateVetoes?._items || [];
+    for (const v of vetoes) {
+      if (v.at >= vetoWindowStart) recentVetoes++;
+    }
+  }
+  const gateVetoRate = _timeoutConfig.gateVetoWindowMs > 0
+    ? recentVetoes / (_timeoutConfig.gateVetoWindowMs / 1000)
+    : 0;
+
+  // Last veto
+  let lastVetoAt = null;
+  for (const rec of allRecs) {
+    const vetoes = rec.gateVetoes?._items || [];
+    for (const v of vetoes) {
+      if (!lastVetoAt || v.at > lastVetoAt) lastVetoAt = v.at;
+    }
+  }
+
+  // Derive health flags
+  const flags = [];
+  if (staleParseRecs.length > 0)    flags.push('stale_parse');
+  if (gateVetoRate > 0.5)           flags.push('gate_storm');
+  if (activeRecs.length > 50)       flags.push('intent_leak');
+  if (activeRecs.length > 0 && oldestIntentAgeMs > _timeoutConfig.intentTimeoutMs) {
+    flags.push('intent_timeout');
+  }
+  if (activeRecs.length === 0 && allRecs.length > 0 && !lastSuccessAt && !lastFailureAt) {
+    // Nothing completing — check for stuck
+  }
+
   return {
-    ok: _pendingParsing.size < 10,
+    ok: flags.length === 0,
     signals: {
-      pendingParsing: _pendingParsing.size,
+      activeIntents:    activeRecs.length,
+      parsingInFlight: parsingRecs.length,
+      staleParses:      staleParseRecs.length,
+      oldestIntentAgeMs,
+      gateVetoRate:     parseFloat(gateVetoRate.toFixed(4)),
+      lastSuccessAt,
+      lastFailureAt,
+      lastVetoAt,
+      healthFlags: flags,
     },
   };
 }
 
-// ── Reconciliation engine getters ───────────────────────────────────────────
+// ── Reconciliation engine getters ────────────────────────────────────────────
 
 function getLastTransitionedAt() {
   return _lastTransitionedAt;
 }
 
 function getPendingParsing() {
-  return new Map(_pendingParsing);
+  // Backward compat — derived from _intents
+  return Array.from(_intents.values())
+    .filter((r) => r.currentPhase === 'PARSING')
+    .map((r) => ({
+      intentId:   r.intentId,
+      jobId:      r.parsingJobId,
+      domain:     r.domain,
+      accountId:  r.accountId,
+      rawCount:   r.rawCount,
+      ageMs:     Date.now() - (r.parsingDispatchedAt || r.intakeAt),
+    }));
 }
 
+// ── Span query (observability consumers) ─────────────────────────────────────
+
+function getSpan(intentId) {
+  const rec = _intents.get(intentId);
+  if (!rec) return null;
+  return {
+    intentId:       rec.intentId,
+    accountId:      rec.accountId,
+    domain:         rec.domain,
+    intakeAt:       rec.intakeAt,
+    executionAt:    rec.executionDispatchedAt,
+    parsingAt:      rec.parsingDispatchedAt,
+    completeAt:     rec.outcome ? rec.lastTransitionAt : null,
+    durationMs:     rec.executionDispatchedAt
+      ? (rec.lastTransitionAt - rec.executionDispatchedAt)
+      : (rec.lastTransitionAt - rec.intakeAt),
+    parseDurationMs: rec.parsingDispatchedAt
+      ? (rec.lastTransitionAt - rec.parsingDispatchedAt)
+      : null,
+    totalDurationMs: rec.intakeAt ? rec.lastTransitionAt - rec.intakeAt : null,
+    outcome:        rec.outcome,
+    failureReason:  rec.failureReason,
+    gateVetoCount:  rec.gateVetoes?._items?.length || 0,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 12. Module exports
+// ═══════════════════════════════════════════════════════════════════════════════
+
 module.exports = {
-  setGovernance,
-  getGovernance,
-  registerWorker,
-  getWorker,
-  getWorkers,
   name: 'acquisition',
   dispatch,
   init,
+  clearIntents,
   getState,
   exportState,
   getHealth,
   getLastTransitionedAt,
   getPendingParsing,
+  getGateTelemetry,
+  getIntentSnapshot,
+  getSpan,
+  setTimeoutConfig,
+  getTimeoutConfig,
+  startTimeoutSweeper,
+  stopTimeoutSweeper,
 };

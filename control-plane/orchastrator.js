@@ -81,7 +81,8 @@ function _wire() {
   // Each FSM holds the governance ref so it can pass it to
   // workers via execution contexts. Workers receive governance
   // through the FSM — they never import it at module load.
-  acquisitionFsm.setGovernance(constitutional);
+  // Note: acquisitionFsm.setGovernance removed — acquisition-fsm emits
+  // through observability plane directly; no governance ref needed.
   publishingFsm.setGovernance(constitutional);
   graphCapabilityFsm.setGovernance(constitutional);
   schedulingFsm.setGovernance(constitutional);
