@@ -535,8 +535,9 @@ const DOMAIN_EVENT_MAP = {
   PUBLISHING_OBSERVATION: 'publishing',
   RETRY_IN_PROGRESS: 'publishing',
   EMISSION_OBSERVATION: 'publishing',
+  RETRY_PUBLISH: 'publishing',
   PUBLISH_FAILURE: 'publishing',
-  DB_SCAN_EMITTED: 'publishing',
+  PUBLISH_RETRY_EXHAUSTED: 'publishing',
 
   // Scheduling domain
   CADENCE_TICK: 'scheduling',

@@ -142,6 +142,19 @@ function getEntriesSince(includeIndex) {
 }
 
 /**
+ * Return entries from a domain-bounded Redis partition starting at cursor position.
+ * Per-namespace cursor reads for FSM coordination — each namespace's cursor tracks
+ * its own bounded partition independently.
+ *
+ * @param {string} domain — namespace: runtime | integrity | authority | health | systemic
+ * @param {number} cursor — 0-based index into the Redis bounded partition
+ * @returns {Promise<{ entries: Array<object>, nextCursor: number, totalSize: number }>}
+ */
+async function getDomainEntriesSince(domain, cursor) {
+  return projection.getDomainEntriesSince(domain, cursor);
+}
+
+/**
  * Return the total number of entries in the transition log.
  * Used to bootstrap consumer cursors.
  *
@@ -214,6 +227,7 @@ module.exports = {
     getCrossDomain,
     getFullSnapshot,
     getEntriesSince,
+    getDomainEntriesSince,
     getLogSize,
     registerConsumer,
     unregisterConsumer,

@@ -213,20 +213,48 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Permanent failure from engagement-fsm ───────────────────────────────
-  PUBLISH_FAILURE: {
+  // ── PUBLISH_FAILURE handler REMOVED in Step 7 ──────────────────
+  // PUBLISH_FAILURE is observability-only. The emission-orchestrator
+  // still emits it (dual emission with WORKER_OUTCOME_REPORTED) for
+  // alerting/lineage subscribers. But it does NOT enter a FSM.
+  // The canonical terminal-failure transition for publishing-fsm
+  // is PUBLISH_RETRY_EXHAUSTED (above), emitted by engagement-fsm
+  // when the retry chain is exhausted.
+
+  // ── RETRY_PUBLISH handler REMOVED in Step 7 ─────────────────────
+  // This handler was a constitutional bypass — it re-emitted
+  // EXECUTE_CONTENT/EXECUTE_ENGAGEMENT from the FSM, bypassing
+  // the worker→FSM→classifier→schedule loop. The new architecture
+  // has engagement-fsm own retry invocation (via _executeRetry),
+  // not publishing-fsm. No code path emits RETRY_PUBLISH.
+
+  // ── PUBLISH_RETRY_EXHAUSTED (Step 7 — terminal failure) ───────────────
+  // This is the CANONICAL terminal-failure transition for
+  // publishing-fsm. It is emitted by engagement-fsm's
+  // _buildExhaustedActions when a publish:* retry chain
+  // exhausts (max retries, permanent failure, or sanity
+  // rejection). publishing-fsm transitions EXECUTING → IDLE
+  // and emits LOG_DEGRADED.
+  //
+  // REPLACES the previous PUBLISH_FAILURE handler, which was
+  // a constitutional bypass (it re-entered the lifecycle
+  // from outside the canonical retry cadence loop).
+  PUBLISH_RETRY_EXHAUSTED: {
     target: 'IDLE',
     guard: (event) => {
       if (_localState !== 'EXECUTING') {
-        return { allowed: false, reason: `Cannot fail publish from ${_localState}` };
+        return { allowed: false, reason: `PUBLISH_RETRY_EXHAUSTED from ${_localState}` };
       }
       return { allowed: true };
     },
     buildActions: (event) => {
       return [{
         type: 'LOG_DEGRADED',
-        substate: 'RETRY_EXHAUSTED',
-        reason: event.reason || 'Publishing failed permanently',
+        substate: 'PUBLISH_RETRY_EXHAUSTED',
+        reason: event.error || 'Publish retry chain exhausted',
+        domain: event.domain,
+        retryCount: event.retryCount,
+        operation: event.operation,
       }];
     },
   },

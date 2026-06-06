@@ -553,7 +553,14 @@ const TRANSITION_MAP = {
 
       // Success — no engagement action needed; the next phase
       // (PARSING_COMPLETE) handles the result write.
+      //
+      // Step 7 DRIFT-1 FIX: clean up the execution context on
+      // success. Without this, the context lingers in
+      // _executionContexts until AUTH_SUCCESS or RETRY_EXHAUSTED,
+      // which is a memory drift. The intent is done — cancel
+      // the retry chain.
       if (status === 'completed' || status === 'skipped') {
+        _cancelRetry(intentId);
         return [];
       }
 
@@ -583,12 +590,11 @@ const TRANSITION_MAP = {
             if (newCount > maxRetries) {
               // Budget exhausted — terminal
               _cancelRetry(intentId);
-              return [{
-                type: 'RETRY_EXHAUSTED',
+              return _buildExhaustedActions({
                 accountId, domain, intentId,
                 error: 'max_retries_exceeded',
                 retryCount: newCount,
-              }];
+              });
             }
 
             const context = {
@@ -665,12 +671,11 @@ const TRANSITION_MAP = {
 
           case 'PERMANENT_FAILURE':
             _cancelRetry(intentId);
-            return [{
-              type: 'RETRY_EXHAUSTED',
+            return _buildExhaustedActions({
               accountId, domain, intentId,
               error: event.error || 'permanent_failure',
               igCode: actionTag.igCode,
-            }];
+            });
 
           default:
             _cancelRetry(intentId);
@@ -684,11 +689,10 @@ const TRANSITION_MAP = {
 
       // Failed with no errorShape (defensive)
       _cancelRetry(intentId);
-      return [{
-        type: 'RETRY_EXHAUSTED',
+      return _buildExhaustedActions({
         accountId, domain, intentId,
         error: event.error || 'no_error_shape',
-      }];
+      });
     },
   },
 
@@ -720,14 +724,13 @@ const TRANSITION_MAP = {
           substate: 'SANITY_REJECTED',
           reason: `${operation} rejected: ${reason}`,
         },
-        {
-          type: 'RETRY_EXHAUSTED',
+        ..._buildExhaustedActions({
           accountId,
           domain: event.domain,
           intentId,
           error: `sanity_check_rejected: ${reason}`,
           operation,
-        },
+        }),
       ];
     },
   },
@@ -947,6 +950,42 @@ function _cancelRetry(intentId) {
  * Track a sanity check rejection for an account.
  * Used to escalate to DEGRADED if rejections pile up.
  */
+/**
+ * Build the terminal RETRY_EXHAUSTED action bundle.
+ *
+ * Always emits RETRY_EXHAUSTED (routed to engagement domain).
+ * For publish:* domains, ALSO emits PUBLISH_RETRY_EXHAUSTED
+ * (routed to publishing domain) so publishing-fsm can
+ * transition EXECUTING → IDLE on the canonical terminal
+ * failure path.
+ *
+ * Without this, publishing-fsm would stay in EXECUTING
+ * (held by RETRY_IN_PROGRESS) even after the retry chain
+ * is exhausted. PUBLISH_RETRY_EXHAUSTED closes the loop.
+ *
+ * @param {object} params — { accountId, domain, intentId, error, ... }
+ * @returns {Array} actions array (1 or 2 elements)
+ */
+function _buildExhaustedActions(params) {
+  const actions = [{
+    type: 'RETRY_EXHAUSTED',
+    ...params,
+  }];
+  if (params.domain && params.domain.startsWith('publish:')) {
+    actions.push({
+      type: 'PUBLISH_RETRY_EXHAUSTED',
+      accountId: params.accountId,
+      domain: params.domain,
+      intentId: params.intentId,
+      error: params.error,
+      igCode: params.igCode,
+      retryCount: params.retryCount,
+      operation: params.operation,
+    });
+  }
+  return actions;
+}
+
 function _recordRejection(accountId) {
   const count = (_rejectionCounts.get(accountId) || 0) + 1;
   _rejectionCounts.set(accountId, count);
