@@ -642,9 +642,19 @@ const TRANSITION_MAP = {
                 delayMs: scheduleResult.delayMs,
               }];
             }
-            if (domain === 'dedup') {
+            if (domain && domain.startsWith('dedup:')) {
               return [{
                 type: 'DEDUP_RETRY_IN_PROGRESS',
+                accountId,
+                domain,
+                intentId,
+                retryCount: newCount,
+                delayMs: scheduleResult.delayMs,
+              }];
+            }
+            if (domain === 'reconciliation') {
+              return [{
+                type: 'RECON_RETRY_IN_PROGRESS',
                 accountId,
                 domain,
                 intentId,
@@ -959,7 +969,9 @@ function _resolveWorkerName(domain) {
     'publish:story': 'publish-content-retry',
     'publish:comment': 'publish-engagement-retry',
     'publish:message': 'publish-engagement-retry',
-    dedup:             'dedup-retry',
+    'dedup:redis':     'dedup-redis-retry',
+    'dedup:repair':    'dedup-repair-retry',
+    reconciliation:    'reconciliation-retry',
   };
   return MAP[domain] || 'unknown';
 }
@@ -1091,9 +1103,20 @@ function _buildExhaustedActions(params) {
       operation: params.operation,
     });
   }
-  if (params.domain === 'dedup') {
+  if (params.domain && params.domain.startsWith('dedup:')) {
     actions.push({
       type: 'DEDUP_RETRY_EXHAUSTED',
+      accountId: params.accountId,
+      domain: params.domain,
+      intentId: params.intentId,
+      error: params.error,
+      retryCount: params.retryCount,
+      operation: params.operation,
+    });
+  }
+  if (params.domain === 'reconciliation') {
+    actions.push({
+      type: 'RECON_RETRY_EXHAUSTED',
       accountId: params.accountId,
       domain: params.domain,
       intentId: params.intentId,

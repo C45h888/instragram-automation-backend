@@ -57,6 +57,31 @@ function start(governance) {
       }
     } catch (err) {
       console.warn(`[conversation-repair] Repair failed for ${threadId}:`, err.message);
+      // Emit WORKER_OUTCOME_REPORTED so engagement-fsm can schedule retry
+      if (_governance) {
+        _governance.dispatch({
+          type: 'WORKER_OUTCOME_REPORTED',
+          accountId,
+          intentId: null,
+          domain: 'dedup:repair',
+          status: 'failed',
+          result: null,
+          error: err.message,
+          errorShape: {
+            category: _classifyRepairError(err),
+            code: err.code || err.response?.status || null,
+            retryable: _classifyRepairError(err) === 'transient',
+            retryAfterSeconds: null,
+          },
+          params: {
+            operation: 'repair-conversation',
+            threadId,
+            igUserId,
+            pageToken,
+            pageId,
+          },
+        });
+      }
       // Report failure to FSM
       if (_governance) {
         _governance.dispatch({
@@ -73,3 +98,15 @@ function start(governance) {
 }
 
 module.exports = { start };
+
+// ── Internal helpers ─────────────────────────────────────────────────────
+
+function _classifyRepairError(err) {
+  const s = err.response?.status || err.status || null;
+  if (s === 401 || s === 403) return 'auth_failure';
+  if (s === 404) return 'permanent';
+  if (s === 429) return 'rate_limit';
+  if (s && s >= 500) return 'transient';
+  if (s && s >= 400) return 'permanent';
+  return 'transient';
+}

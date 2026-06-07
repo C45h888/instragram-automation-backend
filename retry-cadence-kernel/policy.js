@@ -51,6 +51,17 @@ const POLICIES = {
     maxDelayMs:         300000,  // 5min
     backoffMultiplier:  2,
   },
+  // ── Reconciliation — heavyweight, one retry ────────────────────
+  // Reconciliation cycles are expensive (lineage snapshot + engine
+  // comparison across all domains). One retry with 60s base delay
+  // (60s, 120s) capped at 5min. Conservative — only retry if the
+  // cycle genuinely failed, not for drift detection retries.
+  reconciliation: {
+    maxRetries:         1,
+    baseDelayMs:        60000,   // 60s
+    maxDelayMs:         300000,  // 5min
+    backoffMultiplier:  2,
+  },
 };
 
 // Domain → substrate mapping
@@ -64,7 +75,9 @@ const DOMAIN_TO_SUBSTRATE = {
   'publish:story': 'publishing',
   'publish:comment': 'publishing',
   'publish:message': 'publishing',
-  dedup:            'dedup',
+  'dedup:redis':     'dedup',
+  'dedup:repair':    'dedup',
+  reconciliation:    'reconciliation',
 };
 
 /**

@@ -264,6 +264,33 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
+
+  // ── RECON_RETRY_IN_PROGRESS: engagement-fsm scheduled a reconcil retry ─
+  // The FSM stays in its current state while the retry chain is in flight.
+  // Reconciliation retries are transparent cycle re-runs — the FSM state
+  // does not gate retry operations.
+  RECON_RETRY_IN_PROGRESS: {
+    target: (event) => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: () => [],
+  },
+
+  // ── RECON_RETRY_EXHAUSTED: terminal retry failure for reconciliation ──
+  // Emitted by engagement-fsm._buildExhaustedActions when the retry chain
+  // exhausts. FSM transitions to IDLE if in RECONCILING, logs degraded.
+  RECON_RETRY_EXHAUSTED: {
+    target: (event) => _localState === 'RECONCILING' ? 'IDLE' : _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      return [{
+        type: 'LOG_DEGRADED',
+        substate: 'RECON_RETRY_EXHAUSTED',
+        reason: event.error || 'Reconciliation retry chain exhausted',
+        operation: event.operation,
+        retryCount: event.retryCount,
+      }];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

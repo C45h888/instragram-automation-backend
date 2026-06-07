@@ -111,8 +111,12 @@ function _wire() {
     require('../retry-cadence-kernel/workers/publish-engagement-retry-worker'));
   constitutional.registerWorker('engagement', 'classification',
     require('../retry-cadence-kernel/workers/classification-worker'));
-  constitutional.registerWorker('engagement', 'dedup-retry',
-    require('../retry-cadence-kernel/workers/dedup-retry-worker'));
+  constitutional.registerWorker('engagement', 'dedup-redis-retry',
+    require('../retry-cadence-kernel/workers/dedup-redis-retry-worker'));
+  constitutional.registerWorker('engagement', 'dedup-repair-retry',
+    require('../retry-cadence-kernel/workers/dedup-repair-retry-worker'));
+  constitutional.registerWorker('engagement', 'reconciliation-retry',
+    require('../retry-cadence-kernel/workers/reconciliation-retry-worker'));
 
   // ── acquisition-fsm — parsing workers ─────────────────────────────────
   constitutional.registerWorker('acquisition', 'comments-parser',

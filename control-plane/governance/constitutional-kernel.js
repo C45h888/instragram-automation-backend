@@ -564,6 +564,8 @@ const DOMAIN_EVENT_MAP = {
   RECONCILIATION_TICK: 'reconciliation',
   RECONCILIATION_RESULTS_RECEIVED: 'reconciliation',
   RECONCILIATION_CYCLE_COMPLETE: 'reconciliation',
+  RECON_RETRY_IN_PROGRESS: 'reconciliation',
+  RECON_RETRY_EXHAUSTED: 'reconciliation',
 
   // Graph Capability domain — capability validation + degradation lifecycle
   CAPABILITY_EVALUATE: 'graph-capability',
@@ -594,6 +596,9 @@ const DOMAIN_EVENT_MAP = {
   INGRESS_RETRY_REQUESTED: 'telemetry-coordination-fsm',
   INGRESS_RESOLVED: 'telemetry-coordination-fsm',
 };
+
+// ── Reconciliation cycle coordination state ──────────────────────────────────
+let _reconRetryFlight = false; // set during retry-triggered reconciliation cycles
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Global State Registry — flat constitutional lifecycle
@@ -1581,6 +1586,7 @@ function _dispatchReconciliationCycle({ forced = false } = {}) {
 
   // ── Substrate runs the full cycle (snapshot + engine + checkpoint gate) ─────
   let result;
+  let cycleFailed = false;
   try {
     result = reconciliationSubstrate.triggerCycle({
       fsms: _domains,
@@ -1588,8 +1594,54 @@ function _dispatchReconciliationCycle({ forced = false } = {}) {
     });
   } catch (err) {
     console.error('[CK] Reconciliation substrate error:', err.message);
-    result = null;
+    if (!_reconRetryFlight) {
+      dispatch({
+        type: 'WORKER_OUTCOME_REPORTED',
+        accountId: null,
+        intentId: null,
+        domain: 'reconciliation',
+        status: 'failed',
+        result: null,
+        error: err.message,
+        errorShape: {
+          category: 'transient',
+          code: null,
+          retryable: true,
+          retryAfterSeconds: null,
+        },
+        params: { operation: 'reconciliation-cycle' },
+      });
+    }
+    cycleFailed = true;
   }
+
+  // triggerCycle returned null — emit retry if not already in one
+  if (!cycleFailed && result === null) {
+    if (!_reconRetryFlight) {
+      dispatch({
+        type: 'WORKER_OUTCOME_REPORTED',
+        accountId: null,
+        intentId: null,
+        domain: 'reconciliation',
+        status: 'failed',
+        result: null,
+        error: 'triggerCycle returned null — lineage snapshot or engine comparison failed',
+        errorShape: {
+          category: 'transient',
+          code: null,
+          retryable: true,
+          retryAfterSeconds: null,
+        },
+        params: { operation: 'reconciliation-cycle' },
+      });
+    }
+    cycleFailed = true;
+  }
+
+  // ── On failure, do NOT dispatch empty results. Let the retry chain
+  //     re-run the cycle. The FSM stays in RECONCILING until retry
+  //     succeeds or RECON_RETRY_EXHAUSTED transitions it to IDLE.
+  if (cycleFailed) return;
 
   // ── Always complete the cycle — FSM must return to IDLE ────────────────────
   dispatch({
@@ -1651,6 +1703,26 @@ async function triggerReconciliation({ forced = false } = {}) {
   // APPROVED — dispatch the cycle
   _dispatchReconciliationCycle({ forced });
   return null;
+}
+
+/**
+ * Trigger reconciliation from a retry worker context.
+ * Sets _reconRetryFlight flag so _dispatchReconciliationCycle does NOT
+ * emit WORKER_OUTCOME_REPORTED on failure (prevents infinite retry loop).
+ *
+ * Called by reconciliation-retry-worker via governance ref.
+ */
+function triggerReconciliationRetry() {
+  if (_reconRetryFlight) {
+    console.warn('[CK] Reconciliation retry already in flight — skipping');
+    return;
+  }
+  _reconRetryFlight = true;
+  try {
+    _dispatchReconciliationCycle({ forced: true });
+  } finally {
+    _reconRetryFlight = false;
+  }
 }
 
 /**
@@ -2216,6 +2288,7 @@ module.exports = {
   resetAuthStrikes,
   clearCircuitBreaker,
   triggerReconciliation,
+  triggerReconciliationRetry,
   validateMembraneTransition: _validateMembraneAuthority,
   recordMembraneBypassAnomaly,
   SIGNAL_CLASS,

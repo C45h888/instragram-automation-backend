@@ -60,7 +60,9 @@ const RETRY_WORKER_MAP = {
   'publish:story':    '../retry-cadence-kernel/workers/publish-content-retry-worker',
   'publish:comment':  '../retry-cadence-kernel/workers/publish-engagement-retry-worker',
   'publish:message':  '../retry-cadence-kernel/workers/publish-engagement-retry-worker',
-  dedup:              '../retry-cadence-kernel/workers/dedup-retry-worker',
+  'dedup:redis':      '../retry-cadence-kernel/workers/dedup-redis-retry-worker',
+  'dedup:repair':     '../retry-cadence-kernel/workers/dedup-repair-retry-worker',
+  reconciliation:     '../retry-cadence-kernel/workers/reconciliation-retry-worker',
 };
 
 // Classification workers — semantically blind, bounded. They receive
@@ -80,7 +82,9 @@ const CLASSIFICATION_WORKER_MAP = {
   'publish:story':    '../retry-cadence-kernel/workers/classification-worker',
   'publish:comment':  '../retry-cadence-kernel/workers/classification-worker',
   'publish:message':  '../retry-cadence-kernel/workers/classification-worker',
-  dedup:              '../retry-cadence-kernel/workers/classification-worker',
+  'dedup:redis':      '../retry-cadence-kernel/workers/classification-worker',
+  'dedup:repair':     '../retry-cadence-kernel/workers/classification-worker',
+  reconciliation:     '../retry-cadence-kernel/workers/classification-worker',
 };
 
 // DOMAIN_REGISTRY — the canonical set of domain names. Publish
@@ -97,7 +101,9 @@ const DOMAIN_REGISTRY = {
   'publish:story':  { execute: publishContent.execute.bind(publishContent) },
   'publish:comment':{ execute: publishEngagement.execute.bind(publishEngagement) },
   'publish:message':{ execute: publishEngagement.execute.bind(publishEngagement) },
-  dedup:             { },  // governance domain — no fetch/execute, retry only
+  'dedup:redis':      { },  // governance domain — Redis dedup retry
+  'dedup:repair':     { },  // governance domain — conversation repair retry
+  reconciliation:     { },  // governance domain — reconciliation cycle retry
 };
 
 function lookup(domain) {

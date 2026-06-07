@@ -204,7 +204,7 @@ const TRANSITION_MAP = {
             type: 'WORKER_OUTCOME_REPORTED',
             accountId: event.accountId,
             intentId: null,
-            domain: 'dedup',
+            domain: 'dedup:redis',
             status: 'failed',
             result: null,
             error: err.message,
@@ -298,7 +298,7 @@ const TRANSITION_MAP = {
           _governance.dispatch({
             type: 'WORKER_OUTCOME_REPORTED',
             accountId, intentId,
-            domain: 'dedup',
+            domain: 'dedup:redis',
             status: 'failed',
             result: null,
             error: err.message,
@@ -345,7 +345,7 @@ const TRANSITION_MAP = {
           _governance.dispatch({
             type: 'WORKER_OUTCOME_REPORTED',
             accountId, intentId,
-            domain: 'dedup',
+            domain: 'dedup:redis',
             status: 'failed',
             result: null,
             error: err.message,
