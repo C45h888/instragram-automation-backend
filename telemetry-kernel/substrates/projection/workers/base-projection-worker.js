@@ -37,10 +37,34 @@
 
 const crypto = require('crypto');
 const monotonicClock = require('../../../../control-plane/runtime/monotonic-clock');
+const { getRedisClient } = require('../../../../config/redis');
+// Lazy import to avoid circular dep at module load time.
+// The emitter is used only in the failure path, which never fires at boot.
+// eslint-disable-next-line global-require
+let _observabilityEmitter = null;
+function _getEmitter() {
+  if (!_observabilityEmitter) {
+    try {
+      _observabilityEmitter = require('../../../../control-plane/observability/emitters/transition-emitter');
+    } catch (_) {
+      _observabilityEmitter = null;
+    }
+  }
+  return _observabilityEmitter;
+}
 
 // ── Versioning ───────────────────────────────────────────────────────────────────
 
 const PROJECTION_VERSION = '1.0.0';
+
+// ── Staging buffer constants ────────────────────────────────────────────────────
+// Bounded Redis list per namespace. Holds failed projection payloads
+// so future retry workers can replay them without losing the synthesized
+// projection (signals are gone after the tick returns — only the staged
+// projection + signals hash survive).
+const STAGING_KEY_PREFIX = 'lineage:projection-staging:';
+const STAGING_MAX_ENTRIES = 10_000;
+const STAGING_TTL_S = 3600; // 1 hour
 
 // ── Abstract base class ─────────────────────────────────────────────────────────
 
@@ -228,7 +252,128 @@ class BaseProjectionWorker {
     } catch (err) {
       this._consecutiveFailures++;
       console.error(`[${this.workerName}] Tick error:`, err.message);
+      // Stage the failed projection for potential replay.
+      // Fire-and-forget: never blocks the tick, never re-throws.
+      this._stageAsync(projection, signals, { lineageStartCursor, lineageEndCursor });
+      // Emit the failure intent to the telemetry-failures partition.
+      // Async fire-and-forget — the FSM observes via onWrite() subscription
+      // and dispatches RETRY_CADENCE_REQUEST. Never blocks the tick.
+      this._emitPartitionWriteFailureAsync(projection, err, { lineageStartCursor, lineageEndCursor });
     }
+  }
+
+  /**
+   * Stage a failed projection to a bounded Redis list for potential replay.
+   *
+   * Called only on the failure path of _tick() — when observability.transition()
+   * throws. The synthesized projection is still in scope at that point; the
+   * raw signals are too. We persist the projection payload + a hash of the
+   * signals (for forensic verification) so a future retry worker can replay
+   * the exact same projection without needing to re-read signals.
+   *
+   * Fire-and-forget: setImmediate ensures the tick returns immediately.
+   * The lpush + ltrim + expire happen in the background. If staging itself
+   * fails, the failure is swallowed — staging is insurance, not critical path.
+   *
+   * @param {object} projection — the synthesized projection (projection output contract)
+   * @param {object} signals — raw signals from _getNormalizedInputWindow()
+   * @param {object} cursors — { lineageStartCursor, lineageEndCursor }
+   */
+  _stageAsync(projection, signals, cursors) {
+    setImmediate(async () => {
+      try {
+        const redis = getRedisClient();
+        if (!redis || redis.status !== 'ready') return;
+
+        const entry = {
+          projectionId: projection.projectionId,
+          namespace: this._domain,
+          projectionType: this._projectType,
+          projectionVersion: this._projectionVersion,
+          projectionPayload: projection.projectionPayload,
+          confidence: projection.confidence,
+          integrityScore: projection.integrityScore,
+          sourceTelemetryWindow: projection.sourceTelemetryWindow,
+          signalsHash: crypto
+            .createHash('sha256')
+            .update(JSON.stringify(signals))
+            .digest('hex'),
+          lineageCursors: cursors,
+          stagedAt: Date.now(),
+          traceId: projection.traceId,
+          correlationId: projection.correlationId,
+        };
+
+        const key = STAGING_KEY_PREFIX + this._domain;
+        const serialized = JSON.stringify(entry);
+
+        await Promise.all([
+          redis.lpush(key, serialized),
+          redis.ltrim(key, 0, STAGING_MAX_ENTRIES - 1),
+          redis.expire(key, STAGING_TTL_S),
+        ]);
+      } catch (_) {
+        // Best-effort. Staging is insurance, not critical path.
+        // If this fails, the projection is lost — same as before this change.
+      }
+    });
+  }
+
+  /**
+   * Emit a PROJECTION_PARTITION_WRITE_FAILED failure intent.
+   *
+   * Called on the failure path of _tick() — when observability.transition()
+   * throws. The failure intent lands in the 'telemetry-failures' domain
+   * partition (separate from the 5 namespace partitions). The
+   * telemetry-coordination-fsm observes it via onWrite() and dispatches
+   * RETRY_CADENCE_REQUEST to the engagement-fsm.
+   *
+   * Fire-and-forget via setImmediate. Never blocks the tick. If the emit
+   * itself fails, the staging entry (written in the same catch block) is
+   * the only survivor — the FSM has no way to know about the failure in
+   * that case, which is the accepted trade-off for never blocking the tick.
+   *
+   * @param {object} projection — the synthesized projection that failed
+   * @param {Error} err — the error that caused the failure
+   * @param {object} cursors — { lineageStartCursor, lineageEndCursor }
+   */
+  _emitPartitionWriteFailureAsync(projection, err, cursors) {
+    setImmediate(async () => {
+      try {
+        const emitter = _getEmitter();
+        if (!emitter || !emitter.transition) return;
+
+        const signalsHash = crypto
+          .createHash('sha256')
+          .update(JSON.stringify(projection.sourceTelemetryWindow || {}))
+          .digest('hex');
+
+        await emitter.transition({
+          domain: 'telemetry-failures',
+          entity: 'projection_intent_failure',
+          entityId: this._projectType,
+          previousState: 'PROJECTION_INTENT',
+          nextState: 'PROJECTION_PARTITION_WRITE_FAILED',
+          authority: this.workerName,
+          raw: {
+            namespace: this._domain,
+            projectionType: this._projectType,
+            projectionId: projection.projectionId,
+            projectionVersion: this._projectionVersion,
+            errorMessage: err.message,
+            errorName: err.name,
+            signalsHash,
+            lineageCursors: cursors,
+            consecutiveFailures: this._consecutiveFailures,
+            failedAt: Date.now(),
+            traceId: projection.traceId,
+            correlationId: projection.correlationId,
+          },
+        });
+      } catch (_) {
+        // Best-effort. The staging entry is the last-resort backup.
+      }
+    });
   }
 
   /**

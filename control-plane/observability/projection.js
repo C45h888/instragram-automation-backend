@@ -164,6 +164,7 @@ async function _writeDomainPartition(transition, domain) {
 
     const serialized = JSON.stringify(transition);
     const isProjectionIntent = transition.nextState === 'PROJECTION_INTENT';
+    const isPartitionWriteFailed = transition.nextState === 'PROJECTION_PARTITION_WRITE_FAILED';
 
     if (isProjectionIntent) {
       // Only PROJECTION_INTENT entries own a slot in the namespace partition.
@@ -171,6 +172,15 @@ async function _writeDomainPartition(transition, domain) {
       const domainKey = `lineage:transitionLog:domain:${domain}`;
       await Promise.all([
         redis.rpush(domainKey, serialized),
+        redis.rpush('lineage:transitionLog:entries', serialized),
+      ]);
+    } else if (isPartitionWriteFailed) {
+      // PROJECTION_PARTITION_WRITE_FAILED entries own a slot in the dedicated
+      // telemetry-failures partition. FSM observes via getDomainEntriesSince
+      // with a separate cursor. Routes through CK → telemetry-coordination-fsm.
+      const failureKey = `lineage:transitionLog:domain:telemetry-failures`;
+      await Promise.all([
+        redis.rpush(failureKey, serialized),
         redis.rpush('lineage:transitionLog:entries', serialized),
       ]);
     } else {

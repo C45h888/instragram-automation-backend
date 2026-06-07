@@ -364,19 +364,31 @@ const TRANSITION_MAP = {
     target: () => _localState,
     guard: () => ({ allowed: true }),
     buildActions: async (event, ctx) => {
-      const { source, lag, escalationState } = event;
+      const { source, lag, escalationState, namespace, projectionId, projectionType, signalsHash, errorMessage, errorName, failedAt, consecutiveFailures } = event;
 
       // Telemetry retry uses 'telemetry-coordination' as the domain.
-      // intentId is synthesised — no specific intent being retried,
-      // this is a system-wide ingress lag retry.
+      // intentId is synthesised — no specific intent being retried.
+      // For partition_write_failure source, include namespace+projectionId
+      // in the intentId so concurrent failures from different namespaces
+      // don't collapse into a single retry context.
       const domain = 'telemetry-coordination';
-      const intentId = `telemetry-ingress-${Date.now()}`;
+      const intentId = source === 'partition_write_failure'
+        ? `telemetry-failure-${namespace}-${projectionId || Date.now()}`
+        : `telemetry-ingress-${Date.now()}`;
       const accountId = '*'; // system-wide, not per-account
 
       const paired = retryCadenceStore.dispatch(domain, accountId, intentId, {
         source,
         lag,
         escalationState,
+        namespace,
+        projectionId,
+        projectionType,
+        signalsHash,
+        errorMessage,
+        errorName,
+        failedAt,
+        consecutiveFailures,
       });
       const existing = _executionContexts.get(intentId);
       const newCount = existing ? existing.count + 1 : 0;
@@ -393,18 +405,24 @@ const TRANSITION_MAP = {
 
       const context = {
         domain, accountId, intentId,
-        params: { source, lag, escalationState },
+        params: {
+          source, lag, escalationState,
+          namespace, projectionId, projectionType, signalsHash,
+          errorMessage, errorName, failedAt, consecutiveFailures,
+        },
         count: newCount,
         maxRetries,
         timeoutId: null,
         retryWorker: paired.retryWorker,
         classificationWorker: paired.classificationWorker,
         policy: paired.policy,
-        lastError: { type: 'ingress_lag', lag, source },
+        lastError: source === 'partition_write_failure'
+          ? { type: 'partition_write_failure', namespace, projectionId, errorMessage }
+          : { type: 'ingress_lag', lag, source },
         scheduledAt: null,
         governance: _governance,
         invokeWorker: ctx.invokeWorker,
-        workerName: _resolveWorkerName(domain),
+        workerName: _resolveWorkerName(domain, { params: { namespace } }),
       };
 
       const scheduleResult = await _scheduleRetry(context, { type: 'TRANSIENT_RETRY' }, ctx);
@@ -429,6 +447,8 @@ const TRANSITION_MAP = {
         source,
         lag,
         escalationState,
+        namespace,
+        projectionId,
       }];
     },
   },
@@ -499,7 +519,7 @@ const TRANSITION_MAP = {
         scheduledAt: null,
         governance: _governance, // passed to worker on invocation
         invokeWorker: ctx.invokeWorker, // CTX gate — ownership, contract, sanity
-        workerName: _resolveWorkerName(domain),
+        workerName: _resolveWorkerName(domain, { params: params || {} }),
       };
 
       // If the caller provided a retryAfterMs (override), use it
@@ -705,7 +725,7 @@ const TRANSITION_MAP = {
               scheduledAt: null,
               governance: _governance, // passed to worker on invocation
               invokeWorker: ctx.invokeWorker, // CTX gate — ownership, contract, sanity
-              workerName: _resolveWorkerName(domain),
+              workerName: _resolveWorkerName(domain, { params: event.params || {} }),
             };
 
             const scheduleResult = await _scheduleRetry(context, actionTag, ctx);
@@ -1053,8 +1073,22 @@ async function _scheduleRetry(context, actionTag, fsmCtx) {
  * Resolve the registered worker name for a domain.
  * Used to pass workerName through execution contexts so
  * _executeRetry can call ctx.invokeWorker(workerName, params).
+ *
+ * For telemetry namespace retries, the domain in the execution context
+ * is 'telemetry-coordination' (the canonical domain for the retry cadence).
+ * The actual worker is namespace-specific — read from context.params.namespace
+ * which is carried through from the RETRY_CADENCE_REQUEST event.
+ *
+ * @param {string} domain — the retry domain (e.g. 'telemetry-coordination')
+ * @param {object} [context] — execution context with params.namespace
+ * @returns {string} worker name registered in CK
  */
-function _resolveWorkerName(domain) {
+function _resolveWorkerName(domain, context) {
+  // Telemetry namespace resolution — check params.namespace first
+  if (domain === 'telemetry-coordination' && context && context.params && context.params.namespace) {
+    return `telemetry-retry-${context.params.namespace}-worker`;
+  }
+
   const MAP = {
     comments: 'engagement-retry',
     messages: 'engagement-retry',
@@ -1069,6 +1103,12 @@ function _resolveWorkerName(domain) {
     'dedup:repair':    'dedup-repair-retry',
     reconciliation:    'reconciliation-retry',
     'telemetry-coordination': 'telemetry-retry',
+    // Direct namespace domain keys (for cases where domain itself is namespaced)
+    'telemetry:runtime':   'telemetry-retry-runtime-worker',
+    'telemetry:integrity': 'telemetry-retry-integrity-worker',
+    'telemetry:authority': 'telemetry-retry-authority-worker',
+    'telemetry:health':    'telemetry-retry-health-worker',
+    'telemetry:systemic':  'telemetry-retry-systemic-worker',
   };
   return MAP[domain] || 'unknown';
 }

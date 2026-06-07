@@ -599,6 +599,10 @@ const DOMAIN_EVENT_MAP = {
   TELEMETRY_RETRY_IN_PROGRESS: 'telemetry-coordination-fsm',
   TELEMETRY_RETRY_EXHAUSTED: 'telemetry-coordination-fsm',
   TELEMETRY_RETRY_CLEARED: 'telemetry-coordination-fsm',
+  // Projection partition write failure (base-projection-worker → telemetry-coordination-fsm)
+  // Worker emits PROJECTION_PARTITION_WRITE_FAILED on rpush failure.
+  // FSM observes via onWrite() and dispatches RETRY_CADENCE_REQUEST.
+  PROJECTION_PARTITION_WRITE_FAILED: 'telemetry-coordination-fsm',
 };
 
 // ── Reconciliation cycle coordination state ──────────────────────────────────

@@ -117,11 +117,20 @@ function _wire() {
     require('../retry-cadence-kernel/workers/dedup-repair-retry-worker'));
   constitutional.registerWorker('engagement', 'reconciliation-retry',
     require('../retry-cadence-kernel/workers/reconciliation-retry-worker'));
-  // ── telemetry-coordination-fsm — retry worker (Phase 2: wire worker file) ────
-  // Registered now so CK's invokeWorker can find it. Worker file created in
-  // Phase 2. The require() resolves at boot once the worker exists.
-  constitutional.registerWorker('engagement', 'telemetry-retry',
-    () => ({ execute: () => ({ status: 'pending', reason: 'worker_not_yet_instantiated' }) })); // placeholder — Phase 2 replaces with real worker
+  // ── telemetry-coordination-fsm — 5 namespace-specific retry workers ──────────
+  // Each worker handles one projection namespace's staging buffer.
+  // Dispatched via _resolveWorkerName() which reads params.namespace from
+  // the execution context and returns the namespace-specific worker name.
+  constitutional.registerWorker('engagement', 'telemetry-retry-runtime-worker',
+    require('../retry-cadence-kernel/workers/telemetry-retry-runtime-worker'));
+  constitutional.registerWorker('engagement', 'telemetry-retry-integrity-worker',
+    require('../retry-cadence-kernel/workers/telemetry-retry-integrity-worker'));
+  constitutional.registerWorker('engagement', 'telemetry-retry-authority-worker',
+    require('../retry-cadence-kernel/workers/telemetry-retry-authority-worker'));
+  constitutional.registerWorker('engagement', 'telemetry-retry-health-worker',
+    require('../retry-cadence-kernel/workers/telemetry-retry-health-worker'));
+  constitutional.registerWorker('engagement', 'telemetry-retry-systemic-worker',
+    require('../retry-cadence-kernel/workers/telemetry-retry-systemic-worker'));
 
   // ── acquisition-fsm — parsing workers ─────────────────────────────────
   constitutional.registerWorker('acquisition', 'comments-parser',

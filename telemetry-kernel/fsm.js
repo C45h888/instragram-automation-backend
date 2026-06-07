@@ -702,8 +702,58 @@ let _reactiveCoordinationQueued = false;
 let _ckContext = null;
 
 function _onTransitionLogWrite(transition) {
-  if (transition.nextState !== 'PROJECTION_INTENT') return;
-  _triggerReactiveCoordination();
+  if (transition.nextState === 'PROJECTION_INTENT') {
+    _triggerReactiveCoordination();
+  } else if (transition.nextState === 'PROJECTION_PARTITION_WRITE_FAILED') {
+    _handlePartitionWriteFailure(transition);
+  }
+}
+
+/**
+ * Handle a PROJECTION_PARTITION_WRITE_FAILED event.
+ *
+ * Called from _onTransitionLogWrite when a base-projection-worker emits
+ * a failure intent (rpush to bounded partition failed). The worker
+ * has already staged the projection to the Redis staging buffer
+ * (lineage:projection-staging:{namespace}) as a backup. This handler
+ * dispatches RETRY_CADENCE_REQUEST to the engagement-fsm via
+ * ctx.dispatchGlobal — the engagement-fsm owns the scheduling,
+ * budget, and timer.
+ *
+ * Fire-and-forget: never blocks the onWrite callback. The dispatch
+ * is async via setImmediate. If dispatch fails, the staging entry
+ * is the only surviving record.
+ *
+ * @param {object} transition — the failure event
+ */
+function _handlePartitionWriteFailure(transition) {
+  setImmediate(() => {
+    try {
+      if (!_ckContext || typeof _ckContext.dispatchGlobal !== 'function') return;
+
+      const raw = transition.raw || {};
+      const namespace = raw.namespace || 'unknown';
+      const projectionId = raw.projectionId || `unknown-${Date.now()}`;
+
+      _ckContext.dispatchGlobal({
+        type: 'RETRY_CADENCE_REQUEST',
+        source: 'partition_write_failure',
+        namespace,
+        projectionId,
+        projectionType: raw.projectionType,
+        signalsHash: raw.signalsHash,
+        consecutiveFailures: raw.consecutiveFailures,
+        errorMessage: raw.errorMessage,
+        errorName: raw.errorName,
+        failedAt: raw.failedAt,
+        traceId: raw.traceId || transition.traceId,
+        correlationId: raw.correlationId || transition.correlationId,
+      });
+    } catch (err) {
+      // Best-effort. Staging entry is the backup.
+      console.error('[telemetry-coordination-fsm] _handlePartitionWriteFailure error:', err.message);
+    }
+  });
 }
 
 function _triggerReactiveCoordination() {

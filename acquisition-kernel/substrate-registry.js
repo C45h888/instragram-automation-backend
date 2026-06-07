@@ -63,7 +63,15 @@ const RETRY_WORKER_MAP = {
   'dedup:redis':      '../retry-cadence-kernel/workers/dedup-redis-retry-worker',
   'dedup:repair':     '../retry-cadence-kernel/workers/dedup-repair-retry-worker',
   reconciliation:     '../retry-cadence-kernel/workers/reconciliation-retry-worker',
-  'telemetry-coordination': '../retry-cadence-kernel/workers/telemetry-retry-worker',
+  // ── Telemetry retry workers (Step 5 workers) ────────────
+  // 5 namespace-specific workers, one per projection namespace.
+  // _resolveWorkerName in engagement-fsm returns the namespace-specific
+  // key based on params.namespace from the RETRY_CADENCE_REQUEST event.
+  'telemetry:runtime':   '../retry-cadence-kernel/workers/telemetry-retry-runtime-worker',
+  'telemetry:integrity': '../retry-cadence-kernel/workers/telemetry-retry-integrity-worker',
+  'telemetry:authority': '../retry-cadence-kernel/workers/telemetry-retry-authority-worker',
+  'telemetry:health':    '../retry-cadence-kernel/workers/telemetry-retry-health-worker',
+  'telemetry:systemic':  '../retry-cadence-kernel/workers/telemetry-retry-systemic-worker',
 };
 
 // Classification workers — semantically blind, bounded. They receive
@@ -86,7 +94,12 @@ const CLASSIFICATION_WORKER_MAP = {
   'dedup:redis':      '../retry-cadence-kernel/workers/classification-worker',
   'dedup:repair':     '../retry-cadence-kernel/workers/classification-worker',
   reconciliation:     '../retry-cadence-kernel/workers/classification-worker',
-  'telemetry-coordination': '../retry-cadence-kernel/workers/classification-worker',
+  // Telemetry retry classification — shared across all 5 namespaces
+  'telemetry:runtime':   '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:integrity': '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:authority': '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:health':    '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:systemic':  '../retry-cadence-kernel/workers/classification-worker',
 };
 
 // DOMAIN_REGISTRY — the canonical set of domain names. Publish
@@ -106,7 +119,12 @@ const DOMAIN_REGISTRY = {
   'dedup:redis':      { },  // governance domain — Redis dedup retry
   'dedup:repair':     { },  // governance domain — conversation repair retry
   reconciliation:     { },  // governance domain — reconciliation cycle retry
-  'telemetry-coordination': { },  // governance domain — telemetry coordination retry
+  // Telemetry retry — 5 namespace-specific domains
+  'telemetry:runtime':   { },  // runtime projection retry
+  'telemetry:integrity': { },  // integrity projection retry
+  'telemetry:authority': { },  // authority projection retry
+  'telemetry:health':    { },  // health projection retry
+  'telemetry:systemic':  { },  // systemic pressure projection retry
 };
 
 function lookup(domain) {

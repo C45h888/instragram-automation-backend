@@ -72,6 +72,16 @@ const POLICIES = {
     maxDelayMs:         60000,   // 1min
     backoffMultiplier:  1.5,
   },
+  // ── Telemetry Namespace Retries — partition write failure recovery ──────────
+  // 5 namespace-specific policies. Same retry shape as telemetry-coordination
+  // (moderate backoff, 3 attempts) since the failure vector is the same
+  // (Redis partition rpush). Per-namespace isolation prevents one slow
+  // namespace from starving the others.
+  'telemetry:runtime':   { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:integrity': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:authority': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:health':    { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:systemic':  { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
 };
 
 // Domain → substrate mapping
@@ -89,6 +99,12 @@ const DOMAIN_TO_SUBSTRATE = {
   'dedup:repair':    'dedup',
   reconciliation:    'reconciliation',
   'telemetry-coordination': 'telemetry-coordination',
+  // Telemetry namespace retries — each namespace is its own substrate
+  'telemetry:runtime':   'telemetry:runtime',
+  'telemetry:integrity': 'telemetry:integrity',
+  'telemetry:authority': 'telemetry:authority',
+  'telemetry:health':    'telemetry:health',
+  'telemetry:systemic':  'telemetry:systemic',
 };
 
 /**
