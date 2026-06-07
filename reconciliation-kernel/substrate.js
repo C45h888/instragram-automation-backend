@@ -15,23 +15,25 @@
 
 const lineageLedger = require('../control-plane/governance/lineage-ledger');
 const checkpointer = require('../control-plane/governance/lineage-checkpointer');
+const ck = require('../control-plane/governance/constitutional-kernel');
 const worker = require('./worker');
 const ingressSubstrate = require('../control-plane/governance/ingress-consistency/substrate');
 
 // ── Substrate Query Interface ────────────────────────────────────────────────
 
 function _buildSubstrateQueries() {
-  const dedupSubstrate = require('../../dedup-kernel/substrates/dedup');
-  const retrySubstrate = require('../substrates/retry');
+  const dedupOrch = require('../../dedup-kernel/orchestrator');
   const metricsSubstrate = require('../substrates/metrics-substrate');
   const cadence = require('../control-plane/runtime/cadence');
 
   return {
     dedupIsInFlight: async (accountId, actionType, resourceId) => {
-      return dedupSubstrate.isInFlight(accountId, actionType, resourceId);
+      return dedupOrch.checkDedup(accountId, actionType, resourceId, null);
     },
     retryInFlight: (accountId) => {
-      return retrySubstrate.isAccountRateLimited ? retrySubstrate.isAccountRateLimited(accountId) : false;
+      // Canonical read: engagement-fsm owns circuit-breaker state.
+      // CK exposes it via isCircuitBreakerActive().
+      return ck.isCircuitBreakerActive(accountId);
     },
     bufferSnapshot: () => {
       const buffer = require('../control-plane/runtime/buffer');
@@ -48,9 +50,7 @@ function _buildSubstrateQueries() {
       return cadence.lastTick ? cadence.lastTick() : null;
     },
     dedupSnapshot: () => {
-      return typeof dedupSubstrate.getInflightSnapshot === 'function'
-        ? dedupSubstrate.getInflightSnapshot()
-        : { identityCount: 0, resourceCount: 0, sample: [] };
+      return dedupOrch.getInflightSnapshot();
     },
   };
 }

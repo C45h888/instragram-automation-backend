@@ -14,7 +14,6 @@
 const { getRedisClient } = require('../config/redis');
 const substrateRegistry = require('./substrate-registry');
 const syncSubstrate = require('../substrates/sync-substrate');
-const retrySubstrate = require('../substrates/retry');
 const rateLimiter = require('../substrates/rate-limiter');
 
 // Note: acquisition-fsm is imported for future state query hooks.
@@ -92,11 +91,14 @@ function wire(gov, acquisitionFsm) {
   gov.subscribeAction('ENGAGE_CIRCUIT_BREAKER', (action) => {
     const { accountId, cooldownMs = 3600000, substrate, affectedDomains } = action;
 
-    // Account-level mechanical mark (existing)
+    // engagement-fsm is the canonical owner of circuit-breaker state
+    // (retry-cadence-kernel/fsm.js _circuitBreakers Map). It has already
+    // written the account-level mark before emitting this action. The
+    // orchestrator's only mechanical job is the per-domain mark, which is
+    // a separate substrate (substrates/rate-limiter) tracking per-domain
+    // state — not the account-level circuit breaker.
     const retryAfterSeconds = Math.ceil((cooldownMs || 3600000) / 1000);
-    retrySubstrate.markAccountRateLimited(accountId, retryAfterSeconds);
 
-    // Per-domain marks in rate-limiter (new — substrate-aware)
     if (affectedDomains && Array.isArray(affectedDomains) && affectedDomains.length > 0) {
       for (const d of affectedDomains) {
         rateLimiter.recordRateLimit(d, accountId, null, retryAfterSeconds);

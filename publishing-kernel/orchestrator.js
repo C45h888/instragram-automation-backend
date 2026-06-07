@@ -2,33 +2,39 @@
 // Emission Orchestrator: constitutional coordination membrane.
 //
 // Owns: routing EVALUATE actions downward through the
-//        evaluation → mutation → emission pipeline,
+//        dedup pre-filter → evaluation → mutation → emission pipeline,
 //        executing EXECUTE_CONTENT / EXECUTE_ENGAGEMENT via bounded substrates,
-//        forwarding PUBLISHING_OBSERVATION upward,
-//        bridging dedup FSM governance with async evaluation.
+//        forwarding PUBLISHING_OBSERVATION upward.
 // Does NOT own: evaluation policy, publishing rules, intent construction,
 //               dedup logic, emission mechanics, retry policy, circuit breaker.
 //
 // Constitutional purity: this orchestrator mechanically sequences
-// evaluator → emitter without understanding what evaluation means.
+// dedup → evaluator → emitter without understanding what any step means.
 // It never interprets policy outcomes or intent semantics.
 //
-// Phase 5: dedup FSM integration — orchestrator dispatches DEDUP_BATCH_BEGIN
-// before evaluation, DEDUP_INTENT_MARKED / DEDUP_REPLAY_DETECTED per intent,
-// and DEDUP_BATCH_END after evaluation, bridging async substrate work to
-// synchronous dedup FSM governance.
+// Phase 6 (2026-06-07): Dedup pre-filter added. Events are checked through
+// CK → dedup FSM BEFORE evaluation. The FSM is the intelligence layer;
+// the orchestrator is a mechanical router.
+//
+// Flow:
+//   raw events → pre-filter (CK → dedup FSM: CHECK_AND_MARK_DEDUP)
+//     → clean events → evaluator.evaluate() → intents + mutations
+//     → DEDUP_BATCH_END (FSM handles clearTick internally)
+//     → emitter.emit(intents) → EMISSION_OBSERVATION
 
+const crypto = require('crypto');
 const evaluator = require('../control-plane/runtime/evaluation');
 const emitter = require('../control-plane/runtime/emission');
-const dedupSubstrate = require('../dedup-kernel/substrates/dedup');
+const publishingPolicy = require('../control-plane/policies/publishing');
 const mutationSubstrate = require('../control-plane/mutation-substrate');
 const contentSubstrate = require('./substrates/content');
 const engagementSubstrate = require('./substrates/engagement');
 const publishErrorParser = require('../retry-cadence-kernel/workers/publish-error-parser');
 // NOTE (Step 7): The emission-orchestrator no longer imports the
 // credential-resolver. The publish substrates resolve their own
-// credentials internally. The orchastrator's role is dispatch
-// only — no credential handling.
+// credentials internally.
+// NOTE (Phase 6): The emission-orchestrator no longer imports the
+// dedup substrate. Dedup flows through CK → dedup FSM.
 
 const MUTATION_POLICY = {
   scheduled_posts: {
@@ -64,9 +70,61 @@ function _validateApplyMutationAction(action) {
 }
 
 /**
+ * Pre-filter events through CK → dedup FSM before evaluation.
+ * Each event is dispatched as CHECK_AND_MARK_DEDUP to CK.
+ * The dedup FSM calls workers, marks in-flight, and returns the result.
+ * Blocked events (duplicates) are filtered out.
+ * Clean events get pre-allocated intentIds that the evaluator reuses.
+ *
+ * @returns {Promise<Array<{ table, record, intentId }>>} clean events
+ */
+async function _preFilterDedup(governance, accountId, events) {
+  const clean = [];
+  for (const { table, record } of events) {
+    const outcome = publishingPolicy.evaluateRecord(table, record);
+    if (outcome.action === 'skip') {
+      continue;
+    }
+    if (outcome.action === 'mark_failed') {
+      // Mark-failed mutations bypass dedup — they don't create intents.
+      // Pass through with null intentId.
+      clean.push({ table, record, intentId: null, _markFailed: true });
+      continue;
+    }
+    if (outcome.action !== 'emit') {
+      continue;
+    }
+
+    const { intent } = outcome;
+    const resourceId = record.id;
+    const intentId = crypto.randomUUID();
+    const actionType = intent.action_type;
+
+    // Dispatch to CK → dedup FSM → check + mark
+    const result = await governance.dispatch({
+      type: 'CHECK_AND_MARK_DEDUP',
+      accountId,
+      actionType,
+      resourceId,
+      intentId,
+    });
+
+    // CK.dispatch returns { allowed, actions }. The actions array contains
+    // [{ type: 'DEDUP_INTENT_CHECKED', blocked, reason, ... }]
+    const checked = result?.actions?.find(a => a.type === 'DEDUP_INTENT_CHECKED');
+    if (checked?.blocked) {
+      // Duplicate — drop this event
+      continue;
+    }
+
+    clean.push({ table, record, intentId });
+  }
+  return clean;
+}
+
+/**
  * Execute the evaluation → mutation → emission pipeline for a single account.
- * Pure mechanical sequencing — no policy interpretation.
- * After execution, reports EMISSION_OBSERVATION back to governance.
+ * Phase 6: dedup pre-filter runs BEFORE evaluation.
  */
 async function executeEvaluationPipeline(governance, accountId, events) {
   const startTime = Date.now();
@@ -80,30 +138,13 @@ async function executeEvaluationPipeline(governance, accountId, events) {
   });
 
   try {
-    const result = await evaluator.evaluate(accountId, events);
+    // ── Phase 6: Pre-filter through dedup FSM ──────────────────────────
+    const cleanEvents = await _preFilterDedup(governance, accountId, events);
 
-    const { dedup: dedupMeta } = result;
-    if (dedupMeta) {
-      for (let i = 0; i < dedupMeta.marks; i++) {
-        governance.dispatch({
-          type: 'DEDUP_INTENT_MARKED',
-          accountId,
-          isReplay: false,
-        });
-      }
-      for (const replay of dedupMeta.replayDetails) {
-        governance.dispatch({
-          type: 'DEDUP_REPLAY_DETECTED',
-          accountId,
-          resourceId: replay.resourceId,
-          intentId: replay.intentId,
-          previousIntentId: replay.previousIntentId,
-        });
-      }
-    }
+    // ── Evaluate only clean, non-blocked events ──────────────────────
+    const result = await evaluator.evaluate(accountId, cleanEvents);
 
-    dedupSubstrate.clearTick();
-
+    // ── Close batch — FSM handles clearTick internally ───────────────
     governance.dispatch({
       type: 'DEDUP_BATCH_END',
       accountId,
@@ -128,6 +169,7 @@ async function executeEvaluationPipeline(governance, accountId, events) {
         mutationsApplied: result.mutations.length,
         reason: emitResult.error || null,
         latencyMs: Date.now() - startTime,
+        dedupFiltered: events.length - cleanEvents.length,
       },
     });
 
@@ -135,7 +177,7 @@ async function executeEvaluationPipeline(governance, accountId, events) {
   } catch (err) {
     console.error(`[emission-orchestrator] Evaluation pipeline error for ${accountId}:`, err.message);
 
-    dedupSubstrate.clearTick();
+    // Close batch on error — FSM handles clearTick internally
     governance.dispatch({ type: 'DEDUP_BATCH_END', accountId });
 
     _emitTransition(accountId, 'RUNNING', 'ERROR');
@@ -156,7 +198,6 @@ async function executeEvaluationPipeline(governance, accountId, events) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Bounded publish execution — thin delegate to substrate
 // Substrate owns: worker factory, rate limiter, error→CK signal routing.
-// Orchestrator owns: credential resolution, mechanical delegation.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function _emitTransition(accountId, previousState, nextState) {
@@ -202,12 +243,6 @@ function wire(governance) {
   });
 
   // ── EXECUTE_CONTENT: publishing-fsm → bounded content substrate → IG API
-  //    Failure path: dual emission (Step 6).
-  //      - WORKER_OUTCOME_REPORTED → engagement-fsm (for retry path)
-  //      - PUBLISH_FAILURE → observability subscribers (lineage,
-  //        alerting) — does NOT enter a FSM.
-  //    The workers' emissions are FSM-only. The orchestrator's
-  //    emissions are observability-only. Two emitters, two audiences.
   governance.subscribeAction('EXECUTE_CONTENT', async (action) => {
     const { accountId, items, intentId, domain } = action;
     if (!accountId || !items || !Array.isArray(items)) {
@@ -216,11 +251,8 @@ function wire(governance) {
     }
     const publishDomain = domain || 'publish:post';
     try {
-      // Step 7: substrate resolves its own credentials internally.
-      // Orchastrator does not touch credentials.
       const result = await contentSubstrate.execute(accountId, items, governance);
       if (result && !result.success) {
-        // Substrate returned a structured failure
         const errorShape = publishErrorParser.parse(result, publishDomain);
         governance.dispatch({
           type: 'WORKER_OUTCOME_REPORTED',
@@ -231,7 +263,6 @@ function wire(governance) {
           errorShape,
           error: result.error,
         });
-        // Observability emission (does not route to a FSM)
         governance.dispatch({
           type: 'PUBLISH_FAILURE',
           accountId,
@@ -241,7 +272,6 @@ function wire(governance) {
         });
       }
     } catch (err) {
-      // Substrate threw — wrap into errorShape
       const errorShape = publishErrorParser.parseError(err, publishDomain);
       governance.dispatch({
         type: 'WORKER_OUTCOME_REPORTED',
@@ -252,7 +282,6 @@ function wire(governance) {
         errorShape,
         error: err.message,
       });
-      // Observability emission
       governance.dispatch({
         type: 'PUBLISH_FAILURE',
         accountId,
@@ -264,7 +293,6 @@ function wire(governance) {
   });
 
   // ── EXECUTE_ENGAGEMENT: publishing-fsm → bounded engagement substrate → IG API
-  //    Same dual-emission pattern as EXECUTE_CONTENT.
   governance.subscribeAction('EXECUTE_ENGAGEMENT', async (action) => {
     const { accountId, items, intentId, domain } = action;
     if (!accountId || !items || !Array.isArray(items)) {
@@ -273,7 +301,6 @@ function wire(governance) {
     }
     const publishDomain = domain || 'publish:comment';
     try {
-      // Step 7: substrate resolves its own credentials internally.
       const result = await engagementSubstrate.execute(accountId, items, governance);
       if (result && !result.success) {
         const errorShape = publishErrorParser.parse(result, publishDomain);

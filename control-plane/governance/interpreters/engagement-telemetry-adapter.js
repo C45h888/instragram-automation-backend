@@ -1,8 +1,9 @@
-// control-plane/governance/interpreters/engagement-telemetry-adapter.js
+// backend.api/control-plane/governance/interpreters/engagement-telemetry-adapter.js
 // Engagement Telemetry Adapter: bounded raw telemetry pre-processor.
 //
-// Owns: polling raw signals from metricsSubstrate, quota substrate, and retry
-//        substrate; applying noise gates; emitting raw bounded telemetry windows.
+// Owns: polling raw signals from metricsSubstrate, quota substrate, and the
+//        engagement-fsm circuit-breaker store; applying noise gates; emitting
+//        raw bounded telemetry windows.
 //
 // Does NOT own: governance decisions, FSM lifecycle, semantic classification,
 //               threshold inference, pressure synthesis, credential cache clearing.
@@ -26,6 +27,9 @@
 //   - apply threshold policy
 //
 // All semantic synthesis is exclusively the domain of projection workers.
+//
+// Circuit-breaker state (canonical) lives in engagement-fsm (retry-cadence-kernel).
+// The adapter reads via getCircuitBreakers() — the canonical snapshot export.
 
 const metricsSubstrate = require('../../../substrates/metrics-substrate');
 const quota = require('../../../substrates/quota');
@@ -43,6 +47,20 @@ function _tick() {
   _emitMetricsWindow();
   _emitQuotaWindow();
   _emitRateLimitWindow();
+}
+
+// Lazy reference to engagement-fsm (canonical circuit-breaker owner).
+// Resolved on first use to avoid circular dependency at load time.
+let _engagementFsm = null;
+function _getEngagementFsm() {
+  if (!_engagementFsm) {
+    try {
+      _engagementFsm = require('../../../retry-cadence-kernel/fsm');
+    } catch (_) {
+      _engagementFsm = null;
+    }
+  }
+  return _engagementFsm;
 }
 
 /**
@@ -97,25 +115,31 @@ function _emitQuotaWindow() {
 }
 
 /**
- * Emit raw rate limit windows from retry substrate circuit breaker state.
+ * Emit raw rate limit windows from the engagement-fsm circuit-breaker store.
  * No semantic pressure classification. No governance dispatch.
+ *
+ * Canonical source: engagement-fsm.getCircuitBreakers() returns
+ *   Map<accountId, { until, cooldownMs, openedAt, reopenedAt?, substrate?, affectedDomains? }>
+ * We filter to active (until > now) and emit a bounded window per account.
  */
 function _emitRateLimitWindow() {
-  const retry = require('../../../substrates/retry');
-  const rateLimitedAccounts = retry._rateLimitedAccounts;
-  if (!rateLimitedAccounts || rateLimitedAccounts.size === 0) return;
+  const fsm = _getEngagementFsm();
+  if (!fsm || typeof fsm.getCircuitBreakers !== 'function') return;
+
+  const breakers = fsm.getCircuitBreakers();
+  if (!breakers || breakers.size === 0) return;
 
   const now = Date.now();
-  for (const [accountId, unblockedAt] of rateLimitedAccounts) {
-    if (now < unblockedAt) {
+  for (const [accountId, breaker] of breakers) {
+    if (now < breaker.until) {
       _emitTelemetryWindow({
         signalType: 'RAW_RATE_LIMIT_WINDOW',
         domain: 'engagement',
         entityId: accountId,
         raw: {
           accountId,
-          cooldownMs: unblockedAt - now,
-          triggeredAt: unblockedAt - (unblockedAt - now),
+          cooldownMs: breaker.until - now,
+          triggeredAt: breaker.openedAt || (breaker.until - (breaker.cooldownMs || 0)),
         },
       });
     }

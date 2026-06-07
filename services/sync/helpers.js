@@ -2,24 +2,16 @@
 // Pure infrastructure utilities for proactive sync.
 //
 // Jurisdiction: this module owns NO runtime state. All state lives in
-// bounded substrates (retry, quota, persistence). This file provides:
+// bounded substrates. This file provides:
 //   - runConcurrent: parallel batch runner
 //   - delay, generateRunId: basic infrastructure
 //   - logSyncAudit: structured audit log writer
 //
-// Circuit breaker re-exports exist here only for post-fallback.js backward
-// compatibility — the canonical home is substrates/retry.js.
+// Circuit breaker state is owned by engagement-fsm (canonical). Query
+// via control-plane/governance/constitutional-kernel.js isCircuitBreakerActive().
 
 const { randomUUID } = require('crypto');
 const { logAudit } = require('../../config/supabase');
-
-// ── Re-export circuit breaker from retry substrate ───────────────────────────
-// DEPRECATED: import directly from substrates/retry.js in new code.
-// These re-exports exist solely for post-fallback.js backward compatibility.
-const {
-  isAccountRateLimited,
-  markAccountRateLimited,
-} = require('../../substrates/retry');
 
 // ── Infrastructure ──────────────────────────────────────────────────────────
 
@@ -120,8 +112,4 @@ module.exports = {
 
   // Audit
   logSyncAudit,
-
-  // DEPRECATED circuit breaker re-exports — use substrates/retry directly
-  isAccountRateLimited,
-  markAccountRateLimited,
 };

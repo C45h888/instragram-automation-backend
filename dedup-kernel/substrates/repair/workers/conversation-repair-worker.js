@@ -2,15 +2,18 @@
 // Conversation Repair Worker: executor plane — one bounded repair attempt.
 //
 // Owns: ONE Graph API call to fetch missing conversation + upsert via
-//        dispatchWrite + governedRead for UUID + fix orphaned messages.
-// Does NOT own: governance policy, subscription management, dedup.
+//        governance.dispatch(DB_WRITE_REQUESTED) + governedRead for UUID.
+// Does NOT own: governance policy, subscription management, dedup gating.
 //
 // Operationally bounded to: one external I/O call (Graph API).
-// DB operations route through dispatchWrite → CK → persist-telemetry-fsm.
+// DB operations route through governance.dispatch → CK → persist-telemetry-fsm.
+//
+// Phase 7 (2026-06-07): dispatchWrite replaced with governance.dispatch(DB_WRITE_REQUESTED).
+// This is the constitutional persist() path — hydrate → normalize → DB_WRITE_REQUESTED → thin writer.
+// dispatchWrite bypasses CK and is now forbidden for substrates/workers.
 
 const { GRAPH_API_BASE } = require('../../../../substrates/transport/_shared');
 const { parseConversations } = require('../../../../acquisition-kernel/substrates/engagement-substrate/parser');
-const { dispatchWrite } = require('../../../../postgres-telemetry-kernel/writers');
 const axios = require('axios');
 
 module.exports = class ConversationRepairWorker {
@@ -18,7 +21,7 @@ module.exports = class ConversationRepairWorker {
    * Execute one bounded repair attempt.
    *
    * @param {{ threadId: string, accountId: string, igUserId: string, pageToken: string, pageId: string|null }} input
-   * @param {object} governance — CK module (governedRead)
+   * @param {object} governance — CK module (dispatch, governedRead)
    * @returns {Promise<{ recovered: number, uuid: string|null }>}
    */
   async execute(input, governance) {
@@ -77,15 +80,19 @@ module.exports = class ConversationRepairWorker {
     };
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 3. Upsert conversation via canonical writer ──────────────────────────
+    // 3. Upsert conversation via canonical CK path (NOT dispatchWrite) ─────
+    //    Constitutional path: DB_WRITE_REQUESTED → CK → persist-telemetry-fsm
     // ═══════════════════════════════════════════════════════════════════════
-    dispatchWrite('batch_upsert_conversations', {
-      domain: 'messages',
-      accountId,
-      intentId: null,
-      table: 'instagram_dm_conversations',
-      rows: [convRow],
-    });
+    if (governance) {
+      governance.dispatch({
+        type: 'DB_WRITE_REQUESTED',
+        domain: 'messages',
+        accountId,
+        intentId: null,
+        table: 'instagram_dm_conversations',
+        rows: [convRow],
+      });
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // 4. Resolve UUID via governed read ────────────────────────────────────
@@ -104,8 +111,9 @@ module.exports = class ConversationRepairWorker {
     // ═══════════════════════════════════════════════════════════════════════
     // 5. Fix orphaned messages — update conversation_id from threadId → UUID
     // ═══════════════════════════════════════════════════════════════════════
-    if (uuid) {
-      dispatchWrite('batch_fix_message_conversation_ids', {
+    if (uuid && governance) {
+      governance.dispatch({
+        type: 'DB_WRITE_REQUESTED',
         domain: 'messages',
         accountId,
         intentId: null,

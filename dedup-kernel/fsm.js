@@ -35,6 +35,17 @@ function _obs() {
   return _observability;
 }
 
+// Dedup substrate — called directly by FSM for mechanical cleanup (clearTick).
+// The FSM is the intelligence layer; it owns the substrate for non-worker
+// operations. Workers handle bounded I/O; substrate handles cache management.
+let _dedupSubstrate = null;
+function _substrate() {
+  if (!_dedupSubstrate) {
+    _dedupSubstrate = require('./substrates/dedup');
+  }
+  return _dedupSubstrate;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Governance reference (set by CK at boot) ────────────────────────────
@@ -76,6 +87,8 @@ function getWorkers() {
 
 const REPLAY_RATE_DEGRADATION_THRESHOLD = 0.5;   // >50% replay rate in a batch signals degradation
 const ORPHAN_RATE_DEGRADATION_THRESHOLD = 0.3;    // >30% orphan rate in a batch signals degradation
+const MAX_REPLAY_RESOURCES = 10000;                // cap replay tracking Map to prevent unbounded growth
+const BATCH_STALENESS_MS = 300_000;               // 5min — batch stuck in ACTIVE signals unhealthy
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
@@ -126,55 +139,13 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Intent marked in-flight by substrate → FSM records the mark ────────
-  DEDUP_INTENT_MARKED: {
-    target: (event) => _localState, // stay in current state
-    guard: (event) => {
-      if (_localState !== 'ACTIVE') {
-        return { allowed: false, reason: `Cannot mark intent outside ACTIVE batch (current: ${_localState})` };
-      }
-      return { allowed: true };
-    },
-    buildActions: (event) => {
-      _batchMarks++;
-
-      const { intentId, resourceId, isReplay, accountId } = event;
-      if (isReplay) {
-        _batchReplays++;
-      }
-
-      return [];
-    },
-  },
-
-  // ── Replay detected (different intent touching same resource) ──────────
-  DEDUP_REPLAY_DETECTED: {
-    target: (event) => _localState, // stay in ACTIVE
-    guard: (event) => {
-      if (_localState !== 'ACTIVE') {
-        return { allowed: false, reason: `Cannot process replay outside ACTIVE batch (current: ${_localState})` };
-      }
-      return { allowed: true };
-    },
-    buildActions: (event) => {
-      _batchReplays++;
-
-      const { accountId, resourceId, previousIntentId, intentId } = event;
-
-      // Track replay for batch-end evaluation
-      if (!_replayResources.has(resourceId)) {
-        _replayResources.set(resourceId, []);
-      }
-      _replayResources.get(resourceId).push({
-        intentId,
-        previousIntentId,
-        ts: Date.now(),
-      });
-
-      return [];
-    },
-  },
-
+  // ── DEDUP_INTENT_MARKED  — DEPRECATED (2026-06-07) ────────────────────
+  // ── DEDUP_REPLAY_DETECTED — DEPRECATED (2026-06-07) ────────────────────
+  // Both replaced by CHECK_AND_MARK_DEDUP which atomically checks and marks
+  // in one handler. These event types remain in CK's DOMAIN_EVENT_MAP for
+  // backward compatibility but have no handler — dispatch returns "unknown
+  // event type" which is harmless since nothing emits them anymore.
+  //
   // ── Evaluation complete → close dedup batch, evaluate governance signals ─
   DEDUP_BATCH_END: {
     target: 'IDLE',
@@ -184,7 +155,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: async (event, ctx) => {
       const actions = [];
       const totalOps = _batchMarks || 0;
       const replayCount = _batchReplays || 0;
@@ -216,6 +187,18 @@ const TRANSITION_MAP = {
         }
       }
 
+      // ── Clear tick via bounded worker (CK gate) ──────────────────────
+      // Fallback to substrate for non-CK contexts (tests).
+      try {
+        if (ctx && typeof ctx.invokeWorker === 'function') {
+          await ctx.invokeWorker('clear-tick', {});
+        } else {
+          _substrate().clearTick();
+        }
+      } catch (err) {
+        console.warn(`[dedup-fsm] clearTick failed: ${err.message}`);
+      }
+
       // ── Batch summary action ──────────────────────────────────────────
       actions.push({
         type: 'DEDUP_BATCH_CLOSED',
@@ -231,6 +214,120 @@ const TRANSITION_MAP = {
       _replayResources.clear();
 
       return actions;
+    },
+  },
+
+  // ── Check + Mark Dedup (replaces isInFlight + markInFlight) ──────────────
+  // This is the canonical dedup entry point. External callers dispatch
+  // CHECK_AND_MARK_DEDUP to CK → CK routes to dedup FSM → FSM calls
+  // workers via ctx.invokeWorker → workers delegate to substrate.
+  //
+  // ONE CK round-trip, atomic check+mark inside FSM handler.
+  // No race window between check and mark — both happen in the same handler.
+  // CK gate validates ownership, contract, sanity on every worker invocation.
+  // FSM gate (sanityCheck) validates system health before any dedup I/O.
+  CHECK_AND_MARK_DEDUP: {
+    target: (event) => _localState, // stay in current state
+    guard: (event) => {
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { accountId, actionType, resourceId, intentId } = event;
+
+      // ── 0. Sanity gate — block dedup I/O when system is DEGRADED ─────
+      const gate = await _resolveSanityCheck(ctx, {
+        operation: 'check_and_mark_dedup',
+        domain: 'dedup',
+        accountId,
+        actionType,
+        resourceId,
+      });
+      if (!gate.allowed) {
+        return [{
+          type: 'DEDUP_INTENT_CHECKED',
+          accountId, actionType, resourceId, intentId,
+          blocked: false,
+          reason: null,
+          existingIntentId: null,
+          isReplay: false,
+          gateRejected: true,
+          gateReason: gate.reason,
+        }];
+      }
+
+      // ── 1. Check dedup via bounded worker (CK gate) ──────────────────
+      // Fail-open: if worker throws, treat as non-blocked and proceed.
+      // The CK gate already validated ownership/contract/sanity on invoke.
+      // A throw here means the worker itself failed — not a dedup block.
+      let checkResult;
+      try {
+        if (ctx && typeof ctx.invokeWorker === 'function') {
+          checkResult = await ctx.invokeWorker('check-dedup', {
+            accountId, actionType, resourceId, intentId,
+          });
+        } else {
+          checkResult = await _substrate().isInFlight(
+            accountId, actionType, resourceId, intentId
+          );
+        }
+      } catch (err) {
+        console.warn(`[dedup-fsm] check-dedup worker failed: ${err.message}, failing open`);
+        checkResult = { blocked: false, reason: null, existingIntentId: null };
+      }
+
+      // ── 2. If exact duplicate → blocked, no mark ──────────────────
+      if (checkResult.blocked && checkResult.reason === 'duplicate') {
+        _batchMarks++;
+        return [{
+          type: 'DEDUP_INTENT_CHECKED',
+          accountId, actionType, resourceId, intentId,
+          blocked: true,
+          reason: 'duplicate',
+          existingIntentId: checkResult.existingIntentId,
+          isReplay: false,
+        }];
+      }
+
+      // ── 3. Mark in-flight via bounded worker (CK gate) ────────────
+      // Fail-open: mark failure does not block the intent.
+      try {
+        if (ctx && typeof ctx.invokeWorker === 'function') {
+          await ctx.invokeWorker('mark-in-flight', {
+            accountId, actionType, resourceId, intentId,
+          });
+        } else {
+          await _substrate().markInFlight(accountId, actionType, resourceId, { intentId });
+        }
+      } catch (err) {
+        console.warn(`[dedup-fsm] mark-in-flight worker failed: ${err.message}, failing open`);
+      }
+
+      // ── 4. Track batch metrics ────────────────────────────────────
+      _batchMarks++;
+      if (checkResult.reason === 'replay') {
+        _batchReplays++;
+        // Cap replay resource tracking to prevent unbounded Map growth
+        if (_replayResources.size < MAX_REPLAY_RESOURCES) {
+          if (!_replayResources.has(resourceId)) {
+            _replayResources.set(resourceId, []);
+          }
+          _replayResources.get(resourceId).push({
+            intentId,
+            previousIntentId: checkResult.existingIntentId,
+            ts: Date.now(),
+          });
+        }
+      }
+
+      // ── 5. Return result ──────────────────────────────────────────
+      return [{
+        type: 'DEDUP_INTENT_CHECKED',
+        accountId, actionType, resourceId, intentId,
+        blocked: false,
+        reason: checkResult.reason,
+        existingIntentId: checkResult.existingIntentId,
+        isReplay: checkResult.reason === 'replay',
+      }];
     },
   },
 
@@ -251,6 +348,8 @@ const TRANSITION_MAP = {
         threadId: event.threadId,
       });
       if (!gate.allowed) return [];
+      // Track orphan — a missing conversation was detected
+      _batchOrphans++;
       return [{
         type: 'EXECUTE_CONVERSATION_REPAIR',
         threadId: event.threadId,
@@ -258,6 +357,28 @@ const TRANSITION_MAP = {
         igUserId: event.igUserId,
         pageToken: event.pageToken,
         pageId: event.pageId,
+      }];
+    },
+  },
+
+  // ── Repair outcome — FSM processes worker result ──────────────────────
+  REPAIR_CONVERSATION_COMPLETE: {
+    target: (event) => _localState, // stay in current state
+    guard: (event) => {
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { threadId, accountId, uuid, recovered } = event;
+      if (recovered > 0) {
+        _batchOrphans--; // repaired conversation reduces orphan count
+      }
+      return [{
+        type: 'REPAIR_CONVERSATION_RESOLVED',
+        threadId,
+        accountId,
+        uuid,
+        recovered,
+        timestamp: Date.now(),
       }];
     },
   },
@@ -422,13 +543,22 @@ function exportState() {
 }
 
 function getHealth() {
+  const stalenessMs = _localState === 'ACTIVE' && _lastTransitionedAt
+    ? Date.now() - _lastTransitionedAt
+    : 0;
+  const stale = stalenessMs > BATCH_STALENESS_MS;
+
   return {
-    ok: _degradationCount === 0 && _batchReplays < _batchMarks * 0.5,
+    ok: !stale && _degradationCount === 0
+      && (_batchMarks === 0 || _batchReplays < _batchMarks * 0.5),
     signals: {
       state: _localState,
       activeBatch: _localState === 'ACTIVE',
+      batchAgeMs: stalenessMs,
+      batchStale: stale,
       degradationCount: _degradationCount,
       currentReplayRate: _batchMarks > 0 ? _batchReplays / _batchMarks : 0,
+      currentOrphanCount: _batchOrphans,
     },
   };
 }

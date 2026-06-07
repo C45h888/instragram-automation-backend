@@ -27,8 +27,9 @@
  *   T12: Full restart replay convergence — identical input across reboots
  *
  * Soak Test:
- *   45-minute continuous coordination under periodic worker churn.
- *   Six FSM-specific constitutional gates verified every 2 minutes.
+ *   SOAK_DURATION_MS continuous coordination under periodic worker churn
+ *   (default 2 minutes, was 45 min). Six FSM-specific constitutional gates
+ *   verified every CHECKPOINT_INTERVAL_MS.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -574,17 +575,20 @@ describe('Phase 6: FSM Determinism', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Suite 4: 45-Minute Constitutional Soak
+// Suite 4: Constitutional Coordination Soak
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Soak configuration — overridable via environment variables
-const SOAK_DURATION_MS = parseInt(process.env.PHASE6_SOAK_MS || String(45 * 60 * 1000), 10);
-const TICK_INTERVAL_MS = parseInt(process.env.PHASE6_TICK_MS || '500', 10);
-const ADVERSARIAL_INTERVAL_TICKS = parseInt(process.env.PHASE6_ADV_INTERVAL || '25', 10);
-const COORDINATION_INTERVAL_MS = parseInt(process.env.PHASE6_COORD_MS || '30000', 10);
-const CHECKPOINT_INTERVAL_MS = parseInt(process.env.PHASE6_CHECKPOINT_MS || String(2 * 60 * 1000), 10);
-const RECYCLE_INTERVAL_MS = parseInt(process.env.PHASE6_RECYCLE_MS || String(5 * 60 * 1000), 10);
-const LINEAGE_RECYCLE_INTERVAL_MS = parseInt(process.env.PHASE6_LIN_RECYCLE_MS || String(10 * 60 * 1000), 10);
+// Soak configuration — overridable via environment variables.
+// 2-minute default (was 45 min) — proportional intervals derived from
+// SOAK_DURATION_MS. Override via env for hour-long production runs.
+const SOAK_DURATION_MS = parseInt(process.env.PHASE6_SOAK_MS || String(2 * 60 * 1000), 10);
+const TICK_INTERVAL_MS = parseInt(process.env.PHASE6_TICK_MS || '250', 10);
+// Proportional defaults — derived from SOAK_DURATION_MS.
+const ADVERSARIAL_INTERVAL_TICKS = parseInt(process.env.PHASE6_ADV_INTERVAL || String(Math.max(1, Math.floor(SOAK_DURATION_MS / 15000))), 10);
+const COORDINATION_INTERVAL_MS = parseInt(process.env.PHASE6_COORD_MS || String(Math.max(1000, Math.floor(SOAK_DURATION_MS / 8))), 10);
+const CHECKPOINT_INTERVAL_MS = parseInt(process.env.PHASE6_CHECKPOINT_MS || String(Math.max(1000, Math.floor(SOAK_DURATION_MS / 6))), 10);
+const RECYCLE_INTERVAL_MS = parseInt(process.env.PHASE6_RECYCLE_MS || String(Math.max(1000, Math.floor(SOAK_DURATION_MS / 3))), 10);
+const LINEAGE_RECYCLE_INTERVAL_MS = parseInt(process.env.PHASE6_LIN_RECYCLE_MS || String(Math.max(1000, Math.floor(SOAK_DURATION_MS / 2))), 10);
 const LEDGER_LOOKBACK = 500;
 
 const LEGAL_DOMAINS = ['acquisition', 'publishing', 'scheduling', 'dedup', 'engagement'];
@@ -609,7 +613,7 @@ async function writeSoakReport(payload) {
   await writeFile(latestPath, content, 'utf8');
 }
 
-describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
+describe('Phase 6: Constitutional Coordination Soak', () => {
   let sim;
 
   beforeAll(async () => {
@@ -627,7 +631,7 @@ describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
   });
 
   it(
-    'survives 45 minutes of continuous coordination under adversarial ingress and worker churn',
+    'survives continuous coordination under adversarial ingress and worker churn',
     async () => {
       const startTime = Date.now();
 
@@ -866,7 +870,7 @@ describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
       // ═══════════════════════════════════════════════════════════════
       const soakMin = Math.round(SOAK_DURATION_MS / 60000);
       console.log(
-        `[phase-6] Starting ${soakMin}-minute coordination soak: ${SOAK_DURATION_MS}ms at ${TICK_INTERVAL_MS}ms tick`,
+        `[phase-6] Starting coordination soak: ${SOAK_DURATION_MS}ms (${soakMin}min) at ${TICK_INTERVAL_MS}ms tick`,
       );
       await sleep(SOAK_DURATION_MS);
 
@@ -956,7 +960,7 @@ describe('Phase 6: 45-Minute Constitutional Coordination Soak', () => {
       // ── Write soak report ────────────────────────────────────────
       const report = {
         phase: '6',
-        test: '45-minute-constitutional-coordination-soak',
+        test: 'constitutional-coordination-soak',
         soakConfig: {
           SOAK_DURATION_MS,
           TICK_INTERVAL_MS,

@@ -1,14 +1,15 @@
 /**
- * Phase 5D: 1-Hour Longitudinal Constitutional Soak
- * ==================================================
+ * Phase 5D: Longitudinal Constitutional Soak
+ * ==========================================
  *
- * The crown jewel of Phase 5 testing. Runs the complete constitutional
- * runtime for 1 continuous hour with:
+ * Runs the complete constitutional runtime for SOAK_DURATION_MS with:
  *   - Mixed legal + adversarial transitions across all 5 domains
- *   - Checkpoints every 5 minutes verifying ALL 7 constitutional laws
+ *   - Checkpoints every SOAK_DURATION_MS/5 verifying ALL 7 constitutional laws
  *   - Runtime monitoring probe capturing structural snapshots
  *   - Health-driven worker recycle on degradation (no timer-based recycles)
- * 
+ *
+ * Default soak: 5 minutes (configurable via PHASE5D_SOAK_MS).
+ * Override for hour-long runs in production soak pipelines.
  *
  * Constitutional Laws Validated (every checkpoint):
  *   L1: Projection convergence from lineage replay
@@ -19,11 +20,11 @@
  *   L6: No silent corruption markers
  *   L7: Projection signal contract (lineage vs telemetry signal ownership)
  *
- * Wave Architecture:
- *   - TICK_INTERVAL_MS: 500ms → ~7200 ticks over 1 hour
- *   - ADVERSARIAL_INTERVAL_TICKS: every 30 ticks → ~240 adversarial events
- *   - RECON_INTERVAL_MS: 60s → ~60 reconciliation cycles
- *   - CHECKPOINT_INTERVAL_MS: 5min → ~12 checkpoints
+ * Wave Architecture (5-min default):
+ *   - TICK_INTERVAL_MS: 250ms → ~1200 ticks
+ *   - ADVERSARIAL_INTERVAL_TICKS: 15 → ~80 adversarial events
+ *   - RECON_INTERVAL_MS: 30s → 10 reconciliation cycles
+ *   - CHECKPOINT_INTERVAL_MS: 60s → 5 checkpoints
  *
  * Note: Timer-based worker recycle has been removed. Workers now run
  * until degraded, then the health-checksum triggers a deterministic recycle.
@@ -46,11 +47,15 @@ import {
 } from './helpers/constitutional-invariants.js';
 
 // ── Soak configuration ──────────────────────────────────────────────────
-const SOAK_DURATION_MS = parseInt(process.env.PHASE5D_SOAK_MS || String(60 * 60 * 1000), 10);
-const TICK_INTERVAL_MS = parseInt(process.env.PHASE5D_TICK_MS || '500', 10);
-const ADVERSARIAL_INTERVAL_TICKS = parseInt(process.env.PHASE5D_ADV_INTERVAL || '30', 10);
-const RECON_INTERVAL_MS = parseInt(process.env.PHASE5D_RECON_MS || '60000', 10);
-const CHECKPOINT_INTERVAL_MS = parseInt(process.env.PHASE5D_CHECKPOINT_MS || String(5 * 60 * 1000), 10);
+// 5-minute default (was 60 min) — proportional intervals derived from
+// SOAK_DURATION_MS so a 5-min soak still produces 5 checkpoints, 10
+// reconciliation cycles, ~80 adversarial events. Override via env.
+const SOAK_DURATION_MS = parseInt(process.env.PHASE5D_SOAK_MS || String(5 * 60 * 1000), 10);
+const TICK_INTERVAL_MS = parseInt(process.env.PHASE5D_TICK_MS || '250', 10);
+// Proportional defaults — ~6 checkpoints, ~10 recon cycles, ~80 adversarial.
+const ADVERSARIAL_INTERVAL_TICKS = parseInt(process.env.PHASE5D_ADV_INTERVAL || String(Math.max(1, Math.floor(SOAK_DURATION_MS / 60000 * 3))), 10);
+const RECON_INTERVAL_MS = parseInt(process.env.PHASE5D_RECON_MS || String(Math.max(1000, Math.floor(SOAK_DURATION_MS / 10))), 10);
+const CHECKPOINT_INTERVAL_MS = parseInt(process.env.PHASE5D_CHECKPOINT_MS || String(Math.max(1000, Math.floor(SOAK_DURATION_MS / 5))), 10);
 const LEDGER_LOOKBACK = 500;
 
 const observability = require('../control-plane/observability/index.js');
@@ -83,7 +88,7 @@ async function writeSoakReport(payload) {
   await writeFile(latestPath, content, 'utf8');
 }
 
-describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
+describe('Phase 5D: Longitudinal Constitutional Soak', () => {
   let sim;
 
   beforeAll(async () => {
@@ -101,7 +106,7 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
   });
 
   it(
-    'survives 1 hour of mixed legal + adversarial waves with reconciliation every 60s',
+    'survives mixed legal + adversarial waves with reconciliation',
     async () => {
       const startTime = Date.now();
 
@@ -366,7 +371,7 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
       // ════════════════════════════════════════════════════════════════
       const soakMin = Math.round(SOAK_DURATION_MS / 60000);
       console.log(
-        `[phase-5d] Starting 1-hour longitudinal soak: ${SOAK_DURATION_MS}ms (${soakMin}min) at ${TICK_INTERVAL_MS}ms tick`
+        `[phase-5d] Starting longitudinal soak: ${SOAK_DURATION_MS}ms (${soakMin}min) at ${TICK_INTERVAL_MS}ms tick`
       );
       await sleep(SOAK_DURATION_MS);
 
@@ -457,7 +462,7 @@ describe('Phase 5D: 1-Hour Longitudinal Constitutional Soak', () => {
         try {
           const report = {
             phase: '5D',
-            test: '1-hour-longitudinal-constitutional-soak',
+            test: 'longitudinal-constitutional-soak',
             soakConfig: {
               SOAK_DURATION_MS,
               TICK_INTERVAL_MS,

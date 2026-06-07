@@ -37,6 +37,7 @@ const dbReaders = require('../postgres-telemetry-kernel/readers');
 const cognitionScanner = require('../postgres-telemetry-kernel/cognition-scanner');
 const orphanMessageRepair = require('../reconciliation-kernel/orphan-message-repair');
 const dedupKernel = require('../dedup-kernel');
+const dedupOrchestrator = require('../dedup-kernel/orchestrator');
 
 // ── 8 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('../acquisition-kernel/fsm');
@@ -123,12 +124,21 @@ function _wire() {
   constitutional.registerWorker('acquisition', 'insights-parser',
     require('../acquisition-kernel/substrates/parsing-substrate/workers/insights-parser'));
 
+  // ── dedup-fsm — dedup workers (bound to substrates/dedup/index.js) ─
+  constitutional.registerWorker('dedup', 'check-dedup',
+    require('../dedup-kernel/substrates/dedup/workers/check-dedup-worker'));
+  constitutional.registerWorker('dedup', 'mark-in-flight',
+    require('../dedup-kernel/substrates/dedup/workers/mark-in-flight-worker'));
+  constitutional.registerWorker('dedup', 'clear-tick',
+    require('../dedup-kernel/substrates/dedup/workers/clear-tick-worker'));
+
   // Wire each membrane orchestrator
   cadenceOrchestrator.wire(constitutional);
   acquisitionOrchestrator.wire(constitutional, acquisitionFsm);
   emissionOrchestrator.wire(constitutional);
   lifecycleOrchestrator.wire(constitutional);
   degradationOrchestrator.wire(constitutional);
+  dedupOrchestrator.wire(constitutional, dedupFsm);
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -205,6 +215,12 @@ async function startAllWorkers() {
   const result = await constitutional.governedRead('db.accounts', { query: 'getActiveAccounts' });
   const accounts = result.success ? result.data : [];
 
+  // Start acquisition-fsm timeout sweeper — force-closes intents that exceed
+  // intentTimeoutMs. Sweeper runs as a setInterval, owned by the orchastrator
+  // lifecycle. The FSM owns the policy (thresholds); the orchastrator owns
+  // the lifecycle (start/stop). Stop in stopAllWorkers().
+  acquisitionFsm.startTimeoutSweeper(30_000);
+
   // Start cognition scanner — sole deterministic trigger for publishing FSM
   await cognitionScanner.start(constitutional, accounts, publishingFsm);
 
@@ -262,6 +278,10 @@ async function stopAllWorkers() {
   telemetryCoordinationFsm.stop();
   constitutional.stopLoop();
   syncSubstrate.stop();
+  // Stop acquisition-fsm timeout sweeper before cognition scanner shutdown —
+  // sweeper is a setInterval and must be cleared deterministically to avoid
+  // firing on a stopped FSM.
+  acquisitionFsm.stopTimeoutSweeper();
   await cognitionScanner.stop();
   await cadence.stop();
   lifecycle.stopAll();

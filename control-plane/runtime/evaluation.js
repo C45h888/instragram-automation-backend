@@ -1,28 +1,22 @@
 // control-plane/runtime/evaluation.js
-// Evaluation: bounded policy evaluation with dedup and mutation classification.
+// Evaluation: bounded policy evaluation — pure policy, no dedup.
 //
-// Owns: applying publishing policy to buffered events, dedup checking,
-//        classifying mutations (mark_failed).
-// Does NOT own: intent emission, Redis, worker lifecycle, signal intake.
+// Owns: applying publishing policy to buffered events, classifying mutations.
+// Does NOT own: dedup checking (dedup-kernel/fsm via CK), intent emission,
+//               Redis, worker lifecycle, signal intake.
 //
 // Contract:
-//   evaluator.evaluate(accountId, events) → Promise<{ intents: [...], mutations: [...], dedup: { marks, replays, duplicates } }>
+//   evaluator.evaluate(accountId, events) → Promise<{ intents: [...], mutations: [...] }>
 //
-// Dedup is Redis-backed — must be async to check/set Redis keys.
-// Caller handles emission, mutation execution, and governance dispatch.
+// Dedup is handled by the publishing orchestrator BEFORE evaluation.
+// The orchestrator pre-filters events through CK → dedup FSM, then passes
+// only clean (non-blocked) events to evaluator.evaluate().
 //
-// Phase 4a: lineage-aware dedup — each intent carries a unique intentId.
-// Dedup now distinguishes duplicate (same intentId, block) from replay
-// (different intentId touching same resource, allow with observability signal).
-//
-// Phase 5: dedup FSM governance — evaluation returns dedup metadata for the
-// orchestrator to dispatch DEDUP_BATCH_BEGIN / DEDUP_INTENT_MARKED /
-// DEDUP_REPLAY_DETECTED / DEDUP_BATCH_END through the constitutional kernel.
-// clearTick() is now called by the orchestrator after governance dispatch.
+// Phase 5 (2026-06-07): Dedup extracted to dedup-kernel FSM.
+// evaluation.js is now pure policy evaluation — no dedup substrate import.
 
 const crypto = require('crypto');
 const publishingPolicy = require('../policies/publishing');
-const dedupSubstrate = require('../../dedup-kernel/substrates/dedup');
 
 // ── Observability state tracking ────────────────────────────────────────────
 
@@ -30,11 +24,12 @@ let _evalState = 'IDLE';
 
 /**
  * Evaluates a batch of events for one account.
- * Async — dedup checks and marks require Redis-backed idempotency.
- * Always returns a valid shape even for empty input.
+ * Async — policy evaluation is synchronous but observability emissions are
+ * fire-and-forget.
  *
  * @param {string} accountId — non-empty string
- * @param {Array<{table: string, record: object}>} events — array of DB events
+ * @param {Array<{table: string, record: object, intentId?: string}>} events — pre-filtered DB events (dedup already checked)
+ *        Optional intentId: if provided, reused; otherwise generated fresh.
  * @returns {Promise<{ intents: Array<object>, mutations: Array<object> }>}
  * @throws {Error} if accountId is not a string or events is not an array
  */
@@ -66,14 +61,6 @@ async function evaluate(accountId, events) {
   const intents = [];
   const mutations = [];
 
-  // ── Dedup governance metadata — collected for orchestrator dispatch ─────
-  const dedupMeta = {
-    marks: 0,
-    replays: 0,
-    duplicates: 0,
-    replayDetails: [], // [{ resourceId, intentId, previousIntentId }]
-  };
-
   for (const { table, record } of events) {
     const outcome = publishingPolicy.evaluateRecord(table, record);
 
@@ -94,28 +81,11 @@ async function evaluate(accountId, events) {
     if (outcome.action === 'emit') {
       const { intent } = outcome;
       const resourceId = record.id;
-      const intentId = crypto.randomUUID();
+      // Use pre-allocated intentId from dedup check, or generate fresh
+      const intentId = event.intentId || crypto.randomUUID();
 
-      // Lineage-aware dedup check — structured result distinguishes duplicate from replay
-      const dedupResult = await dedupSubstrate.isInFlight(accountId, intent.action_type, resourceId, intentId);
-
-      if (dedupResult.blocked && dedupResult.reason === 'duplicate') {
-        dedupMeta.duplicates++;
-        continue;
-      }
-
-      // Substrate marks in-flight (mechanical operation — governance recorded by orchestrator)
-      await dedupSubstrate.markInFlight(accountId, intent.action_type, resourceId, { intentId });
-      dedupMeta.marks++;
-
-      if (dedupResult.reason === 'replay') {
-        dedupMeta.replays++;
-        dedupMeta.replayDetails.push({
-          resourceId,
-          intentId,
-          previousIntentId: dedupResult.existingIntentId,
-        });
-      }
+      // Dedup already checked by publishing orchestrator via CK → dedup FSM.
+      // Events reaching here have passed dedup. No isInFlight/markInFlight.
 
       intents.push({
         intent_id: intentId,
@@ -129,8 +99,6 @@ async function evaluate(accountId, events) {
       });
     }
   }
-
-  // clearTick() is now called by the orchestrator after governance dispatch
 
   // Emit IDLE transition when evaluation completes
   if (_evalState !== 'IDLE') {
@@ -149,7 +117,7 @@ async function evaluate(accountId, events) {
     } catch (_) {}
   }
 
-  return { intents, mutations, dedup: dedupMeta };
+  return { intents, mutations };
 }
 
 module.exports = { evaluate };

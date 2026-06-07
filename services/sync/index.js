@@ -6,7 +6,6 @@
 //   server.js → require('./services/sync').runStartupHealthChecks
 
 const { runTokenHealthCheck, runUATRefreshCheck } = require('./token-health');
-const { isAccountRateLimited, markAccountRateLimited } = require('../../substrates/retry');
 
 // ── Startup health checks ────────────────────────────────────────────────────
 
@@ -31,6 +30,4 @@ module.exports = {
   runStartupHealthChecks,
   runTokenHealthCheck,
   runUATRefreshCheck,
-  isAccountRateLimited,
-  markAccountRateLimited,
 };
