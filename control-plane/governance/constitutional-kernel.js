@@ -557,6 +557,8 @@ const DOMAIN_EVENT_MAP = {
   CHECK_AND_MARK_DEDUP: 'dedup',
   REPAIR_CONVERSATION: 'dedup',
   REPAIR_CONVERSATION_COMPLETE: 'dedup',
+  DEDUP_RETRY_IN_PROGRESS: 'dedup',
+  DEDUP_RETRY_EXHAUSTED: 'dedup',
 
   // Reconciliation domain
   RECONCILIATION_TICK: 'reconciliation',

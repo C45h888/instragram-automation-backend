@@ -627,15 +627,24 @@ const TRANSITION_MAP = {
               }];
             }
 
-            // Scheduled successfully. For publish:* domains,
-            // emit RETRY_IN_PROGRESS so publishing-fsm can hold
-            // its EXECUTING state while the retry chain is in
-            // flight (observability fidelity). For other domains
-            // (acquisition-side retries), no emission — the FSM
-            // is transparent to those.
+            // Scheduled successfully. For publish:* domains, emit
+            // RETRY_IN_PROGRESS. For dedup domain, emit
+            // DEDUP_RETRY_IN_PROGRESS. The domain FSM holds its
+            // state while the retry chain is in flight
+            // (observability fidelity).
             if (domain && domain.startsWith('publish:')) {
               return [{
                 type: 'RETRY_IN_PROGRESS',
+                accountId,
+                domain,
+                intentId,
+                retryCount: newCount,
+                delayMs: scheduleResult.delayMs,
+              }];
+            }
+            if (domain === 'dedup') {
+              return [{
+                type: 'DEDUP_RETRY_IN_PROGRESS',
                 accountId,
                 domain,
                 intentId,
@@ -950,6 +959,7 @@ function _resolveWorkerName(domain) {
     'publish:story': 'publish-content-retry',
     'publish:comment': 'publish-engagement-retry',
     'publish:message': 'publish-engagement-retry',
+    dedup:             'dedup-retry',
   };
   return MAP[domain] || 'unknown';
 }
@@ -1077,6 +1087,17 @@ function _buildExhaustedActions(params) {
       intentId: params.intentId,
       error: params.error,
       igCode: params.igCode,
+      retryCount: params.retryCount,
+      operation: params.operation,
+    });
+  }
+  if (params.domain === 'dedup') {
+    actions.push({
+      type: 'DEDUP_RETRY_EXHAUSTED',
+      accountId: params.accountId,
+      domain: params.domain,
+      intentId: params.intentId,
+      error: params.error,
       retryCount: params.retryCount,
       operation: params.operation,
     });

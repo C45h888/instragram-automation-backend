@@ -18,6 +18,7 @@ const fsm = require('./fsm');
 const vault = require('./substrates/vault');
 const verdictGate = require('./substrates/graph-capability/verdict-gate');
 const triggerBridge = require('./substrates/graph-capability/trigger-bridge');
+const health = require('./substrates/health-substrate');
 
 let _installed = false;
 let _started = false;
@@ -60,6 +61,10 @@ module.exports = {
   // Public surface: graph-capability read/write
   verdictGate,
   triggerBridge,
+  // Public surface: health substrate (token-health / uat-refresh orchestration)
+  // Migrated from services/sync/token-health.js — see
+  // graph-capability-kernel/substrates/health-substrate/
+  health,
   // Direct FSM access for CK registration
   fsm,
 };

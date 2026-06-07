@@ -41,6 +41,16 @@ const POLICIES = {
     backoffMultiplier:  2,
     classifierOverride: true,
   },
+  // ── Dedup — Redis-backed, one retry ────────────────────────────
+  // Dedup operations are lightweight Redis SET/GET/EXISTS.
+  // Failures are typically transient Redis connectivity issues.
+  // One retry with 30s base delay (30s, 60s) capped at 5min.
+  dedup: {
+    maxRetries:         1,
+    baseDelayMs:        30000,   // 30s
+    maxDelayMs:         300000,  // 5min
+    backoffMultiplier:  2,
+  },
 };
 
 // Domain → substrate mapping
@@ -54,6 +64,7 @@ const DOMAIN_TO_SUBSTRATE = {
   'publish:story': 'publishing',
   'publish:comment': 'publishing',
   'publish:message': 'publishing',
+  dedup:            'dedup',
 };
 
 /**

@@ -189,6 +189,8 @@ const TRANSITION_MAP = {
 
       // ── Clear tick via bounded worker (CK gate) ──────────────────────
       // Fallback to substrate for non-CK contexts (tests).
+      // Emit WORKER_OUTCOME_REPORTED on failure so engagement-fsm
+      // can schedule a retry to restore substrate health.
       try {
         if (ctx && typeof ctx.invokeWorker === 'function') {
           await ctx.invokeWorker('clear-tick', {});
@@ -197,6 +199,24 @@ const TRANSITION_MAP = {
         }
       } catch (err) {
         console.warn(`[dedup-fsm] clearTick failed: ${err.message}`);
+        if (_governance) {
+          _governance.dispatch({
+            type: 'WORKER_OUTCOME_REPORTED',
+            accountId: event.accountId,
+            intentId: null,
+            domain: 'dedup',
+            status: 'failed',
+            result: null,
+            error: err.message,
+            errorShape: {
+              category: 'transient',
+              code: err.code || null,
+              retryable: true,
+              retryAfterSeconds: null,
+            },
+            params: { operation: 'clear-tick' },
+          });
+        }
       }
 
       // ── Batch summary action ──────────────────────────────────────────
@@ -259,6 +279,8 @@ const TRANSITION_MAP = {
       // Fail-open: if worker throws, treat as non-blocked and proceed.
       // The CK gate already validated ownership/contract/sanity on invoke.
       // A throw here means the worker itself failed — not a dedup block.
+      // Emit WORKER_OUTCOME_REPORTED so engagement-fsm can schedule a
+      // retry to restore substrate health. The intent proceeds unblocked.
       let checkResult;
       try {
         if (ctx && typeof ctx.invokeWorker === 'function') {
@@ -272,6 +294,23 @@ const TRANSITION_MAP = {
         }
       } catch (err) {
         console.warn(`[dedup-fsm] check-dedup worker failed: ${err.message}, failing open`);
+        if (_governance) {
+          _governance.dispatch({
+            type: 'WORKER_OUTCOME_REPORTED',
+            accountId, intentId,
+            domain: 'dedup',
+            status: 'failed',
+            result: null,
+            error: err.message,
+            errorShape: {
+              category: 'transient',
+              code: err.code || null,
+              retryable: true,
+              retryAfterSeconds: null,
+            },
+            params: { operation: 'check-dedup', actionType, resourceId },
+          });
+        }
         checkResult = { blocked: false, reason: null, existingIntentId: null };
       }
 
@@ -290,6 +329,8 @@ const TRANSITION_MAP = {
 
       // ── 3. Mark in-flight via bounded worker (CK gate) ────────────
       // Fail-open: mark failure does not block the intent.
+      // Emit WORKER_OUTCOME_REPORTED so engagement-fsm can schedule a
+      // retry to restore substrate health.
       try {
         if (ctx && typeof ctx.invokeWorker === 'function') {
           await ctx.invokeWorker('mark-in-flight', {
@@ -300,6 +341,23 @@ const TRANSITION_MAP = {
         }
       } catch (err) {
         console.warn(`[dedup-fsm] mark-in-flight worker failed: ${err.message}, failing open`);
+        if (_governance) {
+          _governance.dispatch({
+            type: 'WORKER_OUTCOME_REPORTED',
+            accountId, intentId,
+            domain: 'dedup',
+            status: 'failed',
+            result: null,
+            error: err.message,
+            errorShape: {
+              category: 'transient',
+              code: err.code || null,
+              retryable: true,
+              retryAfterSeconds: null,
+            },
+            params: { operation: 'mark-in-flight', actionType, resourceId },
+          });
+        }
       }
 
       // ── 4. Track batch metrics ────────────────────────────────────
@@ -379,6 +437,43 @@ const TRANSITION_MAP = {
         uuid,
         recovered,
         timestamp: Date.now(),
+      }];
+    },
+  },
+
+  // ── DEDUP_RETRY_IN_PROGRESS: engagement-fsm scheduled a dedup retry ─
+  // The dedup FSM stays in its current state while the retry chain
+  // is in flight. Dedup retries are transparent substrate health
+  // restores — the FSM state does not gate retry operations.
+  // Handler is a pure state hold for observability fidelity.
+  // Emitted by engagement-fsm._scheduleRetry when domain='dedup'.
+  DEDUP_RETRY_IN_PROGRESS: {
+    target: (event) => _localState, // no state change
+    guard: (event) => {
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      return []; // pure state hold — engagement-fsm owns retry invocation
+    },
+  },
+
+  // ── DEDUP_RETRY_EXHAUSTED: terminal retry failure for dedup ops ──
+  // Emitted by engagement-fsm._buildExhaustedActions when the retry
+  // chain exhausts for a dedup operation. Dedup transitions ACTIVE→IDLE
+  // (if in ACTIVE) or stays IDLE. Logs degraded for observability.
+  DEDUP_RETRY_EXHAUSTED: {
+    target: (event) => _localState === 'ACTIVE' ? 'IDLE' : 'IDLE',
+    guard: (event) => {
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      _degradationCount++;
+      return [{
+        type: 'LOG_DEGRADED',
+        substate: 'DEDUP_RETRY_EXHAUSTED',
+        reason: event.error || 'Dedup retry chain exhausted',
+        operation: event.operation,
+        retryCount: event.retryCount,
       }];
     },
   },
