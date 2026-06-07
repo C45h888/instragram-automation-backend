@@ -117,6 +117,11 @@ function _wire() {
     require('../retry-cadence-kernel/workers/dedup-repair-retry-worker'));
   constitutional.registerWorker('engagement', 'reconciliation-retry',
     require('../retry-cadence-kernel/workers/reconciliation-retry-worker'));
+  // ── telemetry-coordination-fsm — retry worker (Phase 2: wire worker file) ────
+  // Registered now so CK's invokeWorker can find it. Worker file created in
+  // Phase 2. The require() resolves at boot once the worker exists.
+  constitutional.registerWorker('engagement', 'telemetry-retry',
+    () => ({ execute: () => ({ status: 'pending', reason: 'worker_not_yet_instantiated' }) })); // placeholder — Phase 2 replaces with real worker
 
   // ── acquisition-fsm — parsing workers ─────────────────────────────────
   constitutional.registerWorker('acquisition', 'comments-parser',

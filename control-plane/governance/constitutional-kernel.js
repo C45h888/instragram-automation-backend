@@ -595,6 +595,10 @@ const DOMAIN_EVENT_MAP = {
   // Ingress lag retry orchestration
   INGRESS_RETRY_REQUESTED: 'telemetry-coordination-fsm',
   INGRESS_RESOLVED: 'telemetry-coordination-fsm',
+  // Telemetry retry cadence (engagement-fsm → telemetry-coordination-fsm state sync)
+  TELEMETRY_RETRY_IN_PROGRESS: 'telemetry-coordination-fsm',
+  TELEMETRY_RETRY_EXHAUSTED: 'telemetry-coordination-fsm',
+  TELEMETRY_RETRY_CLEARED: 'telemetry-coordination-fsm',
 };
 
 // ── Reconciliation cycle coordination state ──────────────────────────────────
@@ -886,6 +890,36 @@ const GLOBAL_TRANSITION_MAP = {
         ];
       }
 
+      return [];
+    },
+  },
+
+  // ── Telemetry Retry Cadence — routed from telemetry-coordination-fsm ────────
+  // telemetry-coordination-fsm emits ctx.dispatchGlobal({ type: 'RETRY_CADENCE_REQUEST' })
+  // when ingress lag is detected. CK routes it here → engagement-fsm activates retry.
+  RETRY_CADENCE_REQUEST: {
+    target: () => null, // CK does not change its own lifecycle state
+    guard: (event, ctx) => {
+      if (_currentState === 'HALTED' || _currentState === 'DEAD') {
+        return { allowed: false, reason: `CK is ${_currentState} — retry cadence blocked` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      // Forward to engagement-fsm for classification + scheduling.
+      // engagement-fsm emits TELEMETRY_RETRY_IN_PROGRESS back to CK which
+      // routes it to telemetry-coordination-fsm for state sync.
+      dispatch({ type: 'RETRY_CADENCE_REQUEST', source: event.source, lag: event.lag, escalationState: event.escalationState });
+      return [];
+    },
+  },
+
+  // ── Telemetry Retry Cadence Cleared — lag resolved, wind down ────────────────
+  RETRY_CADENCE_CLEAR: {
+    target: () => null,
+    guard: () => ({ allowed: true }),
+    buildActions: (event, ctx) => {
+      dispatch({ type: 'RETRY_CADENCE_CLEAR', source: event.source });
       return [];
     },
   },

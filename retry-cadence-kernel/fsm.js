@@ -355,6 +355,102 @@ const TRANSITION_MAP = {
     },
   },
 
+  // ── RETRY_CADENCE_REQUEST — telemetry-coordination-fsm requests retry ───────
+  // Entry point for ctx.dispatchGlobal({ type: 'RETRY_CADENCE_REQUEST' })
+  // from telemetry-coordination-fsm (via CK GLOBAL_TRANSITION_MAP).
+  // CK already validated HALTED/DEAD. The engagement-fsm owns the
+  // scheduling decision here — classification, budget check, timer.
+  RETRY_CADENCE_REQUEST: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const { source, lag, escalationState } = event;
+
+      // Telemetry retry uses 'telemetry-coordination' as the domain.
+      // intentId is synthesised — no specific intent being retried,
+      // this is a system-wide ingress lag retry.
+      const domain = 'telemetry-coordination';
+      const intentId = `telemetry-ingress-${Date.now()}`;
+      const accountId = '*'; // system-wide, not per-account
+
+      const paired = retryCadenceStore.dispatch(domain, accountId, intentId, {
+        source,
+        lag,
+        escalationState,
+      });
+      const existing = _executionContexts.get(intentId);
+      const newCount = existing ? existing.count + 1 : 0;
+      const maxRetries = paired.maxRetries || 0;
+
+      if (newCount > maxRetries) {
+        _cancelRetry(intentId);
+        return _buildExhaustedActions({
+          accountId, domain, intentId,
+          error: 'telemetry_max_retries_exceeded',
+          retryCount: newCount,
+        });
+      }
+
+      const context = {
+        domain, accountId, intentId,
+        params: { source, lag, escalationState },
+        count: newCount,
+        maxRetries,
+        timeoutId: null,
+        retryWorker: paired.retryWorker,
+        classificationWorker: paired.classificationWorker,
+        policy: paired.policy,
+        lastError: { type: 'ingress_lag', lag, source },
+        scheduledAt: null,
+        governance: _governance,
+        invokeWorker: ctx.invokeWorker,
+        workerName: _resolveWorkerName(domain),
+      };
+
+      const scheduleResult = await _scheduleRetry(context, { type: 'TRANSIENT_RETRY' }, ctx);
+      if (!scheduleResult.scheduled) {
+        return [{
+          type: 'SANITY_CHECK_REJECTED',
+          operation: 'telemetry_schedule_retry',
+          accountId, domain, intentId,
+          retryCount: newCount,
+          reason: scheduleResult.sanityCheck.reason,
+        }];
+      }
+
+      // Emit TELEMETRY_RETRY_IN_PROGRESS for state sync with telemetry-fsm
+      return [{
+        type: 'TELEMETRY_RETRY_IN_PROGRESS',
+        accountId,
+        domain,
+        intentId,
+        retryCount: newCount,
+        delayMs: scheduleResult.delayMs,
+        source,
+        lag,
+        escalationState,
+      }];
+    },
+  },
+
+  // ── RETRY_CADENCE_CLEAR — lag resolved, wind down retry budget ──────────────
+  RETRY_CADENCE_CLEAR: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const { source } = event;
+      for (const [intentId, ec] of _executionContexts) {
+        if (ec.domain === 'telemetry-coordination') {
+          _cancelRetry(intentId);
+        }
+      }
+      return [{
+        type: 'TELEMETRY_RETRY_CLEARED',
+        source,
+      }];
+    },
+  },
+
   // ── Retry requested — external entry point for non-worker emissions ──
   // The FSM is now the intelligence layer. The WORKER_OUTCOME_REPORTED
   // handler is the primary path; this handler exists for any external
@@ -972,6 +1068,7 @@ function _resolveWorkerName(domain) {
     'dedup:redis':     'dedup-redis-retry',
     'dedup:repair':    'dedup-repair-retry',
     reconciliation:    'reconciliation-retry',
+    'telemetry-coordination': 'telemetry-retry',
   };
   return MAP[domain] || 'unknown';
 }
@@ -1123,6 +1220,18 @@ function _buildExhaustedActions(params) {
       error: params.error,
       retryCount: params.retryCount,
       operation: params.operation,
+    });
+  }
+  if (params.domain === 'telemetry-coordination') {
+    actions.push({
+      type: 'TELEMETRY_RETRY_EXHAUSTED',
+      accountId: params.accountId,
+      domain: params.domain,
+      intentId: params.intentId,
+      error: params.error,
+      retryCount: params.retryCount,
+      source: params.params?.source,
+      lag: params.params?.lag,
     });
   }
   return actions;

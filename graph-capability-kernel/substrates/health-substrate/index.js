@@ -22,17 +22,17 @@
 //   - refresh I/O (uat-refresh-worker)
 //   - dedup pre-check (data-access-expiry-worker)
 //
-// Constitutional wiring:
+// Constitutional wiring (Layer 4.3 — health substrate now emits through signal-dispatch):
 //   - Valid classifications → no signal (vault.pat.retrieve / vault.uat.detect
 //     already emit CAPABILITY_EVALUATE via their own signal-dispatch).
-//   - Recovery success → recovery-worker emits CAPABILITY_EVALUATE explicitly
-//     (preserves the legacy "post-recovery FSM evaluation cycle" behavior).
-//   - Recovery failure → no signal from substrate (alert + event row inserted;
-//     FSM observes the corresponding capability failure via downstream routes
-//     when user attempts an op and verdict-gate sees is_active=false).
-//   - UAT refresh success → vault.uat.refresh emits TOKEN_REFRESHED internally
-//     (legacy never emitted this on this path — bug fixed by migration).
-//   - UAT refresh failure → no signal from substrate.
+//   - Recovery success → signal-dispatch.emitEvaluate (CAPABILITY_EVALUATE) +
+//     emitEnvelope (CAPABILITY_OBSERVATION with the recovered PAT isDecryptable=true).
+//   - Recovery failure → signal-dispatch.emitEnvelope with detection.isValid=false
+//     so the FSM normalizes to UNAUTHORIZED.
+//   - UAT refresh success → vault.uat.refresh emits TOKEN_REFRESHED internally.
+//   - UAT refresh failure → signal-dispatch.emitEnvelope with detection.isValid=false.
+//   - Data-access-expiry warning → signal-dispatch.emitEnvelope with
+//     uat.isDecryptable=true but dataAccessExpiresAt reason (degraded signal).
 //
 // Future pass: server.js → CK → graph-capability-FSM boot choreography. Out of
 //   scope for this migration. The boot wrapper in services/sync/index.js
@@ -41,6 +41,7 @@
 const { getSupabaseAdmin, logAudit, fireAndForgetInsert } = require('../../../config/supabase');
 const triggerBridge = require('../graph-capability/trigger-bridge');
 const signalDispatch = require('../vault/signal-dispatch');
+const observations = require('../graph-capability/observations');
 
 const ScanCredentialsWorker = require('./workers/scan-credentials-worker');
 const RecoveryWorker = require('./workers/recovery-worker');
@@ -171,6 +172,14 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
           if (alertErr) console.warn('[health] pat_auto_recovered alert insert failed:', alertErr.message);
 
           console.log(`[health] PAT auto-recovered for cred ${cred.id} via stored UAT`);
+
+          // Layer 4.3: emit observation envelope — recovered PAT is decryptable.
+          const recoveredEnv = observations.newEnvelope({
+            businessAccountId: cred.business_account_id,
+            userId: cred.user_id,
+          });
+          recoveredEnv.pat = { isDecryptable: true, source: 'health.recovery' };
+          signalDispatch.emitEnvelope({ envelope: recoveredEnv });
           recovered++;
         } else {
           // Recovery failed — mark inactive, alert user, log failure
@@ -195,6 +204,14 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
             resolved: false,
           }));
           if (alertErr) console.warn('[health] auth_failure alert insert failed:', alertErr.message);
+
+          // Layer 4.3: emit observation envelope — recovery failed, PAT is not decryptable.
+          const failedEnv = observations.newEnvelope({
+            businessAccountId: cred.business_account_id,
+            userId: cred.user_id,
+          });
+          failedEnv.pat = { isDecryptable: false, reason: 'recovery_failed' };
+          signalDispatch.emitEnvelope({ envelope: failedEnv });
 
           console.warn(`[health] Token invalid for cred ${cred.id} (user ${cred.user_id}), marked inactive`);
         }
@@ -307,6 +324,14 @@ async function runUATRefreshCheck({ windowDays = 14, interCallDelayMs = 1000, da
             event_type: 'uat_refresh_failed',
             details: { source: 'uat_refresh_check', error: r.error, expires_at: r.uat.expires_at, days_remaining: r.daysLeft },
           });
+
+          // Layer 4.3: emit observation envelope — refresh failed, UAT cannot be re-validated.
+          const refreshFailEnv = observations.newEnvelope({
+            businessAccountId: r.uat.business_account_id,
+            userId: r.uat.user_id,
+          });
+          refreshFailEnv.uat = { isDecryptable: false, reason: 'uat_refresh_failed', daysRemaining: r.daysLeft };
+          signalDispatch.emitEnvelope({ envelope: refreshFailEnv });
         }
         await delay(interCallDelayMs);
       }
@@ -338,6 +363,23 @@ async function runUATRefreshCheck({ windowDays = 14, interCallDelayMs = 1000, da
         event_type: 'data_access_expiry_warning',
         details: { source: 'uat_refresh_check', data_access_expires_at: uat.data_access_expires_at, days_remaining: daysLeft },
       });
+
+      // Layer 4.3: emit observation envelope — data access expiring soon.
+      // UAT itself is still decryptable, but the FSM should treat this as a
+      // reliability signal. The normalizer does not have a dedicated slot for
+      // data_access expiry, so we surface it via the uat slot with a reason.
+      const daeEnv = observations.newEnvelope({
+        businessAccountId: uat.business_account_id,
+        userId: uat.user_id,
+      });
+      daeEnv.uat = {
+        isDecryptable: true,
+        dataAccessExpiresAt: uat.data_access_expires_at,
+        daysRemaining: daysLeft,
+        reason: 'data_access_expiry_warning',
+        reliabilityImpaired: true,
+      };
+      signalDispatch.emitEnvelope({ envelope: daeEnv });
 
       console.log(`[health] data_access_expiry_warning created for account ${uat.business_account_id} (${daysLeft} days left)`);
     }

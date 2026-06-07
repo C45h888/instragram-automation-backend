@@ -5,12 +5,16 @@
 //
 // Constitutional wiring:
 //   Every successful worker call emits a trigger event via signal-dispatch → trigger-bridge → ck → FSM.
+//
+// Layer 2: each success path also builds a canonical observation envelope and
+// emits it via signal-dispatch.emitEnvelope() → ck.dispatch(CAPABILITY_OBSERVATION).
 
 const StoreWorker = require('./workers/store-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
 const RefreshWorker = require('./workers/refresh-worker');
 const DetectWorker = require('./workers/detect-worker');
 const signalDispatch = require('../signal-dispatch');
+const observations = require('../../graph-capability/observations');
 
 /**
  * Store a UAT credential row.
@@ -50,6 +54,10 @@ async function retrieve({ triggerBridge, userId, businessAccountId }) {
     userId,
     source: 'vault.uat.retrieve',
   });
+  // Layer 2: emit envelope with isDecryptable=true.
+  const envelope = observations.newEnvelope({ businessAccountId, userId });
+  envelope.uat = { isDecryptable: true, ...result };
+  signalDispatch.emitEnvelope({ triggerBridge, envelope });
   return result;
 }
 
@@ -69,6 +77,14 @@ async function refresh({ triggerBridge, ...input }) {
       businessAccountId: input.businessAccountId,
       userId: input.userId,
     });
+    // Layer 2: emit envelope — UAT refreshed, isDecryptable=true with new scope.
+    const envelope = observations.newEnvelope({ businessAccountId: input.businessAccountId, userId: input.userId });
+    envelope.uat = {
+      isDecryptable: true,
+      expiresAt: result.expiresAt || null,
+      scope: result.scopes || [],
+    };
+    signalDispatch.emitEnvelope({ triggerBridge, envelope });
   }
   return result;
 }
@@ -88,6 +104,27 @@ async function detect({ triggerBridge, businessAccountId, userId, token }) {
       userId,
       source: 'vault.uat.detect',
     });
+    // Layer 2: emit envelope with detection.isValid.
+    if (businessAccountId) {
+      const envelope = observations.newEnvelope({ businessAccountId, userId });
+      envelope.detection = {
+        isValid: true,
+        reliabilityImpaired: false,
+        reason: null,
+        ...result,
+      };
+      signalDispatch.emitEnvelope({ triggerBridge, envelope });
+    }
+  } else if (result && !result.isValid && businessAccountId) {
+    // Layer 2: detection failed — emit envelope with isValid=false.
+    const envelope = observations.newEnvelope({ businessAccountId, userId });
+    envelope.detection = {
+      isValid: false,
+      reliabilityImpaired: false,
+      reason: 'Token validation failed',
+      ...result,
+    };
+    signalDispatch.emitEnvelope({ triggerBridge, envelope });
   }
   return result;
 }

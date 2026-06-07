@@ -16,10 +16,12 @@
 
 const substrate = require('./index');
 const fsm = require('../../fsm');
+const signalDispatch = require('../vault/signal-dispatch');
 
 let _installed = false;
 let _fsmRef = null;
 let _ctxRef = null;
+let _lastBoundCk = null;
 
 /**
  * Resolve the FSM reference. Prefer CK's domain registry; fall back to direct require.
@@ -68,16 +70,39 @@ function _buildCtx(ck) {
  * Install the graph-capability substrate into the runtime.
  * Binds the FSM to the substrate, starts the worker cadence loops.
  *
+ * Idempotent on the same CK. If a different CK is passed while already
+ * installed, the binding is updated (the substrate FSM, context, and
+ * signal-dispatch are all rebound to the new CK).
+ *
  * @param {{ ck: object }} params
  * @returns {{ fsm: object, ctx: object, started: boolean }}
  */
 function install({ ck } = {}) {
   if (_installed) {
+    // Already installed. If the new CK is the same object, return the
+    // cached references (no work to do). If the CK changed, rebind.
+    const isSameCk = (ck === _lastBoundCk);
+    if (isSameCk) {
+      return { fsm: _fsmRef, ctx: _ctxRef, started: substrate.isStarted() };
+    }
+    // CK changed — rebind signal-dispatch and the substrate context.
+    // The FSM reference is the same singleton (it's a domain, not per-CK).
+    // The CK context is rebuilt against the new CK.
+    _ctxRef = _buildCtx(ck);
+    signalDispatch.bindCk(ck);
+    substrate.bindFsm(_fsmRef, _ctxRef);
+    _lastBoundCk = ck;
+    console.log('[graph-capability] Wiring re-installed with new CK — context rebound');
     return { fsm: _fsmRef, ctx: _ctxRef, started: substrate.isStarted() };
   }
 
   _fsmRef = _resolveFsm(ck);
   _ctxRef = _buildCtx(ck);
+  _lastBoundCk = ck;
+
+  // Layer 1.2: bind CK into signal-dispatch so every vault success path
+  // reaches the constitutional ingress. This closes GAP-3.
+  signalDispatch.bindCk(ck);
 
   substrate.bindFsm(_fsmRef, _ctxRef);
   substrate.start({ fsm: _fsmRef, ctx: _ctxRef });
@@ -94,9 +119,12 @@ function install({ ck } = {}) {
 function uninstall() {
   if (!_installed) return;
   substrate.stop();
+  // Layer 1: release the CK binding so uninstall is fully reversible.
+  signalDispatch.bindCk(null);
   _installed = false;
   _fsmRef = null;
   _ctxRef = null;
+  _lastBoundCk = null;
   console.log('[graph-capability] Wiring uninstalled — substrate stopped');
 }
 

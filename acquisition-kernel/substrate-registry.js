@@ -63,6 +63,7 @@ const RETRY_WORKER_MAP = {
   'dedup:redis':      '../retry-cadence-kernel/workers/dedup-redis-retry-worker',
   'dedup:repair':     '../retry-cadence-kernel/workers/dedup-repair-retry-worker',
   reconciliation:     '../retry-cadence-kernel/workers/reconciliation-retry-worker',
+  'telemetry-coordination': '../retry-cadence-kernel/workers/telemetry-retry-worker',
 };
 
 // Classification workers — semantically blind, bounded. They receive
@@ -85,6 +86,7 @@ const CLASSIFICATION_WORKER_MAP = {
   'dedup:redis':      '../retry-cadence-kernel/workers/classification-worker',
   'dedup:repair':     '../retry-cadence-kernel/workers/classification-worker',
   reconciliation:     '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry-coordination': '../retry-cadence-kernel/workers/classification-worker',
 };
 
 // DOMAIN_REGISTRY — the canonical set of domain names. Publish
@@ -104,6 +106,7 @@ const DOMAIN_REGISTRY = {
   'dedup:redis':      { },  // governance domain — Redis dedup retry
   'dedup:repair':     { },  // governance domain — conversation repair retry
   reconciliation:     { },  // governance domain — reconciliation cycle retry
+  'telemetry-coordination': { },  // governance domain — telemetry coordination retry
 };
 
 function lookup(domain) {
@@ -132,7 +135,12 @@ function getParsingWorker(domain) {
 function getRetryWorker(domain) {
   const workerPath = RETRY_WORKER_MAP[domain];
   if (!workerPath) return null;
-  return require(workerPath);
+  try {
+    return require(workerPath);
+  } catch (err) {
+    if (err.code === 'MODULE_NOT_FOUND') return null;
+    throw err;
+  }
 }
 
 /**

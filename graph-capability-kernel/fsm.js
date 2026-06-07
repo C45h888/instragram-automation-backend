@@ -127,6 +127,37 @@ const TRANSITION_MAP = {
     }],
   },
 
+  // ── Layer 3: Aggregate worker observation arrives. The FSM consumes the
+  //    canonical envelope (produced by observations.js), runs the normalizer,
+  //    and dispatches a derived state event (OK / PARTIAL / FAILED). This
+  //    transition does NOT change local state directly — it forwards to
+  //    a synthesized state event via internal _aggregateAndDispatch().
+  //    From UNAUTHORIZED / DEGRADED, observation is a no-op (recovery requires
+  //    an explicit CAPABILITY_RECOVERED).
+  CAPABILITY_OBSERVATION: {
+    target: 'UNKNOWN', // placeholder; buildActions dispatches the real transition
+    guard: (event) => {
+      if (!event || !event.envelope) {
+        return { allowed: false, reason: 'CAPABILITY_OBSERVATION requires event.envelope' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      // Run the aggregator — emits a derived event via fsm.dispatch().
+      // This is internal recursion, depth-bounded to 2.
+      // We pass ctx if present (for validate gate); the recursive dispatch
+      // runs without ctx gracefully if ctx is undefined.
+      if (event.envelope) {
+        _aggregateAndDispatch(event.envelope, ctx);
+      }
+      return [{
+        type: 'CAPABILITY_OBSERVATION_RECEIVED',
+        envelopeId: event.envelope.envelopeId || null,
+        businessAccountId: event.envelope.businessAccountId || null,
+      }];
+    },
+  },
+
   // ── Aggregate observation resolves to AUTHORIZED ──────────────────────────
   CAPABILITY_OK: {
     target: 'AUTHORIZED',
@@ -451,6 +482,14 @@ function getCapabilityVerdict() {
  * @returns {{ decision: 'APPROVED'|'DENIED'|'WAIT', reason: string, retryAt?: number }}
  */
 function evaluateTriggerCriteria({ trigger = 'MANUAL', forced = false } = {}) {
+  // Gate 0 (Layer 3.3): Worker observation arrived — must fire BEFORE the
+  // UNKNOWN-WAIT check, because an observation IS the act of evaluating.
+  // Without this priority, observations received while state is UNKNOWN
+  // would never trigger the aggregator.
+  if (trigger === 'OBSERVATION_ARRIVED') {
+    return { decision: 'APPROVED', reason: 'Worker observation arrived — aggregate and derive' };
+  }
+
   // Gate 1: Already in evaluation
   if (_localState === 'UNKNOWN' && !forced) {
     return { decision: 'WAIT', reason: 'Evaluation in progress (UNKNOWN)' };
@@ -505,6 +544,64 @@ function _isObservationFresh(observedAt) {
   const ts = typeof observedAt === 'number' ? observedAt : new Date(observedAt).getTime();
   if (isNaN(ts)) return false;
   return (Date.now() - ts) < OBSERVATION_FRESHNESS_MS;
+}
+
+// ── Layer 3.2: Aggregate observation → derived state event ─────────────────
+// Called by the CAPABILITY_OBSERVATION transition's buildActions. Normalizes
+// the envelope and dispatches a synthesized event (CAPABILITY_OK /
+// CAPABILITY_PARTIAL / CAPABILITY_FAILED). Recursion is bounded to depth 2
+// (CAPABILITY_OBSERVATION → derived event); the derived event's transition
+// is terminal in the recursive sense.
+//
+// The synthesized event passes through the full dispatch pipeline
+// (guard → validate → transition), so the constitutional gate still has
+// veto authority over the derived transition.
+//
+// Note: observations.js is lazy-loaded to break a circular dependency
+// (fsm.js ↔ observations.js — observations requires fsm.REQUIRED_SCOPES).
+let _observations = null;
+function _getObservations() {
+  if (!_observations) {
+    _observations = require('./substrates/graph-capability/observations');
+  }
+  return _observations;
+}
+
+function _aggregateAndDispatch(envelope, ctx) {
+  let normalized;
+  try {
+    normalized = _getObservations().normalize(envelope);
+  } catch (err) {
+    // If normalization fails, do not derive — the observation is incomplete
+    // and the FSM should stay where it is.
+    return { allowed: false, reason: `normalization failed: ${err.message}` };
+  }
+
+  const { state, observedAt, evidence, reason, missingScopes } = normalized;
+  const event = {
+    type: null,
+    observedAt,
+    evidence,
+    reason,
+    missingScopes,
+    businessAccountId: envelope.businessAccountId || null,
+    userId: envelope.userId || null,
+  };
+
+  if (state === 'AUTHORIZED') {
+    event.type = 'CAPABILITY_OK';
+  } else if (state === 'LIMITED') {
+    event.type = 'CAPABILITY_PARTIAL';
+  } else if (state === 'UNAUTHORIZED') {
+    event.type = 'CAPABILITY_FAILED';
+  } else if (state === 'DEGRADED') {
+    event.type = 'CAPABILITY_DEGRADED';
+  } else {
+    // UNKNOWN or any unhandled state — do not derive a transition.
+    return { allowed: false, reason: `aggregation produced no derivable event (state=${state})` };
+  }
+
+  return dispatch(event, ctx);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

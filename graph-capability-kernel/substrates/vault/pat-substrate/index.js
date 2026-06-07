@@ -10,18 +10,23 @@
 // Constitutional wiring:
 //   Every successful worker call emits a trigger event via signal-dispatch → trigger-bridge → ck → FSM.
 //   signal-dispatch is the single source of truth for vault signal emission (signal-dispatch.js).
+//
+// Layer 2: each success path also builds a canonical observation envelope and
+// emits it via signal-dispatch.emitEnvelope() → ck.dispatch(CAPABILITY_OBSERVATION).
+// The envelope shape is declared in graph-capability/observations.js.
 
 const ExchangeWorker = require('./workers/exchange-worker');
 const StoreWorker = require('./workers/store-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
 const signalDispatch = require('../signal-dispatch');
+const observations = require('../../graph-capability/observations');
 
 /**
  * Exchange a user access token for a page access token + IG business account discovery.
  * One bounded /me/accounts call. No state.
- * @param {{ userAccessToken: string, triggerBridge?: object }} input
+ * @param {{ userAccessToken: string, triggerBridge?: object, businessAccountId?: string|null, userId?: string|null }} input
  */
-async function exchange({ userAccessToken, triggerBridge }) {
+async function exchange({ userAccessToken, triggerBridge, businessAccountId, userId }) {
   if (!userAccessToken) {
     return { success: false, error: 'userAccessToken is required' };
   }
@@ -32,6 +37,7 @@ async function exchange({ userAccessToken, triggerBridge }) {
     signalDispatch.emitEvaluate({
       triggerBridge,
       businessAccountId: result.igBusinessAccountId,
+      userId,
       source: 'vault.pat.exchange',
     });
   }
@@ -57,6 +63,13 @@ async function store(input) {
       businessAccountId: result.businessAccountId || businessAccountId,
       userId: workerInput.userId || userId_,
     });
+    // Layer 2: emit a fresh envelope reporting the new PAT is decryptable.
+    const envelope = observations.newEnvelope({
+      businessAccountId: result.businessAccountId || businessAccountId,
+      userId: workerInput.userId || userId_,
+    });
+    envelope.pat = { isDecryptable: true, ...result };
+    signalDispatch.emitEnvelope({ triggerBridge, envelope });
   }
   return result;
 }
@@ -79,6 +92,10 @@ async function retrieve({ triggerBridge, userId, businessAccountId }) {
     userId,
     source: 'vault.pat.retrieve',
   });
+  // Layer 2: emit envelope with isDecryptable=true.
+  const envelope = observations.newEnvelope({ businessAccountId, userId });
+  envelope.pat = { isDecryptable: true, token: result };
+  signalDispatch.emitEnvelope({ triggerBridge, envelope });
   return result;
 }
 

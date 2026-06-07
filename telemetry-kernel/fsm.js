@@ -551,6 +551,91 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
+
+  // ── TELEMETRY_RETRY_IN_PROGRESS — engagement-fsm is running the retry ──────────
+  // State sync: engagement-fsm has accepted the retry, telemetry-fsm
+  // transitions to the appropriate lag-retry state to reflect the
+  // active cadence. This is parallel to the worker execution — FSM
+  // holds its state while the retry chain runs.
+  TELEMETRY_RETRY_IN_PROGRESS: {
+    target: (event) => {
+      if (event.escalationState === 'DEGRADED') return 'INGRESS_DEGRADED';
+      if (event.escalationState === 'ESCALATED') return 'INGRESS_ESCALATED';
+      return 'INGRESS_LAG_RETRYING';
+    },
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      // The engagement-fsm owns the retry cadence. This FSM holds
+      // its state to reflect the active retry in flight.
+      return [{
+        type: 'LOG_DEGRADED',
+        substate: 'TELEMETRY_RETRY_ACTIVE',
+        reason: `Telemetry retry in flight via engagement FSM — source: ${event.source}, lag: ${event.lag}, attempt: ${event.retryCount}`,
+        lag: event.lag,
+        source: event.source,
+        retryCount: event.retryCount,
+      }];
+    },
+  },
+
+  // ── TELEMETRY_RETRY_EXHAUSTED — retry budget depleted ─────────────────────────
+  // engagement-fsm exhausted its budget. Telemetry FSM transitions to IDLE
+  // and emits INGRESS_DEGRADED so CK's global state can reflect the
+  // systemic degradation.
+  TELEMETRY_RETRY_EXHAUSTED: {
+    target: 'IDLE',
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      _retryAttempts = 0;
+      _retryWindowStart = null;
+      _retryEscalationState = 'IDLE';
+
+      // Emit to CK for global degradation tracking
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'INGRESS_STATE_CHANGED',
+          lag: event.lag || 0,
+          status: 'DEGRADED',
+          reason: `telemetry_retry_exhausted`,
+        });
+      }
+
+      return [{
+        type: 'LOG_DEGRADED',
+        substate: 'TELEMETRY_RETRY_EXHAUSTED',
+        reason: `Telemetry retry exhausted after ${event.retryCount} attempts — lag: ${event.lag}, source: ${event.source}`,
+        lag: event.lag,
+        source: event.source,
+        retryCount: event.retryCount,
+      }];
+    },
+  },
+
+  // ── TELEMETRY_RETRY_CLEARED — lag resolved, budget cancelled ─────────────────
+  TELEMETRY_RETRY_CLEARED: {
+    target: 'IDLE',
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      _retryAttempts = 0;
+      _retryWindowStart = null;
+      _retryEscalationState = 'IDLE';
+
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'INGRESS_STATE_CHANGED',
+          lag: 0,
+          status: 'CONSISTENT',
+          reason: 'telemetry_retry_cleared',
+        });
+      }
+
+      return [{
+        type: 'LOG_DEGRADED',
+        substate: 'TELEMETRY_RETRY_CLEARED',
+        reason: `Telemetry retry cleared — source: ${event.source}`,
+      }];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -62,6 +62,16 @@ const POLICIES = {
     maxDelayMs:         300000,  // 5min
     backoffMultiplier:  2,
   },
+  // ── Telemetry Coordination — system-wide ingress lag retry ─────────────────
+  // Ingress lag retries are system-wide (not per-account). Multiple
+  // attempts with moderate backoff to allow the lag to clear naturally.
+  // Engagement-fsm owns the cadence; telemetry-coordination-fsm holds state.
+  'telemetry-coordination': {
+    maxRetries:         3,
+    baseDelayMs:        15000,   // 15s
+    maxDelayMs:         60000,   // 1min
+    backoffMultiplier:  1.5,
+  },
 };
 
 // Domain → substrate mapping
@@ -78,6 +88,7 @@ const DOMAIN_TO_SUBSTRATE = {
   'dedup:redis':     'dedup',
   'dedup:repair':    'dedup',
   reconciliation:    'reconciliation',
+  'telemetry-coordination': 'telemetry-coordination',
 };
 
 /**
