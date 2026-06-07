@@ -72,6 +72,7 @@ const RETRY_WORKER_MAP = {
   'telemetry:authority': '../retry-cadence-kernel/workers/telemetry-retry-authority-worker',
   'telemetry:health':    '../retry-cadence-kernel/workers/telemetry-retry-health-worker',
   'telemetry:systemic':  '../retry-cadence-kernel/workers/telemetry-retry-systemic-worker',
+  'telemetry:capability': '../retry-cadence-kernel/workers/telemetry-retry-capability-worker',
 };
 
 // Classification workers — semantically blind, bounded. They receive
@@ -100,6 +101,7 @@ const CLASSIFICATION_WORKER_MAP = {
   'telemetry:authority': '../retry-cadence-kernel/workers/classification-worker',
   'telemetry:health':    '../retry-cadence-kernel/workers/classification-worker',
   'telemetry:systemic':  '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:capability': '../retry-cadence-kernel/workers/classification-worker',
 };
 
 // DOMAIN_REGISTRY — the canonical set of domain names. Publish
@@ -125,6 +127,7 @@ const DOMAIN_REGISTRY = {
   'telemetry:authority': { },  // authority projection retry
   'telemetry:health':    { },  // health projection retry
   'telemetry:systemic':  { },  // systemic pressure projection retry
+  'telemetry:capability': { },  // capability projection retry
 };
 
 function lookup(domain) {

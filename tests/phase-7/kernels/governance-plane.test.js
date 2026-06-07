@@ -137,24 +137,28 @@ describe('Governance Plane — Layer 3 (FSM observation transition)', () => {
     // Direct call to the FSM (not via ck, to avoid going through DOMAIN_EVENT_MAP)
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: env });
     // Aggregator should have called _aggregateAndDispatch → derived CAPABILITY_OK
-    // and that should have set local state to AUTHORIZED.
-    expect(fsm.getState()).toBe('AUTHORIZED');
+    // and that should have set the BA-1 cred to AUTHORIZED.
+    expect(fsm.getState('BA-1')).toBe('AUTHORIZED');
   });
 
   it('CAPABILITY_OBSERVATION with isDecryptable=false → FSM goes UNAUTHORIZED', () => {
     wiring.install({ ck: fakeCk });
-    const env = observations.newEnvelope({});
+    const env = observations.newEnvelope({ businessAccountId: 'BA-1' });
     env.pat = { isDecryptable: false };
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: env });
-    expect(fsm.getState()).toBe('UNAUTHORIZED');
+    expect(fsm.getState('BA-1')).toBe('UNAUTHORIZED');
   });
 
-  it('CAPABILITY_OBSERVATION with missing scopes → FSM goes LIMITED', () => {
+  it('CAPABILITY_OBSERVATION with missing scopes → FSM goes LIMITED (only when all 4 slots present)', () => {
     wiring.install({ ck: fakeCk });
-    const env = observations.newEnvelope({});
+    const env = observations.newEnvelope({ businessAccountId: 'BA-2' });
+    // All 4 slots present, but scope has no granted scopes → LIMITED
+    env.pat = { isDecryptable: true };
+    env.uat = { isDecryptable: true };
+    env.detection = { isValid: true };
     env.scope = { grantedScopes: [] };
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: env });
-    expect(fsm.getState()).toBe('LIMITED');
+    expect(fsm.getState('BA-2')).toBe('LIMITED');
   });
 
   it('evaluateTriggerCriteria recognises OBSERVATION_ARRIVED', () => {

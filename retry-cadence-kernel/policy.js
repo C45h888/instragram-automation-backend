@@ -82,6 +82,7 @@ const POLICIES = {
   'telemetry:authority': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
   'telemetry:health':    { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
   'telemetry:systemic':  { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:capability': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
 };
 
 // Domain → substrate mapping
@@ -105,6 +106,7 @@ const DOMAIN_TO_SUBSTRATE = {
   'telemetry:authority': 'telemetry:authority',
   'telemetry:health':    'telemetry:health',
   'telemetry:systemic':  'telemetry:systemic',
+  'telemetry:capability': 'telemetry:capability',
 };
 
 /**

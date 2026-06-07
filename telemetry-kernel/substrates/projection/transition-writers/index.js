@@ -37,6 +37,7 @@ const integrityWriter = require('./integrity-transition-writer');
 const authorityWriter = require('./authority-transition-writer');
 const healthWriter = require('./health-transition-writer');
 const systemicWriter = require('./systemic-transition-writer');
+const capabilityWriter = require('./capability-transition-writer');
 
 const writers = {
   runtime: runtimeWriter,
@@ -44,6 +45,7 @@ const writers = {
   authority: authorityWriter,
   health: healthWriter,
   systemic: systemicWriter,
+  capability: capabilityWriter,
 };
 
 /** All domain namespaces this module owns */
@@ -91,7 +93,7 @@ function startAll() {
   for (const writer of Object.values(writers)) {
     writer.start();
   }
-  console.log('[transition-writers] All 5 writers started — event-driven, bounded by namespace');
+  console.log('[transition-writers] All 6 writers started — event-driven, bounded by namespace');
 }
 
 /**

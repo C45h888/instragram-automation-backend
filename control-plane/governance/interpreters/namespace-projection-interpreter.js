@@ -24,12 +24,15 @@ const lineageLedger = require('../lineage-ledger');
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const _projections = {
+  // Projection: domain-scoped (acquisition, publishing, scheduling, dedup,
+  // reconciliation, capability)
   domain: {
     acquisition: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
     publishing: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
     scheduling: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0, cadenceContinuity: 1.0 },
     dedup: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
     reconciliation: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
+    capability: { state: 'UNKNOWN', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
   },
   governanceRuntime: {
     runtimeState: 'BOOTING',
@@ -131,6 +134,21 @@ function _computeDomainProjection(domain, entry) {
           payload.domainInstability,
         );
       }
+      break;
+
+    case 'capability':
+      // Capability projections track the graph-capability FSM state.
+      if (payload.currentCapabilityState) {
+        _projections.domain.capability.state = payload.currentCapabilityState;
+      }
+      if (payload.capabilityAuthorityStability !== undefined) {
+        _projections.domain.capability.authorityStability = Math.max(
+          0,
+          Math.min(1, payload.capabilityAuthorityStability),
+        );
+      }
+      _projections.domain.capability.transitionCount++;
+      _projections.domain.capability.lastTransition = entry.timestamp || Date.now();
       break;
 
     default:

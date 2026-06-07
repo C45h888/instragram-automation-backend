@@ -82,8 +82,7 @@ function _wire() {
   // Each FSM holds the governance ref so it can pass it to
   // workers via execution contexts. Workers receive governance
   // through the FSM — they never import it at module load.
-  // Note: acquisitionFsm.setGovernance removed — acquisition-fsm emits
-  // through observability plane directly; no governance ref needed.
+  acquisitionFsm.setGovernance(constitutional);
   publishingFsm.setGovernance(constitutional);
   graphCapabilityFsm.setGovernance(constitutional);
   schedulingFsm.setGovernance(constitutional);
@@ -131,6 +130,8 @@ function _wire() {
     require('../retry-cadence-kernel/workers/telemetry-retry-health-worker'));
   constitutional.registerWorker('engagement', 'telemetry-retry-systemic-worker',
     require('../retry-cadence-kernel/workers/telemetry-retry-systemic-worker'));
+  constitutional.registerWorker('engagement', 'telemetry-retry-capability-worker',
+    require('../retry-cadence-kernel/workers/telemetry-retry-capability-worker'));
 
   // ── acquisition-fsm — parsing workers ─────────────────────────────────
   constitutional.registerWorker('acquisition', 'comments-parser',

@@ -56,7 +56,7 @@ const crypto = require('crypto');
 let _observability = null;
 function _obs() {
   if (!_observability) {
-    try { _observability = _require('../../control-plane/observability/emitters/transition-emitter'); }
+    try { _observability = _require('../control-plane/observability/emitters/transition-emitter'); }
     catch (_) {}
   }
   return _observability;
@@ -116,7 +116,7 @@ const DEFAULT_NAMESPACE_PRIORITY = 99;
 
 // Known projection namespaces — only these may emit projection intents
 const KNOWN_PROJECTION_NAMESPACES = new Set([
-  'integrity', 'authority', 'runtime', 'health', 'systemic',
+  'integrity', 'authority', 'runtime', 'health', 'systemic', 'capability',
 ]);
 
 // Signal ownership contract — maps projection payload signals to canonical owners.
@@ -788,7 +788,7 @@ function _triggerReactiveCoordination() {
 
 async function _readIntents() {
   try {
-    const observability = require('../../control-plane/observability/index.js');
+    const observability = require('../control-plane/observability/index.js');
     const allIntents = [];
     const newCursors = { ..._intentCursors };
 
@@ -1267,7 +1267,7 @@ async function init(rehydratedState) {
   }
 
   try {
-    const observability = require('../../control-plane/observability/index.js');
+    const observability = require('../control-plane/observability/index.js');
     await observability.query.registerConsumer('telemetry-coordination-fsm');
 
     const restored = await _restoreCursors();
@@ -1292,7 +1292,7 @@ function start(ctx) {
 
   _ckContext = ctx || null;
 
-  const observability = require('../../control-plane/observability/index.js');
+  const observability = require('../control-plane/observability/index.js');
   _unsubscribeOnWrite = observability.onWrite(_onTransitionLogWrite);
 
   console.log('[telemetry-coordination-fsm] Reactive mode active — onWrite subscription registered');

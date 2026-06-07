@@ -1,33 +1,59 @@
 // graph-capability-kernel/fsm.js
-// Graph Capability Domain FSM: federated state machine governing Graph capability lifecycle.
+// Graph Capability Domain FSM: federated, state-inferential, multi-credential
+// capability state machine.
 // Migrated from control-plane/governance/domains/graph-capability-fsm.js
 //
-// Owns: capability validation cadence, token verification cadence, scope verification cadence,
-//        capability degradation lifecycle, capability recovery lifecycle, capability state transitions,
-//        capability admission criteria, canonical capability outputs.
-// Does NOT own: Graph API calls, token inspection implementation, scope evaluation implementation,
-//               PAT validation implementation, worker dispatch, substrate execution, vault lifecycle.
-//
-// Reports to: constitutional kernel for transition validation + global observability.
-// Signals HSM via ctx.dispatchGlobal() for auth failure, degradation, recovery.
+// Owns: capability lifecycle state for every credential in the system.
+//       Per-credential evidence persistence. Capability verdict publication.
+// Does NOT own: Graph API calls, token inspection, scope evaluation,
+//               worker dispatch, substrate execution, vault lifecycle.
 //
 // Architectural invariant:
 //   Signals UP   → ctx.dispatchGlobal(event) recommends constitutional state changes
-//                  HSM (CK) validates and decides — FSM never mutates CK state
 //   Authority ↓  → ctx.validate(from, to, event) asks constitutional for approval
 //   Workers ↓    → substrate workers perform mechanical observation only
-//                  FSM governs lifecycle meaning, workers perform observation
+//
+//   The FSM is the SOLE INTERPRETER of observation evidence. The FSM is
+//   the SOLE PUBLISHER of capability verdicts. The verdict-gate is a pure
+//   read adapter that asks the FSM.
 //
 // Domain FSMs emit state transitions through the observability plane.
-// The lineage worker consumes from the observability plane and writes to the
-// canonical lineage ledger. FSMs do NOT write to the lineage ledger directly.
+// The lineage worker consumes from the observability plane and writes
+// to the canonical lineage ledger. FSMs do NOT write to the lineage
+// ledger directly.
 //
-// Local states:
-//   UNAUTHORIZED  — required capability unavailable. Operation must be denied.
-//   UNKNOWN       — capability cannot currently be determined. Operation enters evaluation flow.
-//   AUTHORIZED    — account possesses required capability. Operation may proceed.
-//   LIMITED       — account possesses partial capability. Operation may proceed with reduced functionality.
-//   DEGRADED      — capability exists but reliability is impaired. Operation proceeds under degradation policy.
+// ── Post-strengthening model (2026-06-07) ──────────────────────────────────
+// The FSM reads the SHAPE of the observation envelope (which slots are
+// present, which are missing) and infers the credential's capability
+// lifecycle phase. State names ARE the inference.
+//
+// The FSM is multi-credential. State, evidence, observation timestamp,
+// consecutive-failure count are kept PER CREDENTIAL. Cross-credential
+// state is not maintained — the FSM is a federation of per-cred state
+// machines under a single dispatch membrane.
+
+const { REQUIRED_SCOPES, OBSERVATION_FRESHNESS_MS, DEGRADED_OBSERVATION_MS,
+        STATE_REGISTRY, _inference, _infer, _PENDING_FOR, _mergeEnvelope } =
+  (() => {
+    // ── I. State Registry + Inferential Sub-Layer (deferred declaration;
+    //    the assignment above re-orders so REQUIRED_SCOPES + the infer
+    //    helper are defined before the public surface is used).
+    //
+    // We can't actually do circular const initialization in plain JS, so
+    // the registry + infer helper live in the module body below. This IIFE
+    // is a placeholder to make the public surface above the line that
+    // consumers see clear.
+    return {
+      REQUIRED_SCOPES: [],
+      OBSERVATION_FRESHNESS_MS: 0,
+      DEGRADED_OBSERVATION_MS: 0,
+      STATE_REGISTRY: {},
+      _inference: null,
+      _infer: null,
+      _PENDING_FOR: null,
+      _mergeEnvelope: null,
+    };
+  })();
 
 // Lazy import to avoid circular dependency
 let _observability = null;
@@ -40,47 +66,12 @@ function _obs() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// ── Governance reference (set by CK at boot) ────────────────────────────
-// The FSM holds a governance ref for worker invocation and event dispatch.
-// engagement-fsm pattern: set at boot, passed through execution contexts.
-let _governance = null;
-
-function setGovernance(governance) {
-  if (governance && typeof governance.dispatch === 'function') {
-    _governance = governance;
-  }
-}
-
-function getGovernance() {
-  return _governance;
-}
-
-// ── Worker registry (local) ───────────────────────────────────────────
-// Each FSM holds its own worker map. CK registration happens at boot
-// via constitutional.registerWorker(fsmName, workerName, worker).
-// The CTX gate (ctx.invokeWorker) validates ownership through CK.
-const _workers = new Map();
-
-function registerWorker(name, worker) {
-  _workers.set(name, worker);
-}
-
-function getWorker(name) {
-  return _workers.get(name) || null;
-}
-
-function getWorkers() {
-  return _workers;
-}
-
-
-// 0. Governance Policy Constants — domain-owned thresholds
+// 0. Governance Policy Constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const OBSERVATION_FRESHNESS_MS = 30 * 60 * 1000; // 30 min — observation envelope must be this fresh to authorize transitions
-const DEGRADED_OBSERVATION_MS  = 2 * 60 * 60 * 1000; // 2h — observation older than this signals degradation
-const REQUIRED_SCOPES = [
+const OBSERVATION_FRESHNESS_MS_VALUE = 30 * 60 * 1000; // 30 min
+const DEGRADED_OBSERVATION_MS_VALUE  = 2 * 60 * 60 * 1000; // 2h
+const REQUIRED_SCOPES_VALUE = [
   'instagram_basic',
   'instagram_manage_comments',
   'instagram_manage_insights',
@@ -90,30 +81,233 @@ const REQUIRED_SCOPES = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 1. Local State Registry
+// 1. State Registry — 9 states (post-strengthening)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const STATE_REGISTRY = {
-  UNAUTHORIZED: {
-    description: 'Required capability unavailable — operation must be denied',
-  },
-  UNKNOWN: {
-    description: 'Capability cannot currently be determined — evaluation flow active',
-  },
+const STATE_REGISTRY_VALUE = {
+  // Terminal complete states
   AUTHORIZED: {
-    description: 'Account possesses required capability — operation may proceed',
+    description: 'All slots observed, all required scopes present, full capability',
+    category: 'COMPLETE',
+    verdictDefault: 'ALLOWED',
   },
   LIMITED: {
-    description: 'Account possesses partial capability — operation may proceed with reduced functionality',
+    description: 'All slots observed, granted scope set missing required scopes',
+    category: 'COMPLETE',
+    verdictDefault: 'CONDITIONAL',
+  },
+  UNAUTHORIZED: {
+    description: 'Required worker reports failure (pat/uat undecryptable, or detect.isValid=false)',
+    category: 'COMPLETE',
+    verdictDefault: 'DENIED',
   },
   DEGRADED: {
-    description: 'Capability exists but reliability is impaired — operation proceeds under degradation policy',
+    description: 'All slots observed, reliability impaired OR scope cache stale',
+    category: 'COMPLETE',
+    verdictDefault: 'CONDITIONAL',
+  },
+  UNKNOWN: {
+    description: 'No envelope observed for this credential yet',
+    category: 'EMPTY',
+    verdictDefault: 'DENIED',
+  },
+  // PENDING states — name literally says which slot is missing
+  PAT_PENDING: {
+    description: 'Envelope observed, awaiting pat slot',
+    category: 'PENDING',
+    verdictDefault: 'DENIED',
+    missingSlot: 'pat',
+  },
+  UAT_PENDING: {
+    description: 'Envelope observed, awaiting uat slot',
+    category: 'PENDING',
+    verdictDefault: 'DENIED',
+    missingSlot: 'uat',
+  },
+  DETECTION_PENDING: {
+    description: 'Envelope observed, awaiting detection slot',
+    category: 'PENDING',
+    verdictDefault: 'DENIED',
+    missingSlot: 'detection',
+  },
+  SCOPE_PENDING: {
+    description: 'Envelope observed, awaiting scope slot',
+    category: 'PENDING',
+    verdictDefault: 'DENIED',
+    missingSlot: 'scope',
   },
 };
 
+const PENDING_FOR = {
+  pat: 'PAT_PENDING',
+  uat: 'UAT_PENDING',
+  detection: 'DETECTION_PENDING',
+  scope: 'SCOPE_PENDING',
+};
+
+const OBSERVATION_SLOTS = ['pat', 'uat', 'detection', 'scope'];
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// 2. Domain Transition Map — event → target + guard + action builder
+// 2. Inferential Layer — the heart of the strengthened FSM
 // ═══════════════════════════════════════════════════════════════════════════════
+//
+// Infer state from envelope SHAPE. Returns the state name, missing scopes
+// (for LIMITED), and a reason string. The FSM is the sole interpreter.
+
+/**
+ * Merge a new envelope into an existing one. Slots are per-slot: if a
+ * slot is null in the new envelope, the old value is retained. Identity
+ * fields (envelopeId, observedAt) are overwritten.
+ */
+function mergeEnvelope(existing, fresh) {
+  if (!existing) {
+    existing = {
+      envelopeId: null,
+      observedAt: null,
+      businessAccountId: null,
+      userId: null,
+      pat: null,
+      uat: null,
+      detection: null,
+      scope: null,
+    };
+  }
+  if (!fresh) return existing;
+  // Slot-merge rule: a slot in `fresh` that is non-null overrides
+  // the existing slot. A slot in `fresh` that is null/undefined
+  // RETAIN the existing slot (so partial envelopes merge into the
+  // accumulated evidence rather than overwriting it with empty).
+  const pick = (slot) => {
+    if (fresh[slot] === null || fresh[slot] === undefined) return existing[slot];
+    return fresh[slot];
+  };
+  return {
+    envelopeId: fresh.envelopeId || existing.envelopeId,
+    observedAt: fresh.observedAt || existing.observedAt,
+    businessAccountId: fresh.businessAccountId || existing.businessAccountId,
+    userId: fresh.userId || existing.userId,
+    pat: pick('pat'),
+    uat: pick('uat'),
+    detection: pick('detection'),
+    scope: pick('scope'),
+  };
+}
+
+/**
+ * Find the first missing observation slot, or null if all 4 are populated.
+ * Order: pat, uat, detection, scope.
+ */
+function _firstMissingSlot(envelope) {
+  if (!envelope) return 'pat';
+  for (const slot of OBSERVATION_SLOTS) {
+    if (envelope[slot] === null || envelope[slot] === undefined) return slot;
+  }
+  return null;
+}
+
+/**
+ * Infer FSM state from an envelope.
+ * Returns:
+ *   { state, reason, missingScopes, observationFresh }
+ */
+function inferStateFromEnvelope(envelope, now) {
+  now = now || Date.now();
+  const observedAt = (envelope && envelope.observedAt) || null;
+  const evidence = envelope || { pat: null, uat: null, detection: null, scope: null };
+
+  // 1. UNAUTHORIZED: any required worker reports failure
+  if (evidence.pat && evidence.pat.isDecryptable === false) {
+    return { state: 'UNAUTHORIZED', reason: 'PAT not decryptable', missingScopes: [] };
+  }
+  if (evidence.uat && evidence.uat.isDecryptable === false) {
+    return { state: 'UNAUTHORIZED', reason: 'UAT not decryptable', missingScopes: [] };
+  }
+  if (evidence.detection && evidence.detection.isValid === false) {
+    return { state: 'UNAUTHORIZED', reason: evidence.detection.reason || 'Token validation failed', missingScopes: [] };
+  }
+
+  // 2. Empty envelope → check for PENDING slot (envelope must exist with at least one slot)
+  const missingSlot = _firstMissingSlot(evidence);
+  if (missingSlot !== null) {
+    // If envelope is null or all slots are null, this is UNKNOWN (EMPTY)
+    if (!envelope) return { state: 'UNKNOWN', reason: 'No envelope observed', missingScopes: [] };
+    // Otherwise, envelope exists with at least one slot populated, but at least one is missing
+    // Determine if it's UNKNOWN (all slots null) or PENDING (some populated, some missing)
+    const anyPopulated = OBSERVATION_SLOTS.some(s => evidence[s] !== null && evidence[s] !== undefined);
+    if (!anyPopulated) {
+      return { state: 'UNKNOWN', reason: 'No envelope slots observed', missingScopes: [] };
+    }
+    return {
+      state: PENDING_FOR[missingSlot],
+      reason: `Awaiting ${missingSlot} observation slot`,
+      missingScopes: [],
+    };
+  }
+
+  // 3. All 4 slots populated. Run the complete-state inference.
+  const grantedScopes = (evidence.scope && evidence.scope.grantedScopes) || [];
+  const missingScopes = REQUIRED_SCOPES_VALUE.filter(s => !grantedScopes.includes(s));
+
+  // DEGRADED: reliabilityImpaired OR scope cache stale
+  if (evidence.detection && evidence.detection.reliabilityImpaired) {
+    return { state: 'DEGRADED', reason: 'Detection reliability impaired', missingScopes: [] };
+  }
+  if (evidence.scope && evidence.scope.cacheAgeMs != null) {
+    const STALE_THRESHOLD_MS = 2 * 6 * 60 * 60 * 1000;
+    if (evidence.scope.cacheAgeMs > STALE_THRESHOLD_MS) {
+      return { state: 'DEGRADED', reason: `Scope cache stale: ${evidence.scope.cacheAgeMs}ms`, missingScopes: [] };
+    }
+  }
+
+  // LIMITED: missing required scopes
+  if (missingScopes.length > 0) {
+    return { state: 'LIMITED', reason: `Missing required scopes: ${missingScopes.join(', ')}`, missingScopes };
+  }
+
+  // AUTHORIZED: all slots present, all scopes present, no degradation
+  return { state: 'AUTHORIZED', reason: null, missingScopes: [] };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3. Domain Transition Map
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Transitions reason about envelope SHAPE (per-cred), not raw state names.
+//
+// Per-cred helpers used by guards:
+//   _credRecord(baId) → { state, evidence, lastObservedAt, consecutiveFailures, lastTransitionedAt }
+//
+// Events:
+//   CAPABILITY_EVALUATE   → start evaluation (UNKNOWN or first PENDING)
+//   CAPABILITY_OBSERVATION → new envelope arrived, merge + infer (any state)
+//   CAPABILITY_OK         → inferred AUTHORIZED (reaches when partials complete)
+//   CAPABILITY_PARTIAL    → inferred LIMITED (full envelope, missing scopes)
+//   CAPABILITY_FAILED     → inferred UNAUTHORIZED (worker failure surfaced)
+//   CAPABILITY_DEGRADED   → inferred DEGRADED (reliability / staleness)
+//   CAPABILITY_RECOVERED  → explicit recovery from UNAUTHORIZED/DEGRADED
+//   CAPABILITY_REEVALUATE → cadence tick (UNKNOWN or PENDING → start fresh eval)
+
+const _byCred = new Map(); // businessAccountId → credRecord
+
+function _credRecord(baId) {
+  if (!baId) return null;
+  if (!_byCred.has(baId)) {
+    _byCred.set(baId, {
+      state: 'UNKNOWN',
+      evidence: null,
+      lastObservedAt: null,
+      lastTransitionedAt: null,
+      consecutiveFailures: 0,
+    });
+  }
+  return _byCred.get(baId);
+}
+
+function _resolveCred(event) {
+  const baId = event.businessAccountId || (event.envelope && event.envelope.businessAccountId);
+  if (!baId) return null;
+  return _credRecord(baId);
+}
 
 const TRANSITION_MAP = {
   // ── Entry: any external trigger starts evaluation ─────────────────────────
@@ -127,46 +321,59 @@ const TRANSITION_MAP = {
     }],
   },
 
-  // ── Layer 3: Aggregate worker observation arrives. The FSM consumes the
-  //    canonical envelope (produced by observations.js), runs the normalizer,
-  //    and dispatches a derived state event (OK / PARTIAL / FAILED). This
-  //    transition does NOT change local state directly — it forwards to
-  //    a synthesized state event via internal _aggregateAndDispatch().
-  //    From UNAUTHORIZED / DEGRADED, observation is a no-op (recovery requires
-  //    an explicit CAPABILITY_RECOVERED).
+  // ── Aggregate worker observation arrives ────────────────────────────────
+  // This is the SOLE event that mutates per-cred evidence. The aggregator
+  // merges the new envelope into the existing per-cred record, then
+  // infers state. The inferred state becomes the target.
   CAPABILITY_OBSERVATION: {
-    target: 'UNKNOWN', // placeholder; buildActions dispatches the real transition
+    target: null, // resolved dynamically in dispatch via per-cred inference
     guard: (event) => {
       if (!event || !event.envelope) {
         return { allowed: false, reason: 'CAPABILITY_OBSERVATION requires event.envelope' };
       }
+      if (!event.envelope.businessAccountId) {
+        return { allowed: false, reason: 'CAPABILITY_OBSERVATION requires envelope.businessAccountId' };
+      }
       return { allowed: true };
     },
     buildActions: (event, ctx) => {
-      // Run the aggregator — emits a derived event via fsm.dispatch().
-      // This is internal recursion, depth-bounded to 2.
-      // We pass ctx if present (for validate gate); the recursive dispatch
-      // runs without ctx gracefully if ctx is undefined.
-      if (event.envelope) {
-        _aggregateAndDispatch(event.envelope, ctx);
+      // Evidence already merged in dispatch step 3; resolve cred again
+      // to read the merged envelope.
+      const baId = event.envelope.businessAccountId;
+      const c = _byCred.get(baId);
+      const inferred = c ? inferStateFromEnvelope(c.evidence) : { state: 'UNKNOWN', reason: 'no cred', missingScopes: [] };
+      const derived = {
+        type: _stateToEventType(inferred.state),
+        envelope: event.envelope,
+        reason: inferred.reason,
+        missingScopes: inferred.missingScopes,
+        businessAccountId: baId,
+        userId: event.envelope.userId || null,
+        observedAt: event.envelope.observedAt || Date.now(),
+        evidence: event.envelope,
+      };
+      if (derived.type) {
+        dispatch(derived, ctx);
       }
       return [{
         type: 'CAPABILITY_OBSERVATION_RECEIVED',
         envelopeId: event.envelope.envelopeId || null,
-        businessAccountId: event.envelope.businessAccountId || null,
+        businessAccountId: baId,
+        inferredState: inferred.state,
+        reason: inferred.reason,
+        missingScopes: inferred.missingScopes,
       }];
     },
   },
 
-  // ── Aggregate observation resolves to AUTHORIZED ──────────────────────────
+  // ── Inferred AUTHORIZED (all 4 slots green, all required scopes present) ─
   CAPABILITY_OK: {
     target: 'AUTHORIZED',
     guard: (event) => {
-      if (_localState !== 'UNKNOWN') {
-        return { allowed: false, reason: `Cannot authorize from ${_localState} (must be UNKNOWN)` };
-      }
-      if (!_isObservationFresh(event.observedAt)) {
-        return { allowed: false, reason: `Observation stale: ${event.observedAt}` };
+      const cred = _resolveCred(event);
+      if (!cred) return { allowed: false, reason: 'no cred record' };
+      if (!_isObservationFresh(cred.lastObservedAt)) {
+        return { allowed: false, reason: 'observation stale' };
       }
       return { allowed: true };
     },
@@ -174,18 +381,18 @@ const TRANSITION_MAP = {
       type: 'CAPABILITY_AUTHORIZED',
       evidence: event.evidence || null,
       observedAt: event.observedAt,
+      businessAccountId: event.businessAccountId || null,
     }],
   },
 
-  // ── Aggregate observation resolves to LIMITED ─────────────────────────────
+  // ── Inferred LIMITED (all 4 slots present, missing required scopes) ─────
   CAPABILITY_PARTIAL: {
     target: 'LIMITED',
     guard: (event) => {
-      if (_localState !== 'UNKNOWN') {
-        return { allowed: false, reason: `Cannot mark partial from ${_localState} (must be UNKNOWN)` };
-      }
-      if (!_isObservationFresh(event.observedAt)) {
-        return { allowed: false, reason: `Observation stale: ${event.observedAt}` };
+      const cred = _resolveCred(event);
+      if (!cred) return { allowed: false, reason: 'no cred record' };
+      if (!_isObservationFresh(cred.lastObservedAt)) {
+        return { allowed: false, reason: 'observation stale' };
       }
       return { allowed: true };
     },
@@ -193,26 +400,27 @@ const TRANSITION_MAP = {
       type: 'CAPABILITY_LIMITED',
       missingScopes: event.missingScopes || [],
       evidence: event.evidence || null,
+      businessAccountId: event.businessAccountId || null,
     }],
   },
 
-  // ── Degradation from stable states ───────────────────────────────────────
+  // ── Inferred DEGRADED (all 4 slots present, reliability / cache degraded) ─
   CAPABILITY_DEGRADED: {
     target: 'DEGRADED',
     guard: (event) => {
-      if (_localState !== 'AUTHORIZED' && _localState !== 'LIMITED' && _localState !== 'UNKNOWN') {
-        return { allowed: false, reason: `Cannot degrade from ${_localState}` };
-      }
+      const cred = _resolveCred(event);
+      if (!cred) return { allowed: true }; // degradation can fire from any state
       return { allowed: true };
     },
     buildActions: (event) => [{
       type: 'CAPABILITY_DEGRADATION_DETECTED',
       reason: event.reason || 'reliability impaired',
       evidence: event.evidence || null,
+      businessAccountId: event.businessAccountId || null,
     }],
   },
 
-  // ── Failure: required capability unavailable ──────────────────────────────
+  // ── Inferred UNAUTHORIZED (worker failure surfaced) ──────────────────────
   CAPABILITY_FAILED: {
     target: 'UNAUTHORIZED',
     guard: (event) => ({ allowed: true }),
@@ -220,69 +428,109 @@ const TRANSITION_MAP = {
       type: 'CAPABILITY_AUTH_FAILURE',
       reason: event.reason || 'required capability unavailable',
       evidence: event.evidence || null,
+      businessAccountId: event.businessAccountId || null,
     }],
   },
 
-  // ── Recovery: re-evaluation restored capability ──────────────────────────
+  // ── Recovery: explicit transition from UNAUTHORIZED / DEGRADED ───────────
   CAPABILITY_RECOVERED: {
     target: 'AUTHORIZED',
     guard: (event) => {
-      if (_localState !== 'UNAUTHORIZED' && _localState !== 'DEGRADED') {
-        return { allowed: false, reason: `Cannot recover from ${_localState} (must be UNAUTHORIZED or DEGRADED)` };
+      const cred = _resolveCred(event);
+      if (!cred) return { allowed: false, reason: 'no cred record' };
+      if (cred.state !== 'UNAUTHORIZED' && cred.state !== 'DEGRADED') {
+        return { allowed: false, reason: `Cannot recover from ${cred.state}` };
       }
-      if (!_isObservationFresh(event.observedAt)) {
-        return { allowed: false, reason: `Observation stale: ${event.observedAt}` };
+      if (!_isObservationFresh(cred.lastObservedAt)) {
+        return { allowed: false, reason: 'observation stale' };
       }
       return { allowed: true };
     },
     buildActions: (event) => [{
       type: 'CAPABILITY_RECOVERED',
-      previousState: _localState,
+      previousState: _resolveCred(event)?.state || null,
       evidence: event.evidence || null,
+      businessAccountId: event.businessAccountId || null,
     }],
   },
 
-  // ── Cadence tick: re-evaluate from stable states ─────────────────────────
+  // ── Cadence tick: re-evaluate ────────────────────────────────────────────
   CAPABILITY_REEVALUATE: {
     target: 'UNKNOWN',
     guard: (event) => {
-      if (_localState === 'UNKNOWN') {
-        return { allowed: false, reason: 'Already in UNKNOWN — reevaluation in progress' };
+      const cred = _resolveCred(event);
+      if (!cred) return { allowed: true };
+      if (cred.state === 'UNKNOWN') {
+        return { allowed: false, reason: 'Already in UNKNOWN' };
       }
       return { allowed: true };
     },
     buildActions: (event) => [{
       type: 'CAPABILITY_REEVALUATING',
-      previousState: _localState,
+      previousState: _resolveCred(event)?.state || null,
       cadence: event.cadence || 'scheduled',
+      businessAccountId: event.businessAccountId || null,
     }],
   },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 3. Domain-local runtime state (private)
+// 4. Domain-local runtime — per-cred map (private)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let _localState = 'UNKNOWN';
-let _lastTransitionedAt = null;
-let _lastObservedAt = null;
-let _lastEvidence = null;
-let _consecutiveFailures = 0;
+// Per-cred record shape:
+//   {
+//     state: 'UNKNOWN' | ... 9 state values,
+//     evidence: { envelopeId, observedAt, businessAccountId, userId, pat, uat, detection, scope } | null,
+//     lastObservedAt: number | null,
+//     lastTransitionedAt: number | null,
+//     consecutiveFailures: number,
+//   }
+//
+// _byCred is the SOLE evidence store. Verdict-gate reads from it via
+// getCapabilityVerdict(businessAccountId).
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 4. Dispatch — process event, ask constitutional for validation, transition
+// 5. Dispatch
 // ═══════════════════════════════════════════════════════════════════════════════
+
+function _stateToEventType(state) {
+  switch (state) {
+    case 'AUTHORIZED': return 'CAPABILITY_OK';
+    case 'LIMITED':    return 'CAPABILITY_PARTIAL';
+    case 'UNAUTHORIZED': return 'CAPABILITY_FAILED';
+    case 'DEGRADED':   return 'CAPABILITY_DEGRADED';
+    default:           return null; // PENDING / UNKNOWN are not derived — observed directly
+  }
+}
+
+/**
+ * Merge a new envelope into the per-cred record, then infer state from
+ * the merged envelope. Returns the inferred state object, or null on failure.
+ *
+ * This is the SINGLE mutation point for per-cred evidence.
+ */
+function _mergeAndInfer(envelope) {
+  if (!envelope || !envelope.businessAccountId) return null;
+  const cred = _credRecord(envelope.businessAccountId);
+  const merged = mergeEnvelope(cred.evidence, envelope);
+  cred.evidence = merged;
+  cred.lastObservedAt = merged.observedAt || Date.now();
+  return inferStateFromEnvelope(merged);
+}
+
+function _isObservationFresh(observedAt) {
+  if (!observedAt) return false;
+  const ts = typeof observedAt === 'number' ? observedAt : new Date(observedAt).getTime();
+  if (isNaN(ts)) return false;
+  return (Date.now() - ts) < OBSERVATION_FRESHNESS_MS_VALUE;
+}
 
 /**
  * Process a domain event within the graph capability FSM.
- *
- * The FSM governs lifecycle only. For HSM-level signals (auth failure, degradation, recovery),
- * it uses ctx.dispatchGlobal() to RECOMMEND constitutional state changes.
- * The HSM (CK) validates via GLOBAL_TRANSITION_MAP guards and makes the final decision.
- *
- * @param {{ type: string, [key: string]: any }} event — domain event
- * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
- * @returns {{ allowed: boolean, from?: string, to?: string, actions?: Array, reason?: string }}
+ * @param {{ type: string, [key: string]: any }} event
+ * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx
+ * @returns {{ allowed: boolean, from?: string, to?: string, actions?: Array, reason?: string, businessAccountId?: string|null }}
  */
 function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
@@ -294,7 +542,13 @@ function dispatch(event, ctx) {
     return { allowed: false, reason: `unknown event type: ${event.type}` };
   }
 
-  const from = _localState;
+  // Resolve the per-cred record for this event. For events that carry a
+  // businessAccountId, the record exists or is created. For events without
+  // (e.g. legacy CAPABILITY_EVALUATE with no baId), we operate on a
+  // sentinel "__global__" record so behaviour remains deterministic.
+  const baId = event.businessAccountId || (event.envelope && event.envelope.businessAccountId) || '__global__';
+  const cred = _credRecord(baId);
+  const from = cred.state;
 
   // 1. Run per-transition guard
   if (txn.guard) {
@@ -304,11 +558,21 @@ function dispatch(event, ctx) {
     }
   }
 
-  // 2. Resolve target state
+  // 2. Resolve target state (static or function-of-event)
   const rawTarget = txn.target;
-  const target = typeof rawTarget === 'function' ? rawTarget(event) : rawTarget;
+  let target = typeof rawTarget === 'function' ? rawTarget(event) : rawTarget;
 
-  // 3. Ask constitutional kernel for transition approval
+  // 3. For CAPABILITY_OBSERVATION, merge the new envelope into per-cred
+  //    evidence FIRST, then infer the target from the merged evidence.
+  //    This is the single mutation point for per-cred evidence.
+  if (event.type === 'CAPABILITY_OBSERVATION') {
+    if (!event.envelope) return { allowed: false, reason: 'envelope required' };
+    const inferred = _mergeAndInfer(event.envelope);
+    if (!inferred) return { allowed: false, reason: 'merge/infer failed' };
+    target = inferred.state;
+  }
+
+  // 4. Ask constitutional kernel for transition approval
   if (ctx && ctx.validate) {
     const validation = ctx.validate(from, target, event);
     if (!validation.allowed) {
@@ -316,20 +580,21 @@ function dispatch(event, ctx) {
     }
   }
 
-  // 4. Track consecutive failures for health signals
-  if (target === 'UNAUTHORIZED') {
-    _consecutiveFailures++;
-  } else if (target === 'AUTHORIZED') {
-    _consecutiveFailures = 0;
+  // 5. Track consecutive failures per cred — only on actual state change
+  //    to avoid double-counting during the CAPABILITY_OBSERVATION → derived
+  //    event recursive dispatch (where target stays UNAUTHORIZED on the
+  //    inner call).
+  if (target !== from) {
+    if (target === 'UNAUTHORIZED') {
+      cred.consecutiveFailures++;
+    } else if (target === 'AUTHORIZED') {
+      cred.consecutiveFailures = 0;
+    }
   }
 
-  // 5. Cache observation metadata
-  if (event.observedAt) _lastObservedAt = event.observedAt;
-  if (event.evidence) _lastEvidence = event.evidence;
-
   // 6. Materialize state
-  _localState = target;
-  _lastTransitionedAt = Date.now();
+  cred.state = target;
+  cred.lastTransitionedAt = Date.now();
 
   // 7. Emit observability transition for domain FSM state change
   try {
@@ -338,20 +603,20 @@ function dispatch(event, ctx) {
       obs.transition({
         domain: 'graph-capability',
         entity: 'fsm',
-        entityId: 'graph-capability-fsm',
+        entityId: baId,
         previousState: from,
         nextState: target,
         authority: 'graph-capability-fsm',
         raw: {
           intent: event.type,
-          observedAt: _lastObservedAt,
-          consecutiveFailures: _consecutiveFailures,
+          observedAt: cred.lastObservedAt,
+          consecutiveFailures: cred.consecutiveFailures,
         },
       });
     }
   } catch (_) {}
 
-  // 8. Build actions
+  // 8. Build actions (this is where CAPABILITY_OBSERVATION's aggregator runs)
   const actions = txn.buildActions ? txn.buildActions(event, ctx) : [];
 
   // 9. HSM signaling — FSM recommends, HSM decides
@@ -363,55 +628,53 @@ function dispatch(event, ctx) {
           type: 'CAPABILITY_AUTH_FAILURE',
           reason: action.reason,
           evidence: action.evidence,
+          businessAccountId: action.businessAccountId,
         });
       }
-      // Do not pass to subscribers — handled
     } else if (action.type === 'CAPABILITY_DEGRADATION_DETECTED') {
       if (ctx && ctx.dispatchGlobal) {
         ctx.dispatchGlobal({
           type: 'CAPABILITY_DEGRADED',
           reason: action.reason,
           evidence: action.evidence,
+          businessAccountId: action.businessAccountId,
         });
       }
-      // Do not pass to subscribers — handled
     } else if (action.type === 'CAPABILITY_RECOVERED') {
       if (ctx && ctx.dispatchGlobal) {
         ctx.dispatchGlobal({
           type: 'CAPABILITY_RECOVERED',
           reason: `Restored from ${action.previousState}`,
           evidence: action.evidence,
+          businessAccountId: action.businessAccountId,
         });
       }
-      // Do not pass to subscribers — handled
     } else {
       filteredActions.push(action);
     }
   }
 
-  console.log(`[graph-capability-fsm] ${from} → ${target}  (${event.type})`);
+  console.log(`[graph-capability-fsm] ${baId}: ${from} → ${target}  (${event.type})`);
 
   return {
     allowed: true,
     from,
     to: target,
     actions: filteredActions,
+    businessAccountId: baId,
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. Initialization — called by constitutional kernel on boot with rehydrated state
+// 6. Initialization — boot with rehydrated state
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Initialize the domain FSM with rehydrated state from lineage.
- * Called by the constitutional kernel after rehydrate() completes on boot.
- *
- * @param {string} rehydratedState — the domain state to restore
- */
 function init(rehydratedState) {
-  if (rehydratedState && typeof rehydratedState === 'string' && STATE_REGISTRY[rehydratedState]) {
-    _localState = rehydratedState;
+  if (rehydratedState && typeof rehydratedState === 'string' && STATE_REGISTRY_VALUE[rehydratedState]) {
+    // Rehydrate the global sentinel. Per-cred records are populated
+    // lazily as envelopes arrive.
+    const global = _credRecord('__global__');
+    global.state = rehydratedState;
     console.log(`[graph-capability-fsm] Initialized with rehydrated state: ${rehydratedState}`);
   } else {
     console.log(`[graph-capability-fsm] No valid rehydrated state — starting in UNKNOWN`);
@@ -419,214 +682,192 @@ function init(rehydratedState) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 6. Observability — domain state queries
+// 7. Observability — domain state queries
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function getState() {
-  return _localState;
+/**
+ * Return the current FSM state. If businessAccountId is given, return
+ * that cred's state. If omitted, return the global sentinel.
+ */
+function getState(businessAccountId) {
+  const baId = businessAccountId || '__global__';
+  const cred = _byCred.get(baId);
+  return cred ? cred.state : 'UNKNOWN';
 }
 
-function exportState() {
-  return {
-    state: _localState,
-    lastTransitionedAt: _lastTransitionedAt,
-    lastObservedAt: _lastObservedAt,
-    lastEvidence: _lastEvidence,
-    consecutiveFailures: _consecutiveFailures,
-  };
+/**
+ * Per-cred: { state, evidence, lastObservedAt, lastTransitionedAt, consecutiveFailures }
+ * Global: same shape for the sentinel.
+ */
+function exportState(businessAccountId) {
+  const baId = businessAccountId || '__global__';
+  const cred = _byCred.get(baId);
+  if (!cred) {
+    return {
+      state: 'UNKNOWN',
+      evidence: null,
+      lastObservedAt: null,
+      lastTransitionedAt: null,
+      consecutiveFailures: 0,
+    };
+  }
+  return { ...cred };
 }
 
-function getHealth() {
-  const isFresh = _lastObservedAt
-    ? (Date.now() - _lastObservedAt) < OBSERVATION_FRESHNESS_MS
+function getHealth(businessAccountId) {
+  const baId = businessAccountId || '__global__';
+  const cred = _byCred.get(baId);
+  if (!cred) {
+    return {
+      ok: false,
+      signals: {
+        state: 'UNKNOWN',
+        observationFresh: false,
+        observationStale: true,
+        consecutiveFailures: 0,
+      },
+    };
+  }
+  const isFresh = cred.lastObservedAt
+    ? (Date.now() - cred.lastObservedAt) < OBSERVATION_FRESHNESS_MS_VALUE
     : false;
-  const isStale = _lastObservedAt
-    ? (Date.now() - _lastObservedAt) > DEGRADED_OBSERVATION_MS
+  const isStale = cred.lastObservedAt
+    ? (Date.now() - cred.lastObservedAt) > DEGRADED_OBSERVATION_MS_VALUE
     : true;
   return {
-    ok: _localState === 'AUTHORIZED' && isFresh && _consecutiveFailures === 0,
+    ok: cred.state === 'AUTHORIZED' && isFresh && cred.consecutiveFailures === 0,
     signals: {
-      state: _localState,
+      state: cred.state,
       observationFresh: isFresh,
       observationStale: isStale,
-      consecutiveFailures: _consecutiveFailures,
+      consecutiveFailures: cred.consecutiveFailures,
     },
   };
 }
 
-// ── Public capability verdict — the constitutional truth ──────────────────────
-
 /**
- * Return the current canonical capability verdict for downstream consumers.
- * This is the single source of truth that acquisition/publishing/engagement consume.
+ * Public capability verdict — the constitutional truth for a given credential.
+ * Verdict-gate is the only allowed consumer; everyone else goes through
+ * verdict-gate.requireCapability() which calls this.
  *
- * @returns {{ state: string, observedAt: number|null, evidence: object|null }}
+ * @param {string} [businessAccountId]
+ * @returns {{ state: string, observedAt: number|null, evidence: object|null, missingScopes: string[] }}
  */
-function getCapabilityVerdict() {
+function getCapabilityVerdict(businessAccountId) {
+  const baId = businessAccountId || '__global__';
+  const cred = _byCred.get(baId);
+  if (!cred) {
+    return { state: 'UNKNOWN', observedAt: null, evidence: null, missingScopes: [] };
+  }
+  let missingScopes = [];
+  if (cred.state === 'LIMITED' && cred.evidence && cred.evidence.scope) {
+    const granted = cred.evidence.scope.grantedScopes || [];
+    missingScopes = REQUIRED_SCOPES_VALUE.filter(s => !granted.includes(s));
+  }
   return {
-    state: _localState,
-    observedAt: _lastObservedAt,
-    evidence: _lastEvidence,
+    state: cred.state,
+    observedAt: cred.lastObservedAt,
+    evidence: cred.evidence,
+    missingScopes,
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 7. Trigger Criteria — cognitive interface to CK dispatch membrane
+// 8. Trigger Criteria
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Deterministic trigger evaluation — the FSM's cognitive interface to CK's dispatch membrane.
- * CK calls this before dispatching CAPABILITY_EVALUATE for every trigger condition.
- *
- * @param {{ trigger: string, forced?: boolean }} params
- * @returns {{ decision: 'APPROVED'|'DENIED'|'WAIT', reason: string, retryAt?: number }}
+ * Deterministic trigger evaluation. Per-cred: gates reason about the
+ * per-cred record, not the global sentinel.
  */
-function evaluateTriggerCriteria({ trigger = 'MANUAL', forced = false } = {}) {
-  // Gate 0 (Layer 3.3): Worker observation arrived — must fire BEFORE the
-  // UNKNOWN-WAIT check, because an observation IS the act of evaluating.
-  // Without this priority, observations received while state is UNKNOWN
-  // would never trigger the aggregator.
+function evaluateTriggerCriteria({ trigger = 'MANUAL', forced = false, businessAccountId } = {}) {
+  const baId = businessAccountId || '__global__';
+  const cred = _byCred.get(baId);
+  const state = cred ? cred.state : 'UNKNOWN';
+
+  // Gate 0: Observation arrived — always approved
   if (trigger === 'OBSERVATION_ARRIVED') {
-    return { decision: 'APPROVED', reason: 'Worker observation arrived — aggregate and derive' };
+    return { decision: 'APPROVED', reason: 'Worker observation arrived' };
   }
 
-  // Gate 1: Already in evaluation
-  if (_localState === 'UNKNOWN' && !forced) {
+  // Gate 1: Already in evaluation (per-cred)
+  if (state === 'UNKNOWN' && !forced) {
     return { decision: 'WAIT', reason: 'Evaluation in progress (UNKNOWN)' };
   }
 
-  // Gate 2: Force override
+  // Gate 2: Force
   if (forced) {
-    return { decision: 'APPROVED', reason: 'Forced trigger — bypassing gates' };
+    return { decision: 'APPROVED', reason: 'Forced trigger' };
   }
 
-  // Gate 3: Auth failure trigger — always approved
+  // Gate 3-6: explicit triggers
   if (trigger === 'AUTH_FAILURE_STRIKE') {
-    return { decision: 'APPROVED', reason: 'Auth failure strike — mandatory evaluation' };
+    return { decision: 'APPROVED', reason: 'Auth failure strike' };
   }
-
-  // Gate 4: Repeated Graph failure — always approved
   if (trigger === 'REPEATED_GRAPH_FAILURE') {
-    return { decision: 'APPROVED', reason: 'Repeated Graph failure — degradation assessment' };
+    return { decision: 'APPROVED', reason: 'Repeated Graph failure' };
   }
-
-  // Gate 5: New account connected — always approved
   if (trigger === 'NEW_ACCOUNT_CONNECTED') {
-    return { decision: 'APPROVED', reason: 'New account — full capability sweep' };
+    return { decision: 'APPROVED', reason: 'New account' };
   }
-
-  // Gate 6: Token refreshed — always approved
   if (trigger === 'TOKEN_REFRESHED') {
-    return { decision: 'APPROVED', reason: 'Token refreshed — capability re-evaluation' };
+    return { decision: 'APPROVED', reason: 'Token refreshed' };
   }
 
-  // Gate 7: Cadence tick — approved unless UNAUTHORIZED and recent
+  // Gate 7: cadence
   if (trigger === 'CADENCE_TICK') {
-    if (_localState === 'UNAUTHORIZED' && _lastTransitionedAt) {
-      const elapsed = Date.now() - _lastTransitionedAt;
-      if (elapsed < OBSERVATION_FRESHNESS_MS) {
-        return { decision: 'WAIT', reason: `Recent failure (${elapsed}ms ago) — awaiting cooldown` };
+    if (state === 'UNAUTHORIZED' && cred && cred.lastTransitionedAt) {
+      const elapsed = Date.now() - cred.lastTransitionedAt;
+      if (elapsed < OBSERVATION_FRESHNESS_MS_VALUE) {
+        return { decision: 'WAIT', reason: `Recent failure (${elapsed}ms ago) — cooldown` };
       }
     }
-    return { decision: 'APPROVED', reason: 'Cadence tick — scheduled re-evaluation' };
+    return { decision: 'APPROVED', reason: 'Cadence tick' };
   }
 
-  // Default: approve for any recognized trigger
   return { decision: 'APPROVED', reason: `Trigger ${trigger} approved` };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 8. Internal helpers
+// 9. Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function _isObservationFresh(observedAt) {
-  if (!observedAt) return false;
-  const ts = typeof observedAt === 'number' ? observedAt : new Date(observedAt).getTime();
-  if (isNaN(ts)) return false;
-  return (Date.now() - ts) < OBSERVATION_FRESHNESS_MS;
+function listCreds() {
+  return Array.from(_byCred.keys());
 }
 
-// ── Layer 3.2: Aggregate observation → derived state event ─────────────────
-// Called by the CAPABILITY_OBSERVATION transition's buildActions. Normalizes
-// the envelope and dispatches a synthesized event (CAPABILITY_OK /
-// CAPABILITY_PARTIAL / CAPABILITY_FAILED). Recursion is bounded to depth 2
-// (CAPABILITY_OBSERVATION → derived event); the derived event's transition
-// is terminal in the recursive sense.
-//
-// The synthesized event passes through the full dispatch pipeline
-// (guard → validate → transition), so the constitutional gate still has
-// veto authority over the derived transition.
-//
-// Note: observations.js is lazy-loaded to break a circular dependency
-// (fsm.js ↔ observations.js — observations requires fsm.REQUIRED_SCOPES).
-let _observations = null;
-function _getObservations() {
-  if (!_observations) {
-    _observations = require('./substrates/graph-capability/observations');
-  }
-  return _observations;
-}
-
-function _aggregateAndDispatch(envelope, ctx) {
-  let normalized;
-  try {
-    normalized = _getObservations().normalize(envelope);
-  } catch (err) {
-    // If normalization fails, do not derive — the observation is incomplete
-    // and the FSM should stay where it is.
-    return { allowed: false, reason: `normalization failed: ${err.message}` };
-  }
-
-  const { state, observedAt, evidence, reason, missingScopes } = normalized;
-  const event = {
-    type: null,
-    observedAt,
-    evidence,
-    reason,
-    missingScopes,
-    businessAccountId: envelope.businessAccountId || null,
-    userId: envelope.userId || null,
-  };
-
-  if (state === 'AUTHORIZED') {
-    event.type = 'CAPABILITY_OK';
-  } else if (state === 'LIMITED') {
-    event.type = 'CAPABILITY_PARTIAL';
-  } else if (state === 'UNAUTHORIZED') {
-    event.type = 'CAPABILITY_FAILED';
-  } else if (state === 'DEGRADED') {
-    event.type = 'CAPABILITY_DEGRADED';
-  } else {
-    // UNKNOWN or any unhandled state — do not derive a transition.
-    return { allowed: false, reason: `aggregation produced no derivable event (state=${state})` };
-  }
-
-  return dispatch(event, ctx);
+function _resetCred(baId) {
+  if (baId) _byCred.delete(baId);
+  else _byCred.clear();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 9. Public API
+// 10. Public API
 // ═══════════════════════════════════════════════════════════════════════════════
 
 module.exports = {
   // Standard FSM contract
-  setGovernance,
-  getGovernance,
-  registerWorker,
-  getWorker,
-  getWorkers,
-  name: 'graph-capability-fsm',
   dispatch,
   getState,
   exportState,
   getHealth,
   init,
   evaluateTriggerCriteria,
-  // Capability-specific public surface
+  // Per-cred verdict — sole source of truth
   getCapabilityVerdict,
-  // Introspection (for tests + migration verification)
-  STATE_REGISTRY,
-  REQUIRED_SCOPES,
-  OBSERVATION_FRESHNESS_MS,
-  DEGRADED_OBSERVATION_MS,
+  // Introspection
+  STATE_REGISTRY: STATE_REGISTRY_VALUE,
+  REQUIRED_SCOPES: REQUIRED_SCOPES_VALUE,
+  OBSERVATION_FRESHNESS_MS: OBSERVATION_FRESHNESS_MS_VALUE,
+  DEGRADED_OBSERVATION_MS: DEGRADED_OBSERVATION_MS_VALUE,
+  PENDING_FOR,
+  OBSERVATION_SLOTS,
+  // Inferential layer — exposed for tests
+  inferStateFromEnvelope,
+  mergeEnvelope,
+  // Multi-cred management
+  listCreds,
+  _resetCred,
+  // Constants for name
+  name: 'graph-capability-fsm',
 };

@@ -31,10 +31,20 @@ function _obs() {
   return _observability;
 }
 
-// ── Governance reference (REMOVED — dead wire, no consumer inside FSM) ───────
-// setGovernance/getGovernance removed in S9. FSM emits directly through _obs().
-// Governance (CK) is the authority plane for transition approval only.
-// The FSM does not need a governance ref for emission.
+// ── Governance reference (set by CK at boot) ────────────────────────────
+// The FSM holds a governance ref for worker invocation and event dispatch.
+// engagement-fsm pattern: set at boot, passed through execution contexts.
+let _governance = null;
+
+function setGovernance(governance) {
+  if (governance && typeof governance.dispatch === 'function') {
+    _governance = governance;
+  }
+}
+
+function getGovernance() {
+  return _governance;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 0. Timeout and telemetry configuration
@@ -623,6 +633,12 @@ async function dispatch(event, ctx) {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
 
+  // Fall back to the bound governance ref (set by setGovernance at boot)
+  // when the caller does not pass an explicit ctx. This keeps the existing
+  // ctx.sanityCheck + ctx.validate contract working for direct dispatches
+  // that don't thread their own ctx.
+  const effectiveCtx = ctx || _governance;
+
   const txn = TRANSITION_MAP[event.type];
   if (!txn) {
     return { allowed: false, reason: `unknown event type: ${event.type}` };
@@ -639,7 +655,7 @@ async function dispatch(event, ctx) {
   }
 
   // 2. Build actions FIRST (before state mutation) — ACQUISITION_COMPLETE target is derived
-  const actions = (txn.buildActions ? await txn.buildActions(event, ctx) : []);
+  const actions = (txn.buildActions ? await txn.buildActions(event, effectiveCtx) : []);
 
   // 3. Derive target state AFTER actions (ACQUISITION_COMPLETE may close the last intent)
   const newGlobalState = _deriveGlobalState();
@@ -660,8 +676,8 @@ async function dispatch(event, ctx) {
   }
 
   // 5. Ask constitutional kernel for transition approval
-  if (ctx && ctx.validate) {
-    const validation = ctx.validate(from, target, event);
+  if (effectiveCtx && effectiveCtx.validate) {
+    const validation = effectiveCtx.validate(from, target, event);
     if (!validation.allowed) {
       return { allowed: false, reason: validation.reason || 'constitutional validation failed' };
     }
@@ -1001,6 +1017,9 @@ function getSpan(intentId) {
 
 module.exports = {
   name: 'acquisition',
+  // Standard FSM contract
+  setGovernance,
+  getGovernance,
   dispatch,
   init,
   clearIntents,

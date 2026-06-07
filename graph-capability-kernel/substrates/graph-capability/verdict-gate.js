@@ -1,33 +1,25 @@
 // graph-capability-kernel/substrates/graph-capability/verdict-gate.js
-// Read-side capability gate. Pure read. No state mutation. No dispatch.
+// Read-side capability gate. Pure read adapter to the FSM. No state mutation.
 // Migrated from substrates/graph-capability/verdict-gate.js
 //
-// Architecture:
-//   Consumer (route/helper) → verdictGate.requireCapability() → fsm.getCapabilityVerdict() → decision
-//   The gate is the ONLY read surface consumers should use.
-//   The FSM is the source of truth. The CK is the event ingress. The gate is the read bridge.
+// Architecture (post-strengthening):
+//   Consumer → verdictGate.requireCapability(baId, requiredScopes)
+//     → fsm.getCapabilityVerdict(baId)   ← sole interpreter
+//     → verdict-gate applies required-scope diff
+//     → returns { allowed, state, reason, missingScopes, observedAt, evidence }
 //
-// Contract:
-//   requireCapability(userId, businessAccountId, requiredScopes)
-//     → { allowed: boolean, state, reason, missingScopes, observedAt, evidence }
-//
-// State semantics:
-//   AUTHORIZED       → allowed=true (all required capabilities present and fresh)
-//   LIMITED          → allowed=true if missingScopes ∩ requiredScopes is empty (partial is OK for non-required)
-//                      allowed=false if requiredScopes intersect missing
-//   DEGRADED         → allowed=true with warning (reliability impaired but functional)
-//   UNAUTHORIZED     → allowed=false
-//   UNKNOWN          → allowed=false, reason='capability not yet evaluated' (consumer may trigger evaluate)
+// The FSM owns state, evidence, and interpretation. Verdict-gate is the
+// pure read adapter that adds scope-difference logic.
 
 const fsm = require('../../fsm');
 
-const FRESH_OBSERVATION_MS = 30 * 60 * 1000; // 30 min — matches FSM's OBSERVATION_FRESHNESS_MS
+const FRESH_OBSERVATION_MS = 30 * 60 * 1000; // matches FSM's OBSERVATION_FRESHNESS_MS
 
 /**
- * Read the current capability verdict from the FSM and evaluate against required scopes.
- * Pure function. No side effects. No I/O.
+ * Read the per-cred capability verdict from the FSM and evaluate against
+ * required scopes.
  *
- * @param {string} userId
+ * @param {string} userId — kept for API compat (not used in evaluation)
  * @param {string} businessAccountId
  * @param {string[]} requiredScopes — scopes the operation depends on
  * @returns {{
@@ -40,16 +32,25 @@ const FRESH_OBSERVATION_MS = 30 * 60 * 1000; // 30 min — matches FSM's OBSERVA
  * }}
  */
 function requireCapability(userId, businessAccountId, requiredScopes = []) {
-  const verdict = fsm.getCapabilityVerdict();
-  const { state, observedAt, evidence } = verdict;
+  const verdict = fsm.getCapabilityVerdict(businessAccountId);
+  const { state, observedAt, evidence, missingScopes: fsmMissingScopes } = verdict;
 
-  // Extract granted scopes from worker observations (if present)
-  const grantedScopes = (evidence && evidence.scope && evidence.scope.grantedScopes) || [];
-  const missingScopes = Array.isArray(requiredScopes)
-    ? requiredScopes.filter(s => !grantedScopes.includes(s))
-    : [];
+  // FSM has already computed missingScopes for LIMITED state. For other
+  // states (AUTHORIZED, UNAUTHORIZED, DEGRADED, PENDING, UNKNOWN), we
+  // compute it from the observed scope slot.
+  let grantedScopes = [];
+  if (evidence && evidence.scope) {
+    grantedScopes = evidence.scope.grantedScopes || [];
+  }
+  let missingScopes;
+  if (state === 'LIMITED') {
+    missingScopes = fsmMissingScopes || [];
+  } else if (Array.isArray(requiredScopes) && requiredScopes.length > 0) {
+    missingScopes = requiredScopes.filter(s => !grantedScopes.includes(s));
+  } else {
+    missingScopes = [];
+  }
 
-  // Check observation freshness
   const isFresh = observedAt
     ? (Date.now() - observedAt) < FRESH_OBSERVATION_MS
     : false;
@@ -57,7 +58,6 @@ function requireCapability(userId, businessAccountId, requiredScopes = []) {
   switch (state) {
     case 'AUTHORIZED':
       if (missingScopes.length > 0) {
-        // Verdict says authorized but requested scopes not in evidence — fail closed
         return {
           allowed: false,
           state,
@@ -87,7 +87,6 @@ function requireCapability(userId, businessAccountId, requiredScopes = []) {
       };
 
     case 'LIMITED':
-      // LIMITED is allowed only if missing scopes are NOT in the required set
       if (missingScopes.length > 0) {
         return {
           allowed: false,
@@ -108,7 +107,6 @@ function requireCapability(userId, businessAccountId, requiredScopes = []) {
       };
 
     case 'DEGRADED':
-      // Degraded mode: allow but flag warning. Operation proceeds under degradation policy.
       if (missingScopes.length > 0) {
         return {
           allowed: false,
@@ -138,6 +136,19 @@ function requireCapability(userId, businessAccountId, requiredScopes = []) {
         evidence,
       };
 
+    case 'PAT_PENDING':
+    case 'UAT_PENDING':
+    case 'DETECTION_PENDING':
+    case 'SCOPE_PENDING':
+      return {
+        allowed: false,
+        state,
+        reason: `Capability not yet fully observed: ${state} (awaiting ${state.replace('_PENDING', '').toLowerCase()} slot)`,
+        missingScopes,
+        observedAt,
+        evidence,
+      };
+
     case 'UNKNOWN':
     default:
       return {
@@ -152,13 +163,12 @@ function requireCapability(userId, businessAccountId, requiredScopes = []) {
 }
 
 /**
- * Non-throwing read. Returns the raw verdict without scope diffing.
- * Useful for observability and diagnostics.
- *
- * @returns {{ state: string, observedAt: number|null, evidence: object|null }}
+ * Non-throwing read. Returns the raw verdict for a credential.
+ * @param {string} [businessAccountId]
+ * @returns {{ state: string, observedAt: number|null, evidence: object|null, missingScopes: string[] }}
  */
-function peekVerdict() {
-  return fsm.getCapabilityVerdict();
+function peekVerdict(businessAccountId) {
+  return fsm.getCapabilityVerdict(businessAccountId);
 }
 
 module.exports = {

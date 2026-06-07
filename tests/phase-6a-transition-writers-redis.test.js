@@ -2,7 +2,7 @@
  * Phase 6A: Transition Writers Redis Write Verification
  * ======================================================
  *
- * Validates that all 5 transition writers correctly write to Redis via the
+ * Validates that all 6 transition writers correctly write to Redis via the
  * canonical ledger path through the FSM coordination layer, and that cursor
  * persistence survives worker restart.
  *
@@ -143,9 +143,9 @@ describe('Phase 6A: Transition Writers → Redis Write Path', () => {
 
   // ── T1: Writer Health ──────────────────────────────────────────────────
   describe('T1: Writer startup and health', () => {
-    it('T1-A: All 5 transition writers are running after boot', () => {
+    it('T1-A: All 6 transition writers are running after boot', () => {
       const health = transitionWriters.getHealth();
-      expect(health.writers.length, 'should have 5 writers').toBe(5);
+      expect(health.writers.length, 'should have 6 writers').toBe(6);
 
       const stopped = health.writers.filter(w => !w.running);
       expect(stopped, `all writers should be running, stopped: ${stopped.map(w => w.namespace).join(',')}`).toHaveLength(0);
@@ -196,7 +196,7 @@ describe('Phase 6A: Transition Writers → Redis Write Path', () => {
 
     it('T2-B: Multiple namespace transitions each write to ledger via FSM coordination', async () => {
       const beforeSize = await lineageLedger.getLineage(9999).then((l) => l.length);
-      const domains = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
+      const domains = ['runtime', 'integrity', 'authority', 'health', 'systemic', 'capability'];
 
       // Emit PROJECTION_INTENT for each domain — same as production projection workers.
       // FSM coordinates each, writers filter and write their bounded domain.

@@ -10,6 +10,7 @@ describe('Phase 4A: Projection Ownership Integrity', () => {
       'authority-projection-worker.js',
       'health-projection-worker.js',
       'systemic-pressure-projection-worker.js',
+      'capability-projection-worker.js',
     ];
     for (const file of workers) {
       const src = readFileSync(path.resolve(process.cwd(), 'telemetry-kernel/substrates/projection/workers', file), 'utf8');

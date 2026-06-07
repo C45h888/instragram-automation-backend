@@ -20,6 +20,7 @@ const IntegrityProjectionWorker = require('./integrity-projection-worker');
 const AuthorityProjectionWorker = require('./authority-projection-worker');
 const HealthProjectionWorker = require('./health-projection-worker');
 const SystemicPressureProjectionWorker = require('./systemic-pressure-projection-worker');
+const CapabilityProjectionWorker = require('./capability-projection-worker');
 
 // ── Worker instances ───────────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ const workers = {
   authority: new AuthorityProjectionWorker(),
   health: new HealthProjectionWorker(),
   systemic: new SystemicPressureProjectionWorker(),
+  capability: new CapabilityProjectionWorker(),
 };
 
 // ── Group lifecycle ─────────────────────────────────────────────────────────────
@@ -41,22 +43,22 @@ const workers = {
  * @param {number} [pollIntervalMs] — override poll interval for all workers
  */
 async function startAll(pollIntervalMs) {
-  const order = ['systemic', 'health', 'integrity', 'authority', 'runtime'];
+  const order = ['systemic', 'health', 'integrity', 'authority', 'runtime', 'capability'];
   for (const key of order) {
     await workers[key].start(pollIntervalMs);
   }
-  console.log('[telemetry-kernel/projection-workers] All 5 projection workers started');
+  console.log('[telemetry-kernel/projection-workers] All 6 projection workers started');
 }
 
 /**
- * Stop all 5 projection workers gracefully.
+ * Stop all 6 projection workers gracefully.
  */
 async function stopAll() {
-  const order = ['runtime', 'authority', 'integrity', 'health', 'systemic'];
+  const order = ['capability', 'runtime', 'authority', 'integrity', 'health', 'systemic'];
   for (const key of order) {
     await workers[key].stop();
   }
-  console.log('[telemetry-kernel/projection-workers] All projection workers stopped');
+  console.log('[telemetry-kernel/projection-workers] All 6 projection workers stopped');
 }
 
 /**

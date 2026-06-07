@@ -99,12 +99,12 @@ describe('PHASE A — Projection Worker Layer', () => {
 
   // ── A2: All 5 workers emit independently ─────────────────────────────────
 
-  it('A2 — all 5 projection workers emit to their respective domain partitions', async () => {
+  it('A2 — all 6 projection workers emit to their respective domain partitions', async () => {
     await flushAllTestKeys();
 
     await new Promise(r => setTimeout(r, 100));
 
-    const domains = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
+    const domains = ['runtime', 'integrity', 'authority', 'health', 'systemic', 'capability'];
     const results = await Promise.all(domains.map(d => readDomainPartition(d)));
 
     for (let i = 0; i < domains.length; i++) {
