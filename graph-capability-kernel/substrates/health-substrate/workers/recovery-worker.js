@@ -2,8 +2,7 @@
 // Token recovery worker — UAT→PAT silent recovery side effect.
 //
 // Owns: ONE bounded recovery attempt: vault.uat.retrieve → vault.pat.exchange →
-//       vault.scope.detectDynamic → vault.pat.store → clearCredentialCache →
-//       signal-dispatch emitEvaluate (CAPABILITY_EVALUATE).
+//       vault.scope.detectDynamic → vault.pat.store → clearCredentialCache.
 // Does NOT own: scan (scan-credentials-worker), alert writes, audit logging,
 //               rate-limit pacing, iteration over multiple credentials.
 //
@@ -18,7 +17,6 @@
 //   becoming fat on alert + recovery branching.
 
 const vault = require('../../vault');
-const signalDispatch = require('../../vault/signal-dispatch');
 const { clearCredentialCache } = require('../../../../helpers/credential-cache');
 
 class RecoveryWorker {
@@ -72,17 +70,6 @@ class RecoveryWorker {
       });
 
       clearCredentialCache(cred.business_account_id);
-
-      // Emit CAPABILITY_EVALUATE so the FSM transitions post-recovery.
-      // (vault.pat.store already emits NEW_ACCOUNT_CONNECTED via signal-dispatch; the
-      // explicit evaluate emit here mirrors the legacy token-health behavior for the
-      // recovery branch — the FSM sees a fresh evaluation cycle start.)
-      signalDispatch.emitEvaluate({
-        triggerBridge,
-        businessAccountId: cred.business_account_id,
-        userId: cred.user_id,
-        source: 'health.recovery',
-      });
 
       return {
         success: true,

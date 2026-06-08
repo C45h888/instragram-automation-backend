@@ -87,6 +87,8 @@ const VALID_TABLES = new Set([
   'ugc_permissions',
   'instagram_credentials',
   'instagram_business_accounts',
+  'token_lifecycle_events',
+  'system_alerts',
 ]);
 
 const BACKPRESSURE_THRESHOLD = 10;
@@ -108,6 +110,8 @@ const READ_DOMAIN_WHITELIST = new Set([
   'db.scope-cache',
   'db.credential',
   'db.encryption-key',
+  'db.alerts',
+  'db.lifecycle-events',
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -369,7 +373,10 @@ const TRANSITION_MAP = {
         }];
       }
 
-      // Forward completion to acquisition domain
+      // Forward completion to originating domain so it can resolve pending writes.
+      // DB_WRITE_ACKNOWLEDGED is routed by CK to the domain that dispatched DB_WRITE_REQUESTED.
+      // This closes the request-and-await loop for credential status updates and other
+      // operational writes where the caller must confirm the write landed.
       const actions = [];
       if (ctx && ctx.dispatchGlobal) {
         ctx.dispatchGlobal({
@@ -381,6 +388,15 @@ const TRANSITION_MAP = {
           type: 'WRITE_ACQUISITION_RESULT',
           accountId, domain, intentId,
           result: { status: 'completed', count },
+        });
+        // Forward acknowledgement to originating domain — graph-capability FSM
+        // resolves pendingWrites Promise, unblocking the awaiting worker.
+        ctx.dispatchGlobal({
+          type: 'DB_WRITE_ACKNOWLEDGED',
+          domain, accountId, table,
+          writeId: event.writeId || `${domain}:${table}:${accountId}:${Date.now()}`,
+          success: !error,
+          error: error || null,
         });
       }
 

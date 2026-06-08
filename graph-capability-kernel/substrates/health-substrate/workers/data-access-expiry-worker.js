@@ -25,7 +25,8 @@ class DataAccessExpiryWorker {
    * Find UATs whose data_access_expires_at is within 30 days, dedup against
    * existing unresolved data_access_expiry_warning alerts.
    *
-   * @param {{ windowDays?: number }} [opts]
+   * @param {{ windowDays?: number, businessAccountId?: string|null }} [opts]
+   *   businessAccountId — optional filter for per-cred targeted check.
    * @returns {Promise<{
    *   candidates: Array<{
    *     uat: { id: string, user_id: string, business_account_id: string, data_access_expires_at: string },
@@ -34,7 +35,7 @@ class DataAccessExpiryWorker {
    *   stats: { alertable: number, deduped: number, total: number },
    * }>}
    */
-  async execute({ windowDays = 30 } = {}) {
+  async execute({ windowDays = 30, businessAccountId = null } = {}) {
     const supabase = getSupabaseAdmin();
     if (!supabase) {
       return { candidates: [], stats: { alertable: 0, deduped: 0, total: 0 } };
@@ -42,13 +43,17 @@ class DataAccessExpiryWorker {
 
     const cutoffIso = new Date(Date.now() + windowDays * 24 * 60 * 60 * 1000).toISOString();
 
-    const { data: expiring, error } = await supabase
+    let query = supabase
       .from('instagram_credentials')
       .select('id, user_id, business_account_id, data_access_expires_at')
       .eq('token_type', 'user')
       .eq('is_active', true)
       .not('data_access_expires_at', 'is', null)
       .lt('data_access_expires_at', cutoffIso);
+    if (businessAccountId) {
+      query = query.eq('business_account_id', businessAccountId);
+    }
+    const { data: expiring, error } = await query;
 
     if (error) throw error;
     if (!expiring?.length) {

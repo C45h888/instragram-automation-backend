@@ -5,7 +5,7 @@
 // Owns: ONE bounded HTTP call to Meta's /debug_token endpoint.
 // Does NOT own: cache logic, signal dispatch, scope defaults.
 
-const { axios, GRAPH_API_BASE } = require('../../../api-surface');
+const { axios, GRAPH_API_BASE } = require('../../../../api-surface');
 
 class DetectDynamicWorker {
   /**

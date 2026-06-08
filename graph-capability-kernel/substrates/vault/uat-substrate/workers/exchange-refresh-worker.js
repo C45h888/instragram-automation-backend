@@ -5,7 +5,7 @@
 // Owns: ONE bounded HTTP call to Meta's oauth/access_token endpoint.
 // Does NOT own: retrieve, detect, store, cache invalidation, signal dispatch.
 
-const { axios, GRAPH_API_BASE } = require('../../../api-surface');
+const { axios, GRAPH_API_BASE } = require('../../../../api-surface');
 
 class ExchangeRefreshWorker {
   /**

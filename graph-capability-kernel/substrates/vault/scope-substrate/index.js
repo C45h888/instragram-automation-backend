@@ -8,7 +8,7 @@
 const crypto = require('crypto');
 const DetectDynamicWorker = require('./workers/detect-dynamic-worker');
 const signalDispatch = require('../signal-dispatch');
-const fsm = require('../../fsm');
+const fsm = require('../../../fsm');
 
 /**
  * Fire a governed read through the graph-capability FSM.

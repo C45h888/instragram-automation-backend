@@ -18,7 +18,7 @@
 const ExchangeWorker = require('./workers/exchange-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
 const signalDispatch = require('../signal-dispatch');
-const fsm = require('../../fsm');
+const fsm = require('../../../fsm');
 
 /**
  * Exchange a user access token for a page access token + IG business account discovery.

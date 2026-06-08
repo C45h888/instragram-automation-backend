@@ -590,6 +590,7 @@ const DOMAIN_EVENT_MAP = {
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',
   DB_WRITE_COMPLETE: 'persist-telemetry',
+  DB_WRITE_ACKNOWLEDGED: 'graph-capability',
   DB_READ_OBSERVED: 'persist-telemetry',
   DB_READ_REQUESTED: 'persist-telemetry',
   DB_READ_COMPLETE: 'persist-telemetry',
@@ -1526,6 +1527,41 @@ function stopLoop() {
   }
 }
 
+// ── Phase C: cadence tick loop ───────────────────────────────────────────────
+// Recurring CAPABILITY_CADENCE_TICK dispatch. The FSM owns the per-cred
+// gating policy; this loop is a pure clock. 1 hour default — smaller than
+// the smallest cadence window (TOKEN_HEALTH_WINDOW_MS=24h).
+const CADENCE_TICK_INTERVAL_MS = 60 * 60 * 1000; // 1h
+let _cadenceInterval = null;
+
+function startCadenceLoop(intervalMs = CADENCE_TICK_INTERVAL_MS) {
+  if (typeof intervalMs !== 'number' || intervalMs < 1000) {
+    throw new Error(`[constitutional-kernel] cadence intervalMs must be >= 1000, got ${intervalMs}`);
+  }
+  if (_cadenceInterval) {
+    console.warn('[constitutional-kernel] Cadence loop already running — ignoring duplicate start');
+    return;
+  }
+  const tick = () => {
+    try {
+      dispatch({ type: 'CAPABILITY_CADENCE_TICK', source: 'constitutional-kernel.cadence_loop' });
+    } catch (err) {
+      console.warn('[constitutional-kernel] CAPABILITY_CADENCE_TICK dispatch failed:', err.message);
+    }
+  };
+  _cadenceInterval = setInterval(tick, intervalMs);
+  _cadenceInterval.unref();
+  console.log(`[constitutional-kernel] Cadence loop started — CAPABILITY_CADENCE_TICK every ${intervalMs}ms`);
+}
+
+function stopCadenceLoop() {
+  if (_cadenceInterval) {
+    clearInterval(_cadenceInterval);
+    _cadenceInterval = null;
+    console.log('[constitutional-kernel] Cadence loop stopped');
+  }
+}
+
 // Reconciliation substrate — owns snapshot building, substrate queries,
 // checkpoint gate evaluation, and worker orchestration.
 // CK remains HSM authority — dispatches FSM transitions after substrate returns.
@@ -2353,6 +2389,15 @@ async function bootstrap() {
   });
 
   console.log('[constitutional-kernel] Bootstrap complete — CAPABILITY_BOOTSTRAP dispatched:', result);
+
+  // 5. Start the cadence tick loop (Phase C) — recurring CAPABILITY_CADENCE_TICK
+  //    dispatch. The FSM owns the per-cred gating policy; this loop just wakes
+  //    the FSM on a schedule. The interval is deliberately smaller than the
+  //    smallest cadence window (TOKEN_HEALTH_WINDOW_MS=24h), so creds are
+  //    checked at most once per window.
+  startCadenceLoop(CADENCE_TICK_INTERVAL_MS);
+  console.log(`[constitutional-kernel] Cadence loop started — CAPABILITY_CADENCE_TICK every ${CADENCE_TICK_INTERVAL_MS}ms`);
+
   return result;
 }
 
@@ -2370,6 +2415,8 @@ module.exports = {
   tick,
   startLoop,
   stopLoop,
+  startCadenceLoop,
+  stopCadenceLoop,
   rehydrate,
   status,
   getState,

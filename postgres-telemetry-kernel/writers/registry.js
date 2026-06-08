@@ -11,6 +11,8 @@ const WORKER_MAP = {
   batch_upsert_media_stubs:           './content-writer',
   batch_fix_message_conversation_ids: './message-fix-writer',
   upsert_credential:                  './credential-store-writer',
+  insert_alert:                       '../substrates/alerts/workers/write-alert-worker',
+  insert_lifecycle_event:             '../substrates/alerts/workers/write-lifecycle-event-worker',
   write_scope_cache:                  '../substrates/graph-capability/workers/write-scope-cache-worker',
   update_credential_status:           '../substrates/graph-capability/workers/update-credential-status-worker',
 };

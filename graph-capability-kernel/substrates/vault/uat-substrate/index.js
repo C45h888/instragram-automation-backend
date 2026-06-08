@@ -13,7 +13,7 @@ const RetrieveWorker = require('./workers/retrieve-worker');
 const ExchangeRefreshWorker = require('./workers/exchange-refresh-worker');
 const DetectWorker = require('./workers/detect-worker');
 const signalDispatch = require('../signal-dispatch');
-const fsm = require('../../fsm');
+const fsm = require('../../../fsm');
 
 /**
  * Store a UAT credential row. Dispatches through graph-capability FSM → CK → persist-telemetry FSM → credential-store-writer.

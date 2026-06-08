@@ -1,99 +1,65 @@
 // graph-capability-kernel/substrates/health-substrate/workers/uat-refresh-worker.js
-// UAT proactive refresh worker — scan expiring UATs, attempt refresh per cred.
+// UAT proactive refresh worker — batch-SELECT only (Phase D).
 //
-// Owns: ONE bounded iteration over UATs expiring within 14 days, calling
-//       vault.uat.refresh() for each.
-// Does NOT own: data_access_expires_at scan (data-access-expiry-worker),
-//               alert writes, audit logging, rate-limit pacing between calls.
+// Owns: ONE bounded SELECT against instagram_credentials for user-type
+//       credentials expiring within windowDays. Returns the list of due UATs.
+// Does NOT own: the per-cred vault.uat.refresh call, alert writes, rate-limit
+//               pacing, the 14d window policy. The FSM owns the window policy
+//               (UAT_REFRESH_WINDOW_MS); the façade iterates and calls
+//               vault.uat.refresh per cred (vault.uat.refresh is the canonical
+//               cross-substrate façade call — it is itself a bounded operation
+//               representing "refresh this UAT").
 //
 // Migration origin: services/sync/token-health.js → runUATRefreshCheck() lines 246-322
-//   (the 14-day expiring-UAT scan + refresh loop).
 //   Legacy: query → loop → vault.uat.refresh → fireAndForgetInsert alert + event row.
-//   This worker: query → loop → vault.uat.refresh → return structured result.
-//   Alert writes stay with the orchestrator (per "steady migration" directive — dedup
-//   patterns aren't being collapsed in this pass).
+//   Phase D: query → return batch → façade iterates → calls vault.uat.refresh
+//   per cred → façade writes alerts/events.
 //
-// Note: vault.uat.refresh internally emits TOKEN_REFRESHED via signal-dispatch on
-//   success. We don't re-emit here. The legacy token-health NEVER emitted
-//   TOKEN_REFRESHED on this path even though it called refresh — bug in legacy, not
-//   in our migration. signal-dispatch handles it correctly now.
+// Constitutional wiring (unchanged):
+//   vault.uat.refresh internally emits TOKEN_REFRESHED via signal-dispatch on
+//   success. The façade emits CAPABILITY_EVALUATE / CAPABILITY_OBSERVATION
+//   per the recovery branch. On refresh failure, the façade emits the
+//   degraded-signal envelope.
 
 const { getSupabaseAdmin } = require('../../../../config/supabase');
-const vault = require('../../vault');
 
 class UatRefreshWorker {
   /**
-   * Find UATs expiring within 14 days and attempt refresh for each.
+   * Batch-SELECT user-type credentials expiring within windowDays. One bounded I/O call.
    *
-   * @param {{ triggerBridge?: object, windowDays?: number }} [opts]
+   * @param {{ windowDays?: number, businessAccountId?: string|null }} [opts]
+   *   businessAccountId — optional filter for per-cred targeted refresh.
    * @returns {Promise<{
-   *   results: Array<{
-   *     uat: { id: string, user_id: string, business_account_id: string, expires_at: string },
-   *     daysLeft: number,
-   *     success: boolean,
-   *     newExpiresAt: string|null,
-   *     error: string|null,
-   *   }>,
-   *   stats: { refreshed: number, failed: number, total: number },
+   *   uats: Array<{ id: string, user_id: string, business_account_id: string, expires_at: string }>,
+   *   stats: { total: number },
    * }>}
    */
-  async execute({ triggerBridge, windowDays = 14 } = {}) {
+  async execute({ windowDays = 14, businessAccountId = null } = {}) {
     const supabase = getSupabaseAdmin();
     if (!supabase) {
-      return { results: [], stats: { refreshed: 0, failed: 0, total: 0 } };
+      return { uats: [], stats: { total: 0 } };
     }
 
     const cutoffIso = new Date(Date.now() + windowDays * 24 * 60 * 60 * 1000).toISOString();
 
-    const { data: expiringUATs, error } = await supabase
+    let query = supabase
       .from('instagram_credentials')
       .select('id, user_id, business_account_id, expires_at')
       .eq('token_type', 'user')
       .eq('is_active', true)
       .not('expires_at', 'is', null)
       .lt('expires_at', cutoffIso);
+    if (businessAccountId) {
+      query = query.eq('business_account_id', businessAccountId);
+    }
+    const { data: expiringUATs, error } = await query;
 
     if (error) throw error;
     if (!expiringUATs?.length) {
-      return { results: [], stats: { refreshed: 0, failed: 0, total: 0 } };
+      return { uats: [], stats: { total: 0 } };
     }
 
-    const results = [];
-    let refreshed = 0, failed = 0;
-
-    for (const uat of expiringUATs) {
-      const daysLeft = Math.ceil((new Date(uat.expires_at) - Date.now()) / (24 * 60 * 60 * 1000));
-
-      try {
-        const refreshResult = await vault.uat.refresh({
-          userId: uat.user_id,
-          businessAccountId: uat.business_account_id,
-          triggerBridge,
-        });
-
-        results.push({
-          uat,
-          daysLeft,
-          success: refreshResult.success === true,
-          newExpiresAt: refreshResult.expiresAt || null,
-          error: refreshResult.success ? null : (refreshResult.error || 'refresh returned success=false'),
-        });
-
-        if (refreshResult.success) refreshed++;
-        else failed++;
-      } catch (refreshErr) {
-        results.push({
-          uat,
-          daysLeft,
-          success: false,
-          newExpiresAt: null,
-          error: refreshErr.message,
-        });
-        failed++;
-      }
-    }
-
-    return { results, stats: { refreshed, failed, total: expiringUATs.length } };
+    return { uats: expiringUATs, stats: { total: expiringUATs.length } };
   }
 }
 

@@ -71,6 +71,13 @@ function _obs() {
 
 const OBSERVATION_FRESHNESS_MS_VALUE = 30 * 60 * 1000; // 30 min
 const DEGRADED_OBSERVATION_MS_VALUE  = 2 * 60 * 60 * 1000; // 2h
+// ── Cadence policy — owned by FSM (Phase A) ────────────────────────────────
+// These windows govern WHEN the FSM emits RUN_TOKEN_HEALTH_CHECK and
+// RUN_UAT_REFRESH_CHECK actions per credential. Workers MUST NOT redefine
+// these values; the FSM is the sole authority on cadence policy.
+const TOKEN_HEALTH_WINDOW_MS          = 24 * 60 * 60 * 1000;  // 24h
+const UAT_REFRESH_WINDOW_MS           = 14 * 24 * 60 * 60 * 1000;  // 14d
+const DATA_ACCESS_EXPIRY_WINDOW_MS    = 30 * 24 * 60 * 60 * 1000;  // 30d
 const REQUIRED_SCOPES_VALUE = [
   'instagram_basic',
   'instagram_manage_comments',
@@ -299,6 +306,14 @@ function _credRecord(baId) {
       lastTransitionedAt: null,
       consecutiveFailures: 0,
       pendingReads: new Map(),  // readId → { readDomain, params, source, requestedAt, resolve, reject, timeout }
+      pendingWrites: new Map(), // writeId → { table, operation, accountId, requestedAt, resolve, reject, timeout }
+      // ── Cadence timestamps (Phase A) — owned by FSM ────────────────────────
+      // Workers MUST NOT maintain their own "last checked" timestamps.
+      // The FSM is the sole authority on per-cred cadence. These are updated
+      // by the CAPABILITY_HEALTH_CHECK_COMPLETED transition.
+      lastTokenHealthCheckAt: null,
+      lastUatRefreshCheckAt: null,
+      lastDataAccessExpiryCheckAt: null,
     });
   }
   return _byCred.get(baId);
@@ -326,13 +341,44 @@ const TRANSITION_MAP = {
   // Dispatched by CK.bootstrap() once after wiring is live. The FSM decides
   // WHAT health work to run; CK routes the actions to the health membrane.
   // The membrane (health-substrate) executes mechanically, never decides.
+  //
+  // Phase A: if the event carries a businessAccountId, the FSM gates the
+  // emitted action on the per-cred cadence window (TOKEN_HEALTH_WINDOW_MS,
+  // UAT_REFRESH_WINDOW_MS). If the event is unscoped (the legacy CK bootstrap
+  // shape), the FSM emits the run actions for all creds that are due. This
+  // preserves the existing wire() handler contract while introducing the
+  // gating machinery that PR 4 (cadence tick source) will exercise.
   CAPABILITY_BOOTSTRAP: {
     target: 'UNKNOWN',
     guard: () => ({ allowed: true }),
-    buildActions: () => [
-      { type: 'RUN_TOKEN_HEALTH_CHECK' },
-      { type: 'RUN_UAT_REFRESH_CHECK' },
-    ],
+    buildActions: (event) => {
+      const now = Date.now();
+      const targetBaId = event && event.businessAccountId;
+      const actions = [];
+
+      // Targeted bootstrap: gate on per-cred cadence
+      if (targetBaId) {
+        if (_shouldCheck(targetBaId, 'token_health', now)) {
+          actions.push({ type: 'RUN_TOKEN_HEALTH_CHECK', businessAccountId: targetBaId, source: 'fsm.bootstrap' });
+        }
+        if (_shouldCheck(targetBaId, 'uat_refresh', now)) {
+          actions.push({ type: 'RUN_UAT_REFRESH_CHECK', businessAccountId: targetBaId, source: 'fsm.bootstrap' });
+        }
+        return actions;
+      }
+
+      // Unscoped bootstrap: iterate all known creds, gate per-cred
+      const baIds = Array.from(_byCred.keys()).filter(k => k !== '__global__');
+      for (const baId of baIds) {
+        if (_shouldCheck(baId, 'token_health', now)) {
+          actions.push({ type: 'RUN_TOKEN_HEALTH_CHECK', businessAccountId: baId, source: 'fsm.bootstrap' });
+        }
+        if (_shouldCheck(baId, 'uat_refresh', now)) {
+          actions.push({ type: 'RUN_UAT_REFRESH_CHECK', businessAccountId: baId, source: 'fsm.bootstrap' });
+        }
+      }
+      return actions;
+    },
   },
 
   // ── Aggregate worker observation arrives ────────────────────────────────
@@ -487,6 +533,59 @@ const TRANSITION_MAP = {
     }],
   },
 
+  // ── Health check completion (Phase A) — health-substrate signals back ─────
+  // The health-substrate façade dispatches this after a RUN_TOKEN_HEALTH_CHECK
+  // or RUN_UAT_REFRESH_CHECK run completes. The FSM records the per-cred
+  // cadence timestamp; future CAPABILITY_BOOTSTRAP / CAPABILITY_CADENCE_TICK
+  // dispatches will gate on these. No state change, no actions emitted.
+  CAPABILITY_HEALTH_CHECK_COMPLETED: {
+    target: null,  // no state change
+    guard: (event) => {
+      if (!event || !event.checkType) {
+        return { allowed: false, reason: 'CAPABILITY_HEALTH_CHECK_COMPLETED requires event.checkType' };
+      }
+      if (!['token_health', 'uat_refresh', 'data_access_expiry'].includes(event.checkType)) {
+        return { allowed: false, reason: `unknown checkType: ${event.checkType}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const cred = _resolveCred(event);
+      if (cred) {
+        const now = Date.now();
+        if (event.checkType === 'token_health') cred.lastTokenHealthCheckAt = now;
+        else if (event.checkType === 'uat_refresh') cred.lastUatRefreshCheckAt = now;
+        else if (event.checkType === 'data_access_expiry') cred.lastDataAccessExpiryCheckAt = now;
+      }
+      return [];
+    },
+  },
+
+  // ── Cadence tick (Phase C) — recurring health check trigger ───────────────
+  // Dispatched periodically by the constitutional kernel's cadence loop
+  // (see control-plane/governance/constitutional-kernel.js → startCadenceLoop).
+  // Same per-cred gating as CAPABILITY_BOOTSTRAP, but the source is
+  // 'fsm.cadence_tick' so downstream subscribers can distinguish the
+  // one-shot bootstrap from the recurring tick.
+  CAPABILITY_CADENCE_TICK: {
+    target: null,  // no state change — pure cadence signal
+    guard: () => ({ allowed: true }),
+    buildActions: () => {
+      const now = Date.now();
+      const baIds = Array.from(_byCred.keys()).filter(k => k !== '__global__');
+      const actions = [];
+      for (const baId of baIds) {
+        if (_shouldCheck(baId, 'token_health', now)) {
+          actions.push({ type: 'RUN_TOKEN_HEALTH_CHECK', businessAccountId: baId, source: 'fsm.cadence_tick' });
+        }
+        if (_shouldCheck(baId, 'uat_refresh', now)) {
+          actions.push({ type: 'RUN_UAT_REFRESH_CHECK', businessAccountId: baId, source: 'fsm.cadence_tick' });
+        }
+      }
+      return actions;
+    },
+  },
+
   // ── Governed data read: worker needs data from persist-telemetry ──────────
   // FSM tracks the pending read and routes DB_READ_REQUESTED to persist-telemetry.
   // The Promise controllers (resolve/reject) are stored on the pending read so
@@ -603,6 +702,47 @@ const TRANSITION_MAP = {
       return [];
     },
   },
+
+  // ── Write acknowledgement arrived from persist-telemetry ──────────────────
+  // CK routes DB_WRITE_ACKNOWLEDGED here (Option C — persist-telemetry FSM
+  // forwards it via dispatchGlobal). FSM matches to pending write by writeId,
+  // resolves the Promise (unblocking the awaiting health-substrate or worker).
+  DB_WRITE_ACKNOWLEDGED: {
+    target: null,  // no state change
+    guard: (event) => {
+      const cred = _credRecord(event.accountId || '__global__');
+      if (!cred) return { allowed: false, reason: 'no cred record' };
+      if (!cred.pendingWrites.has(event.writeId)) {
+        return { allowed: false, reason: `no pending write for ${event.writeId}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const cred = _credRecord(event.accountId || '__global__');
+      const pending = cred.pendingWrites.get(event.writeId);
+      if (!pending) return [];
+
+      clearTimeout(pending.timeout);
+      cred.pendingWrites.delete(event.writeId);
+
+      if (typeof pending.resolve === 'function') {
+        pending.resolve({
+          success: event.success !== false,
+          error: event.error || null,
+          table: event.table,
+          writeId: event.writeId,
+        });
+      }
+
+      return [{
+        type: 'WRITE_ACKNOWLEDGED',
+        table: event.table,
+        writeId: event.writeId,
+        success: event.success !== false,
+        accountId: event.accountId,
+      }];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -655,6 +795,32 @@ function _isObservationFresh(observedAt) {
   const ts = typeof observedAt === 'number' ? observedAt : new Date(observedAt).getTime();
   if (isNaN(ts)) return false;
   return (Date.now() - ts) < OBSERVATION_FRESHNESS_MS_VALUE;
+}
+
+// ── Per-cred cadence gate (Phase A) ──────────────────────────────────────────
+// Returns true iff the given cred is due for a check of the given type.
+// A cred is due if it has never been checked, or if the time since the
+// last check exceeds the policy window for that check type.
+function _shouldCheck(baId, checkType, now) {
+  now = now || Date.now();
+  const cred = _credRecord(baId);
+  if (!cred) return true; // unknown cred — let the bootstrap create the record
+  let lastAt = null;
+  let windowMs = null;
+  if (checkType === 'token_health') {
+    lastAt = cred.lastTokenHealthCheckAt;
+    windowMs = TOKEN_HEALTH_WINDOW_MS;
+  } else if (checkType === 'uat_refresh') {
+    lastAt = cred.lastUatRefreshCheckAt;
+    windowMs = UAT_REFRESH_WINDOW_MS;
+  } else if (checkType === 'data_access_expiry') {
+    lastAt = cred.lastDataAccessExpiryCheckAt;
+    windowMs = DATA_ACCESS_EXPIRY_WINDOW_MS;
+  } else {
+    return true; // unknown check type — let the run proceed
+  }
+  if (lastAt === null || lastAt === undefined) return true;
+  return (now - lastAt) >= windowMs;
 }
 
 /**
@@ -1104,6 +1270,90 @@ function requestCredentialStore(params) {
   return { success: true };
 }
 
+/**
+ * Request a DB write operation through the constitutional flow.
+ * Generic method — supports alert inserts, lifecycle event inserts, and
+ * credential status updates. Mirrors the existing requestCredentialStore.
+ *
+ * Chain: substrate → FSM (this) → CK.dispatch(DB_WRITE_REQUESTED) → persist-telemetry FSM → writer.
+ * Fire-and-forget: returns { success: true } immediately after dispatching.
+ *
+ * @param {{ table: string, operation: string, accountId: string, rows: Array<object> }} params
+ * @returns {{ success: boolean, error?: string }}
+ */
+function requestDBWrite({ table, operation, accountId, rows } = {}) {
+  if (!_governance) {
+    console.warn('[graph-capability-fsm] No governance set — DB write NOT dispatched');
+    return { success: false, error: 'governance_not_set' };
+  }
+  if (!table || !operation || !accountId || !rows) {
+    return { success: false, error: 'table, operation, accountId, and rows are required' };
+  }
+  _governance.dispatch({
+    type: 'DB_WRITE_REQUESTED',
+    domain: 'graph-capability',
+    accountId,
+    table,
+    operation,
+    rows,
+  });
+  return { success: true };
+}
+
+/**
+ * Request a DB write AND await acknowledgement through the constitutional flow.
+ * Returns a Promise that resolves when persist-telemetry confirms the write completed.
+ *
+ * Chain: caller → FSM (this) → CK.dispatch(DB_WRITE_REQUESTED) → persist-telemetry FSM
+ *   → writer → DB_WRITE_COMPLETE → CK → DB_WRITE_ACKNOWLEDGED → FSM resolves Promise.
+ *
+ * Used for operational writes (credential status updates) where the caller depends
+ * on the write having landed before proceeding. NOT for advisory writes (alerts,
+ * lifecycle events) — those use the fire-and-forget requestDBWrite().
+ *
+ * @param {{ table: string, operation: string, accountId: string, rows: Array<object> }} params
+ * @returns {Promise<{ success: boolean, data?: any, error?: string }>}
+ */
+function requestDBWriteAndAwait({ table, operation, accountId, rows } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!_governance) {
+      return reject(new Error('governance_not_set'));
+    }
+    if (!table || !operation || !accountId || !rows) {
+      return reject(new Error('table, operation, accountId, and rows are required'));
+    }
+
+    const writeId = `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const cred = _credRecord(accountId);
+
+    // Timeout after 15s — same as governed reads
+    const timeout = setTimeout(() => {
+      if (cred.pendingWrites.has(writeId)) {
+        cred.pendingWrites.delete(writeId);
+        reject(new Error(`Write ${writeId} timed out after 15s`));
+      }
+    }, 15000);
+
+    cred.pendingWrites.set(writeId, {
+      table, operation, accountId,
+      requestedAt: Date.now(),
+      resolve: (result) => { clearTimeout(timeout); resolve(result); },
+      reject: (err) => { clearTimeout(timeout); reject(err); },
+      timeout,
+    });
+
+    _governance.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'graph-capability',
+      accountId,
+      table,
+      operation,
+      rows,
+      writeId,
+    });
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 10. Public API
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1120,6 +1370,10 @@ module.exports = {
   setGovernance,
   // Cross-domain dispatch — credential store via constitutional flow
   requestCredentialStore,
+  // Cross-domain dispatch — generic DB write (alerts, lifecycle events, credential status)
+  requestDBWrite,
+  // Cross-domain dispatch — DB write with acknowledgement (operational writes only)
+  requestDBWriteAndAwait,
   // Per-cred verdict — sole source of truth
   getCapabilityVerdict,
   // Per-cred capability gate — migrated from verdict-gate.js
@@ -1146,6 +1400,12 @@ module.exports = {
   REQUIRED_SCOPES: REQUIRED_SCOPES_VALUE,
   OBSERVATION_FRESHNESS_MS: OBSERVATION_FRESHNESS_MS_VALUE,
   DEGRADED_OBSERVATION_MS: DEGRADED_OBSERVATION_MS_VALUE,
+  // Cadence policy windows (Phase A)
+  TOKEN_HEALTH_WINDOW_MS,
+  UAT_REFRESH_WINDOW_MS,
+  DATA_ACCESS_EXPIRY_WINDOW_MS,
+  // Per-cred cadence gate (Phase A)
+  _shouldCheck,
   PENDING_FOR,
   OBSERVATION_SLOTS,
   // Inferential layer — exposed for tests
@@ -1155,5 +1415,5 @@ module.exports = {
   listCreds,
   _resetCred,
   // Constants for name
-  name: 'graph-capability-fsm',
+  name: 'graph-capability',
 };

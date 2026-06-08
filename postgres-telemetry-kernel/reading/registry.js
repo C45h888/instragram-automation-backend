@@ -13,6 +13,8 @@ const WORKER_MAP = {
   'db.scope-cache':      '../substrates/graph-capability/workers/read-scope-cache-worker',
   'db.credential':       '../substrates/graph-capability/workers/read-credential-worker',
   'db.encryption-key':   '../substrates/graph-capability/workers/read-key-worker',
+  'db.alerts':           '../substrates/alerts/workers/read-alerts-worker',
+  'db.lifecycle-events': '../substrates/alerts/workers/read-lifecycle-events-worker',
 };
 
 function getWorker(domain) {
