@@ -24,9 +24,9 @@ const fsm = require('../../fsm');
 /**
  * Exchange a user access token for a page access token + IG business account discovery.
  * One bounded /me/accounts call. No state.
- * @param {{ userAccessToken: string, triggerBridge?: object, businessAccountId?: string|null, userId?: string|null }} input
+ * @param {{ userAccessToken: string, businessAccountId?: string|null, userId?: string|null }} input
  */
-async function exchange({ userAccessToken, triggerBridge, businessAccountId, userId }) {
+async function exchange({ userAccessToken, businessAccountId, userId }) {
   if (!userAccessToken) {
     return { success: false, error: 'userAccessToken is required' };
   }
@@ -46,10 +46,10 @@ async function exchange({ userAccessToken, triggerBridge, businessAccountId, use
 /**
  * Store a page access token: provision vault key, upsert business account, encrypt, upsert credential.
  * On success, emits NEW_ACCOUNT_CONNECTED so the capability FSM can evaluate.
- * @param {{ userId: string, igBusinessAccountId: string, pageAccessToken: string, pageId: string, pageName: string, scope?: string[], triggerBridge?: object, businessAccountId?: string, userId_?: string }} input
+ * @param {{ userId: string, igBusinessAccountId: string, pageAccessToken: string, pageId: string, pageName: string, scope?: string[], businessAccountId?: string, userId_?: string }} input
  */
 async function store(input) {
-  const { triggerBridge, businessAccountId, userId_, ...workerInput } = input;
+  const { businessAccountId, userId_, ...workerInput } = input;
   if (!workerInput.userId || !workerInput.igBusinessAccountId || !workerInput.pageAccessToken || !workerInput.pageName) {
     return { success: false, error: 'userId, igBusinessAccountId, pageAccessToken, pageName are required' };
   }
@@ -76,9 +76,9 @@ async function store(input) {
  * Retrieve and decrypt a page access token.
  * Throws on failure (matches legacy contract).
  * On success, emits CAPABILITY_EVALUATE so the FSM observes vault liveness.
- * @param {{ userId: string, businessAccountId: string, triggerBridge?: object }} input
+ * @param {{ userId: string, businessAccountId: string }} input
  */
-async function retrieve({ triggerBridge, userId, businessAccountId }) {
+async function retrieve({ userId, businessAccountId }) {
   if (!userId || !businessAccountId) {
     throw new Error('userId and businessAccountId are required');
   }

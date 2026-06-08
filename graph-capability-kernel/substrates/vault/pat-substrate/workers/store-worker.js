@@ -8,7 +8,7 @@
 const crypto = require('crypto');
 const { getSupabaseAdmin, logAudit } = require('../../../../../config/supabase');
 const { clearCredentialCache } = require('../../../../../helpers/credential-cache');
-const { PAT_SCOPE_DEFAULTS } = require('../../default-scopes');
+const { PAT_SCOPE_DEFAULTS } = require('../../../fsm');
 
 class StoreWorker {
   /**

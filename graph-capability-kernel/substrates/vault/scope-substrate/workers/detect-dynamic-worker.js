@@ -2,8 +2,8 @@
 // Scope detect worker: one bounded /debug_token call + 7-day DB cache read/write.
 // Migrated from substrates/vault/scope-substrate/workers/detect-dynamic-worker.js
 
-const { axios, GRAPH_API_BASE } = require('../../api-surface');
-const { PAT_SCOPE_DEFAULTS } = require('../../default-scopes');
+const { axios, GRAPH_API_BASE } = require('../../../api-surface');
+const { PAT_SCOPE_DEFAULTS } = require('../../../fsm');
 
 class DetectDynamicWorker {
   /**

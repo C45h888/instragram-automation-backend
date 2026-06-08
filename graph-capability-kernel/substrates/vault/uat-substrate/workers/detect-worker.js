@@ -2,7 +2,7 @@
 // UAT detect worker: one bounded /debug_token call.
 // Migrated from substrates/vault/uat-substrate/workers/detect-worker.js
 
-const { axios, GRAPH_API_BASE } = require('../../api-surface');
+const { axios, GRAPH_API_BASE } = require('../../../api-surface');
 
 class DetectWorker {
   /**

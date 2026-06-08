@@ -1,6 +1,6 @@
-// graph-capability-kernel/substrates/vault/api-surface.js
-// Vault API surface constants. Singleton: shared axios instance + Graph API endpoints.
-// Migrated from substrates/vault/api-surface.js
+// graph-capability-kernel/api-surface.js
+// Vault API surface constants. Shared axios instance + Graph API endpoints.
+// Moved from substrates/vault/api-surface.js
 
 const axios = require('axios');
 

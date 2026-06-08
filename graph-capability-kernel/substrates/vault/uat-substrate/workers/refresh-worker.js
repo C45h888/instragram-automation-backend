@@ -6,7 +6,7 @@
 // they share a single business operation (refresh a UAT). The substrate façade remains
 // mutation-plane (state, signals) while this worker is executor-plane (the actual I/O sequence).
 
-const { axios, GRAPH_API_BASE } = require('../../api-surface');
+const { axios, GRAPH_API_BASE } = require('../../../api-surface');
 const { clearCredentialCache } = require('../../../../../helpers/credential-cache');
 const StoreWorker = require('./store-worker');
 const DetectWorker = require('./detect-worker');

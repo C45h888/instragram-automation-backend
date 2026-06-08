@@ -18,10 +18,10 @@ const fsm = require('../../fsm');
 
 /**
  * Store a UAT credential row.
- * @param {{ userId: string, businessAccountId: string, userAccessToken: string, scope?: string[], expiresAt?: string|null, dataAccessExpiresAt?: string|null, triggerBridge?: object }} input
+ * @param {{ userId: string, businessAccountId: string, userAccessToken: string, scope?: string[], expiresAt?: string|null, dataAccessExpiresAt?: string|null }} input
  */
 async function store(input) {
-  const { triggerBridge, ...workerInput } = input;
+  const { ...workerInput } = input;
   if (!workerInput.userId || !workerInput.businessAccountId || !workerInput.userAccessToken) {
     return { success: false, error: 'userId, businessAccountId, userAccessToken are required' };
   }
@@ -39,9 +39,9 @@ async function store(input) {
 
 /**
  * Retrieve a UAT (decrypt + expiry check). Throws on failure.
- * @param {{ userId: string, businessAccountId: string, triggerBridge?: object }} input
+ * @param {{ userId: string, businessAccountId: string }} input
  */
-async function retrieve({ triggerBridge, userId, businessAccountId }) {
+async function retrieve({ userId, businessAccountId }) {
   if (!userId || !businessAccountId) {
     throw new Error('userId and businessAccountId are required');
   }
@@ -61,9 +61,9 @@ async function retrieve({ triggerBridge, userId, businessAccountId }) {
 
 /**
  * Refresh a UAT via fb_exchange_token. On success, emits TOKEN_REFRESHED trigger.
- * @param {{ userId: string, businessAccountId: string, triggerBridge?: object }} input
+ * @param {{ userId: string, businessAccountId: string }} input
  */
-async function refresh({ triggerBridge, ...input }) {
+async function refresh({ ...input }) {
   if (!input.userId || !input.businessAccountId) {
     return { success: false, error: 'userId and businessAccountId are required' };
   }
@@ -88,9 +88,9 @@ async function refresh({ triggerBridge, ...input }) {
 
 /**
  * Detect a UAT/PAT token type via /debug_token. Returns null on failure.
- * @param {{ token: string, triggerBridge?: object, businessAccountId?: string, userId?: string }} input
+ * @param {{ token: string, businessAccountId?: string, userId?: string }} input
  */
-async function detect({ triggerBridge, businessAccountId, userId, token }) {
+async function detect({ businessAccountId, userId, token }) {
   if (!token) return null;
   const worker = new DetectWorker();
   const result = await worker.execute({ token });

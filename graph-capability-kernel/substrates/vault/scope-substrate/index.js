@@ -16,9 +16,9 @@ const fsm = require('../../fsm');
 /**
  * Detect live scopes for a token via /debug_token with 7-day DB cache.
  * @param {{ token: string, supabase?: object, credentialId?: string|null, triggerBridge?: object, businessAccountId?: string, userId?: string }} input
- * @returns {Promise<string[]>}
+ * @param {{ token: string, supabase?: object, credentialId?: string|null, businessAccountId?: string, userId?: string }} input
  */
-async function detectDynamic({ triggerBridge, businessAccountId, userId, token, supabase, credentialId = null }) {
+async function detectDynamic({ businessAccountId, userId, token, supabase, credentialId = null }) {
   if (!token) {
     throw new Error('token is required');
   }
