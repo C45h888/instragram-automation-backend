@@ -417,6 +417,9 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   'CROSS_DOMAIN_UNSTABLE_DETECTED','CROSS_DOMAIN_UNSTABLE_CLEARED',
   // Engagement domain — FSM-emitted terminal actions
   'MARK_PERMANENT_FAILURE','CREATE_SYSTEM_ALERT',
+  // DB coordination events — CK-issued or FSM-coordinated, no lineageId required
+  'DB_READ_REQUESTED','DB_READ_COMPLETE','DB_WRITE_REQUESTED','DB_WRITE_COMPLETE',
+  'READ_RESULT_AVAILABLE','CAPABILITY_DATA_REQUEST',
 ]);
 
 function _extractForeignAuthorityDomain(authority) {
@@ -535,7 +538,7 @@ const DOMAIN_EVENT_MAP = {
 
   // Publishing domain
   PUBLISHING_DATA_AVAILABLE: 'publishing',
-  READ_RESULT_AVAILABLE: 'publishing',
+  READ_RESULT_AVAILABLE: 'graph-capability',
   PUBLISHING_OBSERVATION: 'publishing',
   RETRY_IN_PROGRESS: 'publishing',
   EMISSION_OBSERVATION: 'publishing',
@@ -581,6 +584,8 @@ const DOMAIN_EVENT_MAP = {
   NEW_ACCOUNT_CONNECTED: 'graph-capability',
   TOKEN_REFRESHED: 'graph-capability',
   REPEATED_GRAPH_FAILURE: 'graph-capability',
+  CAPABILITY_DATA_REQUEST: 'graph-capability',
+  CAPABILITY_BOOTSTRAP: 'graph-capability',
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',

@@ -1,17 +1,42 @@
 // graph-capability-kernel/substrates/vault/scope-substrate/index.js
-// Scope substrate façade: owns pre-flight (cache check via governed read),
-// worker factory, post-flight (cache write via governed write), signal dispatch.
-// Worker is semantically blind — just /debug_token.
+// Scope substrate façade: owns pre-flight (cache check via FSM-governed read),
+// worker factory, post-flight (cache write via CK-governed write), signal dispatch.
 //
-// DB reads/writes route through CK → persist-telemetry FSM → graph-capability substrate workers.
+// Cache reads flow: CAPABILITY_DATA_REQUEST → graph-capability FSM → DB_READ_REQUESTED
+// → persist-telemetry → read-scope-cache-worker → READ_RESULT_AVAILABLE → FSM resolves Promise.
 
+const crypto = require('crypto');
 const DetectDynamicWorker = require('./workers/detect-dynamic-worker');
 const signalDispatch = require('../signal-dispatch');
 const fsm = require('../../fsm');
 
 /**
+ * Fire a governed read through the graph-capability FSM.
+ * The FSM tracks the request, routes to persist-telemetry, and resolves
+ * the Promise when READ_RESULT_AVAILABLE arrives.
+ */
+function _governedRead(ck, businessAccountId, readDomain, params) {
+  const readId = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const dispatchResult = ck.dispatch({
+      type: 'CAPABILITY_DATA_REQUEST',
+      businessAccountId,
+      readDomain,
+      readId,
+      params,
+      source: 'scope-substrate',
+      _resolve: resolve,
+      _reject: reject,
+    });
+    if (!dispatchResult.allowed) {
+      resolve({ success: false, data: null, error: dispatchResult.reason });
+    }
+  });
+}
+
+/**
  * Detect live scopes for a token via /debug_token.
- * Cache read/write governed through CK → persist-telemetry.
+ * Cache read governed through FSM. Cache write governed through CK.
  *
  * @param {{ token: string, credentialId?: string|null, businessAccountId?: string, userId?: string }} input
  * @returns {Promise<string[]>}
@@ -21,14 +46,12 @@ async function detectDynamic({ businessAccountId, userId, token, credentialId = 
     throw new Error('token is required');
   }
 
-  // ── Pre-flight: governed cache read (CK → persist-telemetry FSM → worker) ─
   const ck = signalDispatch.getCk();
-  if (ck && typeof ck.governedRead === 'function' && credentialId) {
+
+  // ── Pre-flight: governed cache read through FSM ───────────────────────────
+  if (ck && credentialId && businessAccountId) {
     try {
-      const result = await ck.governedRead('db.scope-cache', {
-        credentialId,
-        accountId: businessAccountId,
-      });
+      const result = await _governedRead(ck, businessAccountId, 'db.scope-cache', { credentialId });
       if (result.success && result.data?.scope_cache) {
         const cacheAge = result.data.scope_cache_updated_at
           ? Date.now() - new Date(result.data.scope_cache_updated_at).getTime()
@@ -38,7 +61,7 @@ async function detectDynamic({ businessAccountId, userId, token, credentialId = 
           return result.data.scope_cache;
         }
       }
-    } catch (_) { /* governed read failed — proceed to live call */ }
+    } catch (_) { /* governed read failed or timed out — proceed to live call */ }
   }
 
   // ── Worker: bounded /debug_token call ─────────────────────────────────────
@@ -57,10 +80,7 @@ async function detectDynamic({ businessAccountId, userId, token, credentialId = 
       accountId: businessAccountId,
       table: 'instagram_credentials',
       operation: 'write_scope_cache',
-      rows: [{
-        credentialId,
-        scopes,
-      }],
+      rows: [{ credentialId, scopes }],
     });
   }
 

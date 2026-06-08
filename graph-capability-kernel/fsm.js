@@ -298,6 +298,7 @@ function _credRecord(baId) {
       lastObservedAt: null,
       lastTransitionedAt: null,
       consecutiveFailures: 0,
+      pendingReads: new Map(),  // readId → { readDomain, params, source, requestedAt, resolve, reject, timeout }
     });
   }
   return _byCred.get(baId);
@@ -484,6 +485,123 @@ const TRANSITION_MAP = {
       cadence: event.cadence || 'scheduled',
       businessAccountId: event.businessAccountId || null,
     }],
+  },
+
+  // ── Governed data read: worker needs data from persist-telemetry ──────────
+  // FSM tracks the pending read and routes DB_READ_REQUESTED to persist-telemetry.
+  // The Promise controllers (resolve/reject) are stored on the pending read so
+  // READ_RESULT_AVAILABLE can resolve them when data arrives.
+  CAPABILITY_DATA_REQUEST: {
+    target: null,  // no state change
+    guard: (event) => {
+      if (!event.readDomain || !event.businessAccountId || !event.readId) {
+        return { allowed: false, reason: 'readDomain, businessAccountId, readId required' };
+      }
+      const cred = _resolveCred(event);
+      if (!cred) return { allowed: false, reason: 'no cred record' };
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const cred = _resolveCred(event);
+      const { readDomain, readId, params, source, _resolve, _reject } = event;
+
+      // Track the pending read with Promise controllers
+      const timeout = setTimeout(() => {
+        if (cred.pendingReads.has(readId)) {
+          const p = cred.pendingReads.get(readId);
+          if (p.reject) p.reject(new Error(`Read ${readId} timed out after 15s`));
+          cred.pendingReads.delete(readId);
+        }
+      }, 15000);
+
+      cred.pendingReads.set(readId, {
+        readDomain, params, source,
+        requestedAt: Date.now(),
+        resolve: _resolve || null,
+        reject: _reject || null,
+        timeout,
+      });
+
+      // Route to persist-telemetry
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'DB_READ_REQUESTED',
+          readDomain,
+          accountId: event.businessAccountId,
+          readId,
+          params,
+        });
+      }
+      return [];
+    },
+  },
+
+  // ── Read result arrived from persist-telemetry ────────────────────────────
+  // CK routes READ_RESULT_AVAILABLE here. FSM matches to pending read,
+  // resolves the Promise (unblocking the requesting façade/worker), and
+  // emits DATA_AVAILABLE for observability.
+  READ_RESULT_AVAILABLE: {
+    target: null,  // no state change
+    guard: (event) => {
+      const cred = _resolveCred(event);
+      if (!cred) return { allowed: false, reason: 'no cred record' };
+      if (!cred.pendingReads.has(event.readId)) {
+        return { allowed: false, reason: `no pending read for ${event.readId}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const cred = _resolveCred(event);
+      const pending = cred.pendingReads.get(event.readId);
+      if (!pending) return [];
+
+      // Cleanup
+      clearTimeout(pending.timeout);
+      cred.pendingReads.delete(event.readId);
+
+      // Resolve the Promise — unblocks the requesting façade/worker
+      if (typeof pending.resolve === 'function') {
+        pending.resolve({
+          success: !event.error,
+          data: event.data || null,
+          error: event.error || null,
+          readDomain: event.readDomain,
+        });
+      }
+
+      // Emit DATA_AVAILABLE for observability + membrane subscribers
+      return [{
+        type: 'DATA_AVAILABLE',
+        readDomain: event.readDomain,
+        readId: event.readId,
+        data: event.data || null,
+        error: event.error || null,
+        source: pending.source,
+        params: pending.params,
+        businessAccountId: event.accountId,
+      }];
+    },
+  },
+
+  // ── Read timeout cleanup (optional, for explicit timeout dispatch) ────────
+  CAPABILITY_DATA_TIMEOUT: {
+    target: null,
+    guard: (event) => {
+      const cred = _resolveCred(event);
+      if (!cred) return { allowed: false, reason: 'no cred record' };
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const cred = _resolveCred(event);
+      const pending = cred.pendingReads.get(event.readId);
+      if (!pending) return [];
+      clearTimeout(pending.timeout);
+      if (typeof pending.reject === 'function') {
+        pending.reject(new Error('Read timed out'));
+      }
+      cred.pendingReads.delete(event.readId);
+      return [];
+    },
   },
 };
 
