@@ -14,11 +14,7 @@ const {
   logAudit
 } = require('./config/supabase');
 
-// Token health + heartbeat failover (operational, no cron)
-const { runStartupHealthChecks } = require('./services/sync');
-
-// Graph Capability Plane — constitutional substrate (FSM + workers + verdict-gate)
-const graphCapabilityWiring = require('./graph-capability-kernel/substrates/graph-capability/wiring');
+// Governance — constitutional kernel (sole boot entry point)
 const constitutionalKernel = require('./control-plane/governance/constitutional-kernel');
 
 // Redis-driven AcquisitionWorker — primary data acquisition pipeline
@@ -605,14 +601,9 @@ async function startServer() {
     }
   }
 
-  // Run startup health checks (token validation, UA token refresh)
-  try {
-    await runStartupHealthChecks();
-  } catch (healthErr) {
-    console.error('[Health] Startup checks failed:', healthErr.message);
-  }
-
-  // Initialize Redis-driven AcquisitionWorker (primary data acquisition pipeline)
+  // Initialize Redis-driven workers + register all domain FSMs with CK.
+  // _wire() in orchestrator registers graphCapabilityFsm — must happen
+  // BEFORE bootstrap() dispatches CAPABILITY_BOOTSTRAP to the FSM.
   try {
     await startAllWorkers();
     console.log('✅ All domain workers started');
@@ -620,12 +611,16 @@ async function startServer() {
     console.error('[AcquisitionWorker] Failed to start:', workerErr.message);
   }
 
-  // Install Graph Capability Plane — wires FSM to substrate, starts capability cadence loops
+  // Bootstrap graph-capability kernel through the constitutional kernel.
+  // CK installs the kernel, wires the health membrane, and dispatches
+  // CAPABILITY_BOOTSTRAP to the FSM. The FSM decides what health work to
+  // run; CK routes actions to the health membrane. Server.js imports
+  // nothing from graph-capability-kernel — all flows through governance.
   try {
-    graphCapabilityWiring.install({ ck: constitutionalKernel });
-    console.log('✅ Graph Capability Plane installed');
+    await constitutionalKernel.bootstrap();
+    console.log('✅ Graph Capability Plane bootstrapped via CK');
   } catch (capabilityErr) {
-    console.error('[GraphCapability] Wiring install failed:', capabilityErr.message);
+    console.error('[GraphCapability] Bootstrap via CK failed:', capabilityErr.message);
   }
 
   // Start Express server

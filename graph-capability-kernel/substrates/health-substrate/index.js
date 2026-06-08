@@ -39,9 +39,8 @@
 //   continues to call this façade directly.
 
 const { getSupabaseAdmin, logAudit, fireAndForgetInsert } = require('../../../config/supabase');
-const triggerBridge = require('../graph-capability/trigger-bridge');
 const signalDispatch = require('../vault/signal-dispatch');
-const observations = require('../graph-capability/observations');
+const fsm = require('../../fsm');
 
 const ScanCredentialsWorker = require('./workers/scan-credentials-worker');
 const RecoveryWorker = require('./workers/recovery-worker');
@@ -71,6 +70,37 @@ function stop() {
 
 function isStarted() {
   return _started;
+}
+
+// ── Constitutional membrane wiring ──────────────────────────────────────────
+// Same pattern as scheduling-kernel/orchestrator.js — wire() subscribes to
+// action types emitted by the graph-capability FSM. CK routes the actions;
+// the health substrate is a PURE MEMBRANE: it executes mechanically, never
+// decides WHEN to run. The FSM owns the decision.
+//
+// Called by CK.bootstrap() after kernel installation.
+function wire(governance) {
+  if (!governance || typeof governance.subscribeAction !== 'function') {
+    console.warn('[health] wire() called without valid governance — membrane not wired');
+    return;
+  }
+  governance.subscribeAction('RUN_TOKEN_HEALTH_CHECK', async (action) => {
+    console.log('[health] Membrane received RUN_TOKEN_HEALTH_CHECK — executing');
+    try {
+      await runTokenHealthCheck();
+    } catch (err) {
+      console.error('[health] RUN_TOKEN_HEALTH_CHECK failed:', err.message);
+    }
+  });
+  governance.subscribeAction('RUN_UAT_REFRESH_CHECK', async (action) => {
+    console.log('[health] Membrane received RUN_UAT_REFRESH_CHECK — executing');
+    try {
+      await runUATRefreshCheck();
+    } catch (err) {
+      console.error('[health] RUN_UAT_REFRESH_CHECK failed:', err.message);
+    }
+  });
+  console.log('[health] Membrane wired — subscribed to RUN_TOKEN_HEALTH_CHECK, RUN_UAT_REFRESH_CHECK');
 }
 
 // ── Internal: per-cred token_lifecycle_events writer ────────────────────────
@@ -126,7 +156,6 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
 
     let recovered = 0;
     const recoveryWorker = new RecoveryWorker();
-    const tb = triggerBridge; // optional override via process env not needed; default bridge
 
     for (const entry of scanned) {
       const { cred, tokenInfo, classification, skipReason } = entry;
@@ -151,7 +180,7 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
 
       if (classification === 'INVALID') {
         // Attempt recovery
-        const result = await recoveryWorker.execute({ cred, triggerBridge: tb });
+        const result = await recoveryWorker.execute({ cred });
 
         if (result.success) {
           await _writeLifecycleEvent(supabase, {
@@ -174,7 +203,7 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
           console.log(`[health] PAT auto-recovered for cred ${cred.id} via stored UAT`);
 
           // Layer 4.3: emit observation envelope — recovered PAT is decryptable.
-          const recoveredEnv = observations.newEnvelope({
+          const recoveredEnv = fsm.newEnvelope({
             businessAccountId: cred.business_account_id,
             userId: cred.user_id,
           });
@@ -206,7 +235,7 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
           if (alertErr) console.warn('[health] auth_failure alert insert failed:', alertErr.message);
 
           // Layer 4.3: emit observation envelope — recovery failed, PAT is not decryptable.
-          const failedEnv = observations.newEnvelope({
+          const failedEnv = fsm.newEnvelope({
             businessAccountId: cred.business_account_id,
             userId: cred.user_id,
           });
@@ -278,9 +307,8 @@ async function runUATRefreshCheck({ windowDays = 14, interCallDelayMs = 1000, da
 
   try {
     // ── Phase 1: 14-day expiring UAT scan + refresh ──
-    const tb = triggerBridge;
     const refreshWorker = new UatRefreshWorker();
-    const { results, stats } = await refreshWorker.execute({ triggerBridge: tb, windowDays });
+    const { results, stats } = await refreshWorker.execute({ windowDays });
 
     if (stats.total === 0) {
       console.log('[health] No UATs need refresh');
@@ -326,7 +354,7 @@ async function runUATRefreshCheck({ windowDays = 14, interCallDelayMs = 1000, da
           });
 
           // Layer 4.3: emit observation envelope — refresh failed, UAT cannot be re-validated.
-          const refreshFailEnv = observations.newEnvelope({
+          const refreshFailEnv = fsm.newEnvelope({
             businessAccountId: r.uat.business_account_id,
             userId: r.uat.user_id,
           });
@@ -368,7 +396,7 @@ async function runUATRefreshCheck({ windowDays = 14, interCallDelayMs = 1000, da
       // UAT itself is still decryptable, but the FSM should treat this as a
       // reliability signal. The normalizer does not have a dedicated slot for
       // data_access expiry, so we surface it via the uat slot with a reason.
-      const daeEnv = observations.newEnvelope({
+      const daeEnv = fsm.newEnvelope({
         businessAccountId: uat.business_account_id,
         userId: uat.user_id,
       });
@@ -403,6 +431,7 @@ module.exports = {
   start,
   stop,
   isStarted,
+  wire,
   runTokenHealthCheck,
   runUATRefreshCheck,
 };

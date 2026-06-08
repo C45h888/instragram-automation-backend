@@ -19,7 +19,7 @@ const ExchangeWorker = require('./workers/exchange-worker');
 const StoreWorker = require('./workers/store-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
 const signalDispatch = require('../signal-dispatch');
-const observations = require('../../graph-capability/observations');
+const fsm = require('../../fsm');
 
 /**
  * Exchange a user access token for a page access token + IG business account discovery.
@@ -35,7 +35,6 @@ async function exchange({ userAccessToken, triggerBridge, businessAccountId, use
 
   if (result.success) {
     signalDispatch.emitEvaluate({
-      triggerBridge,
       businessAccountId: result.igBusinessAccountId,
       userId,
       source: 'vault.pat.exchange',
@@ -59,17 +58,16 @@ async function store(input) {
 
   if (result.success) {
     signalDispatch.emitNewAccountConnected({
-      triggerBridge,
       businessAccountId: result.businessAccountId || businessAccountId,
       userId: workerInput.userId || userId_,
     });
     // Layer 2: emit a fresh envelope reporting the new PAT is decryptable.
-    const envelope = observations.newEnvelope({
+    const envelope = fsm.newEnvelope({
       businessAccountId: result.businessAccountId || businessAccountId,
       userId: workerInput.userId || userId_,
     });
     envelope.pat = { isDecryptable: true, ...result };
-    signalDispatch.emitEnvelope({ triggerBridge, envelope });
+    signalDispatch.emitEnvelope({ envelope });
   }
   return result;
 }
@@ -86,16 +84,15 @@ async function retrieve({ triggerBridge, userId, businessAccountId }) {
   }
   const worker = new RetrieveWorker();
   const result = await worker.execute({ userId, businessAccountId });
-  signalDispatch.emitEvaluate({
-    triggerBridge,
+  signalDispatch.emitTokenRefreshed({
     businessAccountId,
     userId,
     source: 'vault.pat.retrieve',
   });
   // Layer 2: emit envelope with isDecryptable=true.
-  const envelope = observations.newEnvelope({ businessAccountId, userId });
+  const envelope = fsm.newEnvelope({ businessAccountId, userId });
   envelope.pat = { isDecryptable: true, token: result };
-  signalDispatch.emitEnvelope({ triggerBridge, envelope });
+  signalDispatch.emitEnvelope({ envelope });
   return result;
 }
 

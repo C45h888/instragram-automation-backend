@@ -140,7 +140,7 @@ services:
     volumes:
       - ./tests/phase-7/runtime/graph-simulator.js:/sim/server.js:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:9100/v1/accounts >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9100/v1/accounts >/dev/null 2>&1 || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5

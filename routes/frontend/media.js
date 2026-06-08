@@ -3,7 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const verdictGate = require('../../substrates/graph-capability/verdict-gate');
+const fsm = require('../../graph-capability-kernel/fsm');
 const vault = require('../../substrates/vault');
 const { logAudit: logAuditService } = require('../../config/supabase');
 const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
@@ -184,7 +184,7 @@ router.get('/profile/:id', async (req, res) => {
     }
 
     // Capability gate first — deny if FSM verdict is not AUTHORIZED/LIMITED/DEGRADED with required scopes
-    const verdict = await verdictGate.requireCapability(userId, businessAccountId, [
+    const verdict = await fsm.requireCapability(businessAccountId, [
       'instagram_basic',
       'pages_read_engagement'
     ]);

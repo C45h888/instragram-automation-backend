@@ -32,7 +32,7 @@ function install() {
   // a first-class constitutional citizen.
   if (!signalDispatch.getCk()) {
     console.warn('[health] wiring.install() called without signal-dispatch CK bound. ' +
-      'Call graphCapabilityWiring.install({ck}) first so vault signal paths are governed. ' +
+      'The graph-capability wiring must be installed first (via CK.bootstrap() → kernel.install()). ' +
       'Health events will still run, but their signals will be dropped.');
   }
 

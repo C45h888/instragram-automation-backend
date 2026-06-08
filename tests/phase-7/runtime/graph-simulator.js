@@ -502,3 +502,21 @@ class GraphSimulator {
 }
 
 module.exports = { GraphSimulator, FAILURE_MODES };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Bootstrap — runs only when executed directly (not imported)
+// ═══════════════════════════════════════════════════════════════════════════
+
+if (require.main === module) {
+  const port = parseInt(process.env.GRAPH_SIM_WORKER_PORT || '9100', 10);
+  const controlPort = parseInt(process.env.GRAPH_SIM_CONTROL_PORT || '9101', 10);
+  const sim = new GraphSimulator({ workerPort: port, controlPort });
+  sim.start().then(() => {
+    console.log(`[graph-simulator] worker=${port} control=${controlPort}`);
+  }).catch((err) => {
+    console.error('[graph-simulator] start failed:', err);
+    process.exit(1);
+  });
+  process.on('SIGTERM', () => sim.stop().then(() => process.exit(0)));
+  process.on('SIGINT',  () => sim.stop().then(() => process.exit(0)));
+}

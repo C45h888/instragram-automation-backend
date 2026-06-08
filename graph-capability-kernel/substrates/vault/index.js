@@ -6,7 +6,7 @@
 //   const vault = require('./substrates/vault');
 //   await vault.pat.exchange({ userAccessToken });
 //   await vault.pat.store({ ... });
-//   await vault.uat.refresh({ userId, businessAccountId, triggerBridge });
+//   await vault.uat.refresh({ userId, businessAccountId });
 //   await vault.scope.detectDynamic({ token, supabase });
 //
 // Architecture:

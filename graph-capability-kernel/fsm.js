@@ -321,6 +321,19 @@ const TRANSITION_MAP = {
     }],
   },
 
+  // ── Bootstrap: server boot → CK → FSM → health membrane ──────────────────
+  // Dispatched by CK.bootstrap() once after wiring is live. The FSM decides
+  // WHAT health work to run; CK routes the actions to the health membrane.
+  // The membrane (health-substrate) executes mechanically, never decides.
+  CAPABILITY_BOOTSTRAP: {
+    target: 'UNKNOWN',
+    guard: () => ({ allowed: true }),
+    buildActions: () => [
+      { type: 'RUN_TOKEN_HEALTH_CHECK' },
+      { type: 'RUN_UAT_REFRESH_CHECK' },
+    ],
+  },
+
   // ── Aggregate worker observation arrives ────────────────────────────────
   // This is the SOLE event that mutates per-cred evidence. The aggregator
   // merges the new envelope into the existing per-cred record, then
@@ -747,8 +760,8 @@ function getHealth(businessAccountId) {
 
 /**
  * Public capability verdict — the constitutional truth for a given credential.
- * Verdict-gate is the only allowed consumer; everyone else goes through
- * verdict-gate.requireCapability() which calls this.
+ * fsm.requireCapability() is the only allowed consumer; everyone else goes through
+ * requireCapability() which calls this.
  *
  * @param {string} [businessAccountId]
  * @returns {{ state: string, observedAt: number|null, evidence: object|null, missingScopes: string[] }}
@@ -841,6 +854,82 @@ function _resetCred(baId) {
   else _byCred.clear();
 }
 
+// ── Canonical envelope factory ───────────────────────────────────────────────
+// Migrated from substrates/graph-capability/observations.js (deleted).
+// The FSM owns the envelope contract — it's the sole interpreter of envelope
+// shape, so it's the canonical source for envelope construction too.
+function newEnvelope({ envelopeId, businessAccountId, userId } = {}) {
+  return {
+    envelopeId: envelopeId || `env-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    observedAt: Date.now(),
+    businessAccountId: businessAccountId || null,
+    userId: userId || null,
+    pat: null,
+    uat: null,
+    detection: null,
+    scope: null,
+  };
+}
+
+// ── Capability gate — migrated from verdict-gate.js (deleted) ─────────────────
+// The FSM is the sole capability authority. This replaces the separate
+// verdict-gate.js read adapter. Scope-diff logic lives alongside the FSM's
+// getCapabilityVerdict() — one source of truth for capability evaluation.
+function requireCapability(businessAccountId, requiredScopes = []) {
+  const verdict = getCapabilityVerdict(businessAccountId);
+  const { state, observedAt, evidence, missingScopes: fsmMissingScopes } = verdict;
+
+  let grantedScopes = [];
+  if (evidence && evidence.scope) {
+    grantedScopes = evidence.scope.grantedScopes || [];
+  }
+  let missingScopes;
+  if (state === 'LIMITED') {
+    missingScopes = fsmMissingScopes || [];
+  } else if (Array.isArray(requiredScopes) && requiredScopes.length > 0) {
+    missingScopes = requiredScopes.filter(s => !grantedScopes.includes(s));
+  } else {
+    missingScopes = [];
+  }
+
+  const isFresh = observedAt
+    ? (Date.now() - observedAt) < OBSERVATION_FRESHNESS_MS_VALUE
+    : false;
+
+  switch (state) {
+    case 'AUTHORIZED':
+      if (missingScopes.length > 0) {
+        return { allowed: false, state, reason: `Required scopes not in capability evidence: ${missingScopes.join(', ')}`, missingScopes, observedAt, evidence };
+      }
+      if (!isFresh) {
+        return { allowed: false, state, reason: 'Observation stale — re-evaluation required', missingScopes: [], observedAt, evidence };
+      }
+      return { allowed: true, state, reason: null, missingScopes: [], observedAt, evidence };
+
+    case 'LIMITED':
+      if (missingScopes.length > 0) {
+        return { allowed: false, state, reason: `Required scopes missing: ${missingScopes.join(', ')}`, missingScopes, observedAt, evidence };
+      }
+      return { allowed: true, state, reason: 'Partial capability — required scopes present', missingScopes: [], observedAt, evidence };
+
+    case 'DEGRADED':
+      if (missingScopes.length > 0) {
+        return { allowed: false, state, reason: `Degraded AND required scopes missing: ${missingScopes.join(', ')}`, missingScopes, observedAt, evidence };
+      }
+      return { allowed: true, state, reason: 'Degraded mode — reliability impaired', missingScopes: [], observedAt, evidence };
+
+    case 'UNAUTHORIZED':
+      return { allowed: false, state, reason: 'Capability denied — required capability unavailable', missingScopes, observedAt, evidence };
+
+    case 'PAT_PENDING': case 'UAT_PENDING': case 'DETECTION_PENDING': case 'SCOPE_PENDING':
+      return { allowed: false, state, reason: `Capability not yet fully observed: ${state}`, missingScopes, observedAt, evidence };
+
+    case 'UNKNOWN':
+    default:
+      return { allowed: false, state: state || 'UNKNOWN', reason: 'Capability not yet evaluated', missingScopes, observedAt, evidence };
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 10. Public API
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -855,6 +944,10 @@ module.exports = {
   evaluateTriggerCriteria,
   // Per-cred verdict — sole source of truth
   getCapabilityVerdict,
+  // Per-cred capability gate — migrated from verdict-gate.js
+  requireCapability,
+  // Canonical envelope factory — migrated from observations.js
+  newEnvelope,
   // Introspection
   STATE_REGISTRY: STATE_REGISTRY_VALUE,
   REQUIRED_SCOPES: REQUIRED_SCOPES_VALUE,

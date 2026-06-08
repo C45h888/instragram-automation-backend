@@ -11,7 +11,7 @@
 
 const DetectDynamicWorker = require('./workers/detect-dynamic-worker');
 const signalDispatch = require('../signal-dispatch');
-const observations = require('../../graph-capability/observations');
+const fsm = require('../../fsm');
 
 /**
  * Detect live scopes for a token via /debug_token with 7-day DB cache.
@@ -25,14 +25,13 @@ async function detectDynamic({ triggerBridge, businessAccountId, userId, token, 
   const worker = new DetectDynamicWorker();
   const result = await worker.execute({ token, supabase, credentialId });
   signalDispatch.emitEvaluate({
-    triggerBridge,
     businessAccountId,
     userId,
     source: 'vault.scope.detectDynamic',
   });
   // Layer 2: emit envelope with grantedScopes + derived cacheAgeMs.
   if (businessAccountId) {
-    const envelope = observations.newEnvelope({ businessAccountId, userId });
+    const envelope = fsm.newEnvelope({ businessAccountId, userId });
     // The worker returns string[] (scopes) and writes a 7-day cache. If the
     // worker hit the cache, scopes were returned from DB and cacheAgeMs is
     // (now - scope_cache_updated_at). If the worker hit Meta, cacheAgeMs is 0.
@@ -43,7 +42,7 @@ async function detectDynamic({ triggerBridge, businessAccountId, userId, token, 
       grantedScopes: Array.isArray(result) ? result : [],
       cacheAgeMs: null, // unknown at façade level; not stale → no DEGRADED trigger
     };
-    signalDispatch.emitEnvelope({ triggerBridge, envelope });
+    signalDispatch.emitEnvelope({ envelope });
   }
   return result;
 }

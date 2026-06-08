@@ -4,7 +4,6 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const vault = require('../../substrates/vault');
-const triggerBridge = require('../../substrates/graph-capability/trigger-bridge');
 const constitutionalKernel = require('../../control-plane/governance/constitutional-kernel');
 const { getSupabaseAdmin, logAudit: logAuditService, fireAndForgetInsert } = require('../../config/supabase');
 const { clearCredentialCache } = require('../../helpers/credential-cache');
@@ -219,7 +218,7 @@ router.post('/exchange-token', async (req, res) => {
       pageId,
       pageName,
       scope: patScopes,
-      triggerBridge,        // substrate emits NEW_ACCOUNT_CONNECTED on success
+      constitutionalKernel,
     });
 
     if (!storeResult.success) {
@@ -405,7 +404,7 @@ router.post('/refresh-token', async (req, res) => {
     if (hasUAT) {
       console.log('[Token] UAT detected — attempting fb_exchange_token refresh');
       try {
-        const result = await vault.uat.refresh({ userId, businessAccountId, triggerBridge });
+        const result = await vault.uat.refresh({ userId, businessAccountId, triggerBridge: constitutionalKernel });
 
         // Success notification
         await supabase.from('system_alerts').insert({
@@ -575,7 +574,7 @@ router.post('/validate-token', async (req, res) => {
           pageId: exchangeResult.pageId,
           pageName: exchangeResult.pageName || pageName || 'Imported Account',
           scope: patScopes,
-          triggerBridge,
+          constitutionalKernel,
         });
 
         tokensStored.push('page');
@@ -611,7 +610,7 @@ router.post('/validate-token', async (req, res) => {
           pageId: pageId || instagramBusinessId,
           pageName: pageName || 'Imported Account',
           scope: detectedScope,
-          triggerBridge,
+          constitutionalKernel,
         });
 
         tokensStored.push('page');

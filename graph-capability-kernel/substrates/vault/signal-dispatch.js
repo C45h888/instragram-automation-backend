@@ -1,41 +1,28 @@
 // graph-capability-kernel/substrates/vault/signal-dispatch.js
 // Centralized signal-dispatch adapter for vault façades.
-// Migrated from substrates/vault/signal-dispatch.js
 //
 // Constitutional role:
 //   Vault façades (pat, uat, scope) emit trigger events when a worker call succeeds.
-//   The trigger-bridge is the constitutional event ingress (it knows about CK + DOMAIN_EVENT_MAP).
-//   This module is the vault's local adapter to the trigger-bridge: it packages
-//   success events with the vault's source tag, swallows transient errors with a
-//   warning log, and never throws to the caller.
+//   This module is the vault's local adapter: it packages success events and
+//   routes them through CK.dispatch(). No intermediate trigger-bridge needed —
+//   CK IS the event ingress.
 //
 // Single source of truth: every vault façade uses this module. No inline
-// trigger-bridge wrappers in substrate façades.
+// dispatch wrappers in substrate façades.
 //
 // ── Authority boundary ──────────────────────────────────────────────────────
-//   Pre-2026-06-07: signal-dispatch held no CK reference. Every emit* call
-//   fell through to the default trigger-bridge, which threw on missing ck.
-//   The throw was swallowed by trigger-bridge's own try/catch and the
-//   signal was silently dropped. This is GAP-3 in the formalization.
-//
 //   Layer 1 fix: bindCk(ck) is called once at install() time by the
 //   graph-capability wiring. The CK reference is stored in a private
-//   module-level slot. Every emit* call threads _ck into the trigger-bridge
-//   invocation. Falls back to the default bridge only when no ck is bound
-//   (legacy direct-caller path) with a one-shot warning.
+//   module-level slot. Every emit* call threads _ck into CK.dispatch().
 //
 //   This makes signal-dispatch the SINGLE authority boundary for vault
 //   signal ingress. There is no path through which a vault success event
 //   can reach the FSM without going through the constitutional CK.
 
-const triggerBridge = require('../graph-capability/trigger-bridge');
-
 // ── CK binding (Layer 1.1) ──────────────────────────────────────────────────
 
 let _ck = null;
-let _warnedNoCk = false;
-
-/**
+let _warnedNoCk = false;/**
  * Bind the constitutional kernel reference. Called once at install() time.
  * Idempotent: re-binding the same ck is a no-op. Re-binding a different ck
  * is allowed (re-install scenario) and replaces the reference.
@@ -49,15 +36,6 @@ function bindCk(ck) {
 
 function getCk() {
   return _ck;
-}
-
-/**
- * Resolve the trigger-bridge reference. Always returns the default
- * trigger-bridge (the canonical constitutional ingress). Substrate-level
- * overrides are not supported — this enforces the single-ingress rule.
- */
-function _resolveBridge(bridge) {
-  return bridge || triggerBridge;
 }
 
 /**
@@ -75,17 +53,16 @@ function _resolveCk(explicitCk) {
   return null;
 }
 
-// ── Emit functions ──────────────────────────────────────────────────────────
+// ── Emit functions — all route through CK.dispatch() directly ────────────────
 
 /**
  * Emit a CAPABILITY_EVALUATE trigger. Used by every successful vault worker call
  * to inform the FSM that vault state has changed.
  *
- * @param {{ triggerBridge?: object, ck?: object, businessAccountId?: string|null, userId?: string|null, source: string }} params
- * @returns {any} the dispatch result, or undefined if no bridge was provided
+ * @param {{ ck?: object, businessAccountId?: string|null, userId?: string|null, source: string }} params
+ * @returns {any} the dispatch result, or undefined if no CK is available
  */
-function emitEvaluate({ triggerBridge: bridge, ck, businessAccountId, userId, source }) {
-  const tb = _resolveBridge(bridge);
+function emitEvaluate({ ck, businessAccountId, userId, source }) {
   const resolvedCk = _resolveCk(ck);
   if (!resolvedCk) {
     if (!_warnedNoCk) {
@@ -94,13 +71,12 @@ function emitEvaluate({ triggerBridge: bridge, ck, businessAccountId, userId, so
     }
     return undefined;
   }
-  if (!tb || typeof tb.emitCapabilityEvaluate !== 'function') return undefined;
   try {
-    return tb.emitCapabilityEvaluate({
+    return resolvedCk.dispatch({
+      type: 'CAPABILITY_EVALUATE',
       businessAccountId: businessAccountId || null,
       userId: userId || null,
       source,
-      ck: resolvedCk,
     });
   } catch (err) {
     console.warn('⚠️ signal-dispatch emitEvaluate failed:', err.message);
@@ -111,11 +87,10 @@ function emitEvaluate({ triggerBridge: bridge, ck, businessAccountId, userId, so
 /**
  * Emit a NEW_ACCOUNT_CONNECTED trigger. Used by vault.pat.store on success.
  *
- * @param {{ triggerBridge?: object, ck?: object, businessAccountId?: string|null, userId?: string|null }} params
+ * @param {{ ck?: object, businessAccountId?: string|null, userId?: string|null }} params
  * @returns {any}
  */
-function emitNewAccountConnected({ triggerBridge: bridge, ck, businessAccountId, userId }) {
-  const tb = _resolveBridge(bridge);
+function emitNewAccountConnected({ ck, businessAccountId, userId }) {
   const resolvedCk = _resolveCk(ck);
   if (!resolvedCk) {
     if (!_warnedNoCk) {
@@ -124,12 +99,12 @@ function emitNewAccountConnected({ triggerBridge: bridge, ck, businessAccountId,
     }
     return undefined;
   }
-  if (!tb || typeof tb.emitNewAccountConnected !== 'function') return undefined;
   try {
-    return tb.emitNewAccountConnected({
+    return resolvedCk.dispatch({
+      type: 'NEW_ACCOUNT_CONNECTED',
       businessAccountId: businessAccountId || null,
       userId: userId || null,
-      ck: resolvedCk,
+      source: 'oauth_callback',
     });
   } catch (err) {
     console.warn('⚠️ signal-dispatch emitNewAccountConnected failed:', err.message);
@@ -140,11 +115,10 @@ function emitNewAccountConnected({ triggerBridge: bridge, ck, businessAccountId,
 /**
  * Emit a TOKEN_REFRESHED trigger. Used by vault.uat.refresh on success.
  *
- * @param {{ triggerBridge?: object, ck?: object, businessAccountId?: string|null, userId?: string|null }} params
+ * @param {{ ck?: object, businessAccountId?: string|null, userId?: string|null }} params
  * @returns {any}
  */
-function emitTokenRefreshed({ triggerBridge: bridge, ck, businessAccountId, userId }) {
-  const tb = _resolveBridge(bridge);
+function emitTokenRefreshed({ ck, businessAccountId, userId }) {
   const resolvedCk = _resolveCk(ck);
   if (!resolvedCk) {
     if (!_warnedNoCk) {
@@ -153,12 +127,12 @@ function emitTokenRefreshed({ triggerBridge: bridge, ck, businessAccountId, user
     }
     return undefined;
   }
-  if (!tb || typeof tb.emitTokenRefreshed !== 'function') return undefined;
   try {
-    return tb.emitTokenRefreshed({
+    return resolvedCk.dispatch({
+      type: 'TOKEN_REFRESHED',
       businessAccountId: businessAccountId || null,
       userId: userId || null,
-      ck: resolvedCk,
+      source: 'uat_refresh',
     });
   } catch (err) {
     console.warn('⚠️ signal-dispatch emitTokenRefreshed failed:', err.message);
@@ -168,21 +142,19 @@ function emitTokenRefreshed({ triggerBridge: bridge, ck, businessAccountId, user
 
 /**
  * Layer 2: Emit a CAPABILITY_OBSERVATION event. The envelope is the canonical
- * worker observation shape produced by observations.newEnvelope() and populated
+ * worker observation shape produced by fsm.newEnvelope() and populated
  * by substrate façades. Routes through ck.dispatch(CAPABILITY_OBSERVATION) which
  * lands in the FSM via DOMAIN_EVENT_MAP. The FSM's CAPABILITY_OBSERVATION
- * transition (Layer 3) consumes the envelope, normalizes it, and dispatches
- * a derived CAPABILITY_OK / CAPABILITY_PARTIAL / CAPABILITY_FAILED event.
+ * transition consumes the envelope, merges evidence, and infers state.
  *
- * @param {{ triggerBridge?: object, ck?: object, envelope: object }} params
+ * @param {{ ck?: object, envelope: object }} params
  * @returns {any}
  */
-function emitEnvelope({ triggerBridge: bridge, ck, envelope }) {
+function emitEnvelope({ ck, envelope }) {
   if (!envelope || typeof envelope !== 'object') {
     console.warn('[signal-dispatch] emitEnvelope called without an envelope — skipped');
     return undefined;
   }
-  const tb = _resolveBridge(bridge);
   const resolvedCk = _resolveCk(ck);
   if (!resolvedCk) {
     if (!_warnedNoCk) {
@@ -191,10 +163,6 @@ function emitEnvelope({ triggerBridge: bridge, ck, envelope }) {
     }
     return undefined;
   }
-  // emitEnvelope routes directly through ck.dispatch, not through trigger-bridge,
-  // because CAPABILITY_OBSERVATION is an internal observation event — not a
-  // user-facing trigger. The DOMAIN_EVENT_MAP routes it to the graph-capability
-  // FSM regardless.
   try {
     return resolvedCk.dispatch({
       type: 'CAPABILITY_OBSERVATION',

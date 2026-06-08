@@ -2,7 +2,7 @@
 // UGC management routes: visitor-posts, feature toggle, permission requests
 const express = require('express');
 const router = express.Router();
-const verdictGate = require('../../substrates/graph-capability/verdict-gate');
+const fsm = require('../../graph-capability-kernel/fsm');
 const { logAudit: logAuditService } = require('../../config/supabase');
 const { getSupabaseAdmin } = require('../../config/supabase');
 
@@ -36,7 +36,7 @@ router.get('/visitor-posts', async (req, res) => {
       });
     }
 
-    const verdict = await verdictGate.requireCapability(userId, businessAccountId, [
+    const verdict = await fsm.requireCapability(businessAccountId, [
       'instagram_basic',
       'pages_read_user_content'
     ]);

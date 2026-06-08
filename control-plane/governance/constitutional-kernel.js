@@ -2302,7 +2302,47 @@ async function sanityCheck(domainName, action) {
   return _constitutionalSanityCheck(action);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Bootstrap — server.js → CK → graph-capability FSM → health membrane
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// This is the SINGLE entry point from server.js. CK owns the entire
+// graph-capability kernel lifecycle: installation, membrane wiring, and
+// the bootstrap dispatch that triggers health checks through the FSM.
+//
+// Order matters:
+//   1. Install the kernel (wires FSM, binds signal-dispatch, starts substrates)
+//   2. Wire the health membrane (subscribes to FSM actions)
+//   3. Dispatch CAPABILITY_BOOTSTRAP to the FSM (FSM decides what health work to run)
+//
+// After this returns, the kernel is live and health checks are running.
+async function bootstrap() {
+  console.log('[constitutional-kernel] Bootstrap — installing graph-capability kernel...');
+
+  // 1. Install the graph-capability kernel
+  const gck = require('../../graph-capability-kernel');
+  const installResult = gck.install({ ck: module.exports });
+  console.log('[constitutional-kernel] Graph-capability kernel installed:', installResult);
+
+  // 2. Wire the health membrane to CK's action fabric
+  const healthSubstrate = require('../../graph-capability-kernel/substrates/health-substrate');
+  healthSubstrate.wire(module.exports);
+
+  // 3. Dispatch bootstrap event to the FSM — the FSM decides WHAT health work
+  //    to run (RUN_TOKEN_HEALTH_CHECK, RUN_UAT_REFRESH_CHECK). CK routes the
+  //    actions to the health membrane subscribers. Health substrate executes
+  //    mechanically — it never decides WHEN.
+  const result = await dispatch({
+    type: 'CAPABILITY_BOOTSTRAP',
+    source: 'server_boot',
+  });
+
+  console.log('[constitutional-kernel] Bootstrap complete — CAPABILITY_BOOTSTRAP dispatched:', result);
+  return result;
+}
+
 module.exports = {
+  bootstrap,
   dispatch,
   subscribeAction,
   onAction,

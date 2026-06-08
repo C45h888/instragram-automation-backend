@@ -14,7 +14,7 @@ const RetrieveWorker = require('./workers/retrieve-worker');
 const RefreshWorker = require('./workers/refresh-worker');
 const DetectWorker = require('./workers/detect-worker');
 const signalDispatch = require('../signal-dispatch');
-const observations = require('../../graph-capability/observations');
+const fsm = require('../../fsm');
 
 /**
  * Store a UAT credential row.
@@ -29,7 +29,6 @@ async function store(input) {
   const result = await worker.execute(workerInput);
   if (result.success) {
     signalDispatch.emitEvaluate({
-      triggerBridge,
       businessAccountId: workerInput.businessAccountId,
       userId: workerInput.userId,
       source: 'vault.uat.store',
@@ -48,16 +47,15 @@ async function retrieve({ triggerBridge, userId, businessAccountId }) {
   }
   const worker = new RetrieveWorker();
   const result = await worker.execute({ userId, businessAccountId });
-  signalDispatch.emitEvaluate({
-    triggerBridge,
+  signalDispatch.emitNewAccountConnected({
     businessAccountId,
     userId,
     source: 'vault.uat.retrieve',
   });
   // Layer 2: emit envelope with isDecryptable=true.
-  const envelope = observations.newEnvelope({ businessAccountId, userId });
+  const envelope = fsm.newEnvelope({ businessAccountId, userId });
   envelope.uat = { isDecryptable: true, ...result };
-  signalDispatch.emitEnvelope({ triggerBridge, envelope });
+  signalDispatch.emitEnvelope({ envelope });
   return result;
 }
 
@@ -72,19 +70,18 @@ async function refresh({ triggerBridge, ...input }) {
   const worker = new RefreshWorker();
   const result = await worker.execute(input);
   if (result.success) {
-    signalDispatch.emitTokenRefreshed({
-      triggerBridge,
+    signalDispatch.emitNewAccountConnected({
       businessAccountId: input.businessAccountId,
       userId: input.userId,
     });
     // Layer 2: emit envelope — UAT refreshed, isDecryptable=true with new scope.
-    const envelope = observations.newEnvelope({ businessAccountId: input.businessAccountId, userId: input.userId });
+    const envelope = fsm.newEnvelope({ businessAccountId: input.businessAccountId, userId: input.userId });
     envelope.uat = {
       isDecryptable: true,
       expiresAt: result.expiresAt || null,
       scope: result.scopes || [],
     };
-    signalDispatch.emitEnvelope({ triggerBridge, envelope });
+    signalDispatch.emitEnvelope({ envelope });
   }
   return result;
 }
@@ -99,32 +96,31 @@ async function detect({ triggerBridge, businessAccountId, userId, token }) {
   const result = await worker.execute({ token });
   if (result && result.isValid) {
     signalDispatch.emitEvaluate({
-      triggerBridge,
       businessAccountId,
       userId,
       source: 'vault.uat.detect',
     });
     // Layer 2: emit envelope with detection.isValid.
     if (businessAccountId) {
-      const envelope = observations.newEnvelope({ businessAccountId, userId });
+      const envelope = fsm.newEnvelope({ businessAccountId, userId });
       envelope.detection = {
         isValid: true,
         reliabilityImpaired: false,
         reason: null,
         ...result,
       };
-      signalDispatch.emitEnvelope({ triggerBridge, envelope });
+      signalDispatch.emitEnvelope({ envelope });
     }
   } else if (result && !result.isValid && businessAccountId) {
     // Layer 2: detection failed — emit envelope with isValid=false.
-    const envelope = observations.newEnvelope({ businessAccountId, userId });
+    const envelope = fsm.newEnvelope({ businessAccountId, userId });
     envelope.detection = {
       isValid: false,
       reliabilityImpaired: false,
       reason: 'Token validation failed',
       ...result,
     };
-    signalDispatch.emitEnvelope({ triggerBridge, envelope });
+    signalDispatch.emitEnvelope({ envelope });
   }
   return result;
 }

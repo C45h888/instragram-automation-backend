@@ -9,7 +9,7 @@
 // Pattern:
 //   const gck = require('./graph-capability-kernel');
 //   gck.vault.pat.exchange({ ... });
-//   gck.verdictGate.requireCapability(...);
+//   gck.fsm.requireCapability(...);
 
 const wiring = require('./substrates/graph-capability/wiring');
 const healthWiring = require('./substrates/health-substrate/wiring');
@@ -17,8 +17,6 @@ const fsm = require('./fsm');
 
 // Re-export the public surface from the kernel substrates
 const vault = require('./substrates/vault');
-const verdictGate = require('./substrates/graph-capability/verdict-gate');
-const triggerBridge = require('./substrates/graph-capability/trigger-bridge');
 const health = require('./substrates/health-substrate');
 
 let _installed = false;
@@ -70,12 +68,7 @@ module.exports = {
   isInstalled,
   // Public surface: vault (pat/uat/scope operations)
   vault,
-  // Public surface: graph-capability read/write
-  verdictGate,
-  triggerBridge,
-  // Public surface: health substrate (token-health / uat-refresh orchestration)
-  // Migrated from services/sync/token-health.js — see
-  // graph-capability-kernel/substrates/health-substrate/
+  // Public surface: health substrate
   health,
   // Direct FSM access for CK registration
   fsm,

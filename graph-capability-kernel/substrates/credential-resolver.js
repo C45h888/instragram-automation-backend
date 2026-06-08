@@ -8,7 +8,7 @@
 // Extracted from helpers/agent-helpers.js (decomposed).
 
 const { getSupabaseAdmin, logAudit, shouldLog } = require('../../config/supabase');
-const verdictGate = require('./graph-capability/verdict-gate');
+const fsm = require('../fsm');
 const vault = require('./vault');
 const { clearCredentialCache: _clearCredentialCacheRaw, getFromCache, setInCache } = require('../../helpers/credential-cache');
 
@@ -50,7 +50,7 @@ async function resolveAccountCredentials(businessAccountId) {
     const userId = account.user_id;
 
     // Capability gate first — deny if FSM verdict is not AUTHORIZED/LIMITED/DEGRADED with required scopes
-    const verdict = await verdictGate.requireCapability(userId, businessAccountId, [
+    const verdict = await fsm.requireCapability(businessAccountId, [
       'instagram_basic',
       'pages_read_engagement'
     ]);
