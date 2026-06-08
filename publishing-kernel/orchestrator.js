@@ -151,7 +151,28 @@ async function executeEvaluationPipeline(governance, accountId, events) {
     });
 
     for (const mut of result.mutations) {
-      await emitter.emitMutation(mut);
+      // Phase 8: Mutation dedup gate — check + mark before applying.
+      // Belt-and-suspenders: checks Layer 1 (intake) key AND Layer 2 (mutation) key.
+      // On duplicate: skip mutation, emit degraded observability.
+      const mutDedup = await governance.dispatch({
+        type: 'CHECK_MUTATION_DEDUP',
+        accountId,
+        actionType: mut.table,    // table as actionType for mutation dedup
+        resourceId: mut.id,
+        intentId: mut.intentId || mut.id,
+      });
+      const mutBlocked = mutDedup?.actions?.find(a => a.type === 'DEDUP_MUTATION_BLOCKED');
+      if (mutBlocked) {
+        governance.dispatch({
+          type: 'LOG_DEGRADED',
+          substate: 'MUTATION_DEDUP_BLOCKED',
+          reason: `Mutation dedup blocked ${mut.table}.${mut.id}: ${mutBlocked.reason}`,
+          domain: 'mutation',
+          intentId: mut.intentId || null,
+        });
+        continue; // skip the mutation
+      }
+      await emitter.emitMutation(mut, mut.intentId);
     }
 
     const emitResult = result.intents.length > 0
@@ -244,20 +265,55 @@ function wire(governance) {
 
   // ── EXECUTE_CONTENT: publishing-fsm → bounded content substrate → IG API
   governance.subscribeAction('EXECUTE_CONTENT', async (action) => {
-    const { accountId, items, intentId, domain } = action;
+    const { accountId, items, intentId: batchIntentId, domain } = action;
     if (!accountId || !items || !Array.isArray(items)) {
       console.warn('[emission-orchestrator] EXECUTE_CONTENT rejected: missing fields', action);
       return;
     }
     const publishDomain = domain || 'publish:post';
+
+    // Phase 8: Emission dedup gate — check each item before IG API call.
+    // Belt-and-suspenders: checks Layer 1 (intake) key AND Layer 3 (emission) key.
+    const dedupedItems = [];
+    for (const item of items) {
+      const { record, actionType, intentId: itemIntentId } = item;
+      const emitIntentId = itemIntentId || record?.id;
+      const emitActionType = actionType || 'publish_post';
+      const emitResourceId = record?.id;
+
+      if (!emitResourceId) { dedupedItems.push(item); continue; }
+
+      const emitDedup = await governance.dispatch({
+        type: 'CHECK_EMISSION_DEDUP',
+        accountId,
+        actionType: emitActionType,
+        resourceId: emitResourceId,
+        intentId: emitIntentId,
+      });
+      const emitBlocked = emitDedup?.actions?.find(a => a.type === 'DEDUP_EMISSION_BLOCKED');
+      if (emitBlocked) {
+        governance.dispatch({
+          type: 'LOG_DEGRADED',
+          substate: 'EMISSION_DEDUP_BLOCKED',
+          reason: `Emission dedup blocked ${emitActionType} ${emitResourceId}: ${emitBlocked.reason}`,
+          domain: publishDomain,
+          intentId: emitIntentId || null,
+        });
+        continue; // skip this item
+      }
+      dedupedItems.push(item);
+    }
+
+    if (dedupedItems.length === 0) return;
+
     try {
-      const result = await contentSubstrate.execute(accountId, items, governance);
+      const result = await contentSubstrate.execute(accountId, dedupedItems, governance);
       if (result && !result.success) {
         const errorShape = publishErrorParser.parse(result, publishDomain);
         governance.dispatch({
           type: 'WORKER_OUTCOME_REPORTED',
           accountId,
-          intentId: intentId || null,
+          intentId: batchIntentId || null,
           domain: publishDomain,
           status: 'failed',
           errorShape,
@@ -267,7 +323,7 @@ function wire(governance) {
           type: 'PUBLISH_FAILURE',
           accountId,
           domain: publishDomain,
-          intentId: intentId || null,
+          intentId: batchIntentId || null,
           reason: result.error,
         });
       }
@@ -276,7 +332,7 @@ function wire(governance) {
       governance.dispatch({
         type: 'WORKER_OUTCOME_REPORTED',
         accountId,
-        intentId: intentId || null,
+        intentId: batchIntentId || null,
         domain: publishDomain,
         status: 'failed',
         errorShape,
@@ -286,7 +342,7 @@ function wire(governance) {
         type: 'PUBLISH_FAILURE',
         accountId,
         domain: publishDomain,
-        intentId: intentId || null,
+        intentId: batchIntentId || null,
         reason: err.message,
       });
     }
@@ -294,20 +350,55 @@ function wire(governance) {
 
   // ── EXECUTE_ENGAGEMENT: publishing-fsm → bounded engagement substrate → IG API
   governance.subscribeAction('EXECUTE_ENGAGEMENT', async (action) => {
-    const { accountId, items, intentId, domain } = action;
+    const { accountId, items, intentId: batchIntentId, domain } = action;
     if (!accountId || !items || !Array.isArray(items)) {
       console.warn('[emission-orchestrator] EXECUTE_ENGAGEMENT rejected: missing fields', action);
       return;
     }
     const publishDomain = domain || 'publish:comment';
+
+    // Phase 8: Emission dedup gate — check each item before IG API call.
+    // Belt-and-suspenders: checks Layer 1 (intake) key AND Layer 3 (emission) key.
+    const dedupedItems = [];
+    for (const item of items) {
+      const { record, actionType, intentId: itemIntentId } = item;
+      const emitIntentId = itemIntentId || record?.id;
+      const emitActionType = actionType || 'reply_comment';
+      const emitResourceId = record?.id;
+
+      if (!emitResourceId) { dedupedItems.push(item); continue; }
+
+      const emitDedup = await governance.dispatch({
+        type: 'CHECK_EMISSION_DEDUP',
+        accountId,
+        actionType: emitActionType,
+        resourceId: emitResourceId,
+        intentId: emitIntentId,
+      });
+      const emitBlocked = emitDedup?.actions?.find(a => a.type === 'DEDUP_EMISSION_BLOCKED');
+      if (emitBlocked) {
+        governance.dispatch({
+          type: 'LOG_DEGRADED',
+          substate: 'EMISSION_DEDUP_BLOCKED',
+          reason: `Emission dedup blocked ${emitActionType} ${emitResourceId}: ${emitBlocked.reason}`,
+          domain: publishDomain,
+          intentId: emitIntentId || null,
+        });
+        continue; // skip this item
+      }
+      dedupedItems.push(item);
+    }
+
+    if (dedupedItems.length === 0) return;
+
     try {
-      const result = await engagementSubstrate.execute(accountId, items, governance);
+      const result = await engagementSubstrate.execute(accountId, dedupedItems, governance);
       if (result && !result.success) {
         const errorShape = publishErrorParser.parse(result, publishDomain);
         governance.dispatch({
           type: 'WORKER_OUTCOME_REPORTED',
           accountId,
-          intentId: intentId || null,
+          intentId: batchIntentId || null,
           domain: publishDomain,
           status: 'failed',
           errorShape,
@@ -317,7 +408,7 @@ function wire(governance) {
           type: 'PUBLISH_FAILURE',
           accountId,
           domain: publishDomain,
-          intentId: intentId || null,
+          intentId: batchIntentId || null,
           reason: result.error,
         });
       }
@@ -326,7 +417,7 @@ function wire(governance) {
       governance.dispatch({
         type: 'WORKER_OUTCOME_REPORTED',
         accountId,
-        intentId: intentId || null,
+        intentId: batchIntentId || null,
         domain: publishDomain,
         status: 'failed',
         errorShape,
@@ -336,7 +427,7 @@ function wire(governance) {
         type: 'PUBLISH_FAILURE',
         accountId,
         domain: publishDomain,
-        intentId: intentId || null,
+        intentId: batchIntentId || null,
         reason: err.message,
       });
     }

@@ -1,50 +1,86 @@
 // graph-capability-kernel/substrates/vault/scope-substrate/index.js
-// Scope substrate façade: factory-creates workers, owns pre-flight.
-// Does NOT do I/O — workers do.
-// Migrated from substrates/vault/scope-substrate/index.js
+// Scope substrate façade: owns pre-flight (cache check via governed read),
+// worker factory, post-flight (cache write via governed write), signal dispatch.
+// Worker is semantically blind — just /debug_token.
 //
-// Constitutional wiring:
-//   On success, emits a CAPABILITY_EVALUATE trigger via signal-dispatch → trigger-bridge → ck → FSM.
-//
-// Layer 2: on success, also builds a canonical observation envelope and emits
-// it via signal-dispatch.emitEnvelope() → ck.dispatch(CAPABILITY_OBSERVATION).
+// DB reads/writes route through CK → persist-telemetry FSM → graph-capability substrate workers.
 
 const DetectDynamicWorker = require('./workers/detect-dynamic-worker');
 const signalDispatch = require('../signal-dispatch');
 const fsm = require('../../fsm');
 
 /**
- * Detect live scopes for a token via /debug_token with 7-day DB cache.
- * @param {{ token: string, supabase?: object, credentialId?: string|null, triggerBridge?: object, businessAccountId?: string, userId?: string }} input
- * @param {{ token: string, supabase?: object, credentialId?: string|null, businessAccountId?: string, userId?: string }} input
+ * Detect live scopes for a token via /debug_token.
+ * Cache read/write governed through CK → persist-telemetry.
+ *
+ * @param {{ token: string, credentialId?: string|null, businessAccountId?: string, userId?: string }} input
+ * @returns {Promise<string[]>}
  */
-async function detectDynamic({ businessAccountId, userId, token, supabase, credentialId = null }) {
+async function detectDynamic({ businessAccountId, userId, token, credentialId = null }) {
   if (!token) {
     throw new Error('token is required');
   }
+
+  // ── Pre-flight: governed cache read (CK → persist-telemetry FSM → worker) ─
+  const ck = signalDispatch.getCk();
+  if (ck && typeof ck.governedRead === 'function' && credentialId) {
+    try {
+      const result = await ck.governedRead('db.scope-cache', {
+        credentialId,
+        accountId: businessAccountId,
+      });
+      if (result.success && result.data?.scope_cache) {
+        const cacheAge = result.data.scope_cache_updated_at
+          ? Date.now() - new Date(result.data.scope_cache_updated_at).getTime()
+          : Infinity;
+        if (cacheAge < 7 * 24 * 60 * 60 * 1000) {
+          console.log('✅ Using cached scope via governed read (age: ' + Math.floor(cacheAge / 1000 / 60 / 60) + 'h)');
+          return result.data.scope_cache;
+        }
+      }
+    } catch (_) { /* governed read failed — proceed to live call */ }
+  }
+
+  // ── Worker: bounded /debug_token call ─────────────────────────────────────
   const worker = new DetectDynamicWorker();
-  const result = await worker.execute({ token, supabase, credentialId });
+  const result = await worker.execute({ token });
+
+  // ── Post-flight: fallback + governed cache write ──────────────────────────
+  const scopes = (result !== null && Array.isArray(result))
+    ? result
+    : fsm.PAT_SCOPE_DEFAULTS;
+
+  if (result !== null && ck && typeof ck.dispatch === 'function' && credentialId) {
+    ck.dispatch({
+      type: 'DB_WRITE_REQUESTED',
+      domain: 'graph-capability',
+      accountId: businessAccountId,
+      table: 'instagram_credentials',
+      operation: 'write_scope_cache',
+      rows: [{
+        credentialId,
+        scopes,
+      }],
+    });
+  }
+
+  // ── Signal dispatch ───────────────────────────────────────────────────────
   signalDispatch.emitEvaluate({
     businessAccountId,
     userId,
     source: 'vault.scope.detectDynamic',
   });
-  // Layer 2: emit envelope with grantedScopes + derived cacheAgeMs.
+
   if (businessAccountId) {
     const envelope = fsm.newEnvelope({ businessAccountId, userId });
-    // The worker returns string[] (scopes) and writes a 7-day cache. If the
-    // worker hit the cache, scopes were returned from DB and cacheAgeMs is
-    // (now - scope_cache_updated_at). If the worker hit Meta, cacheAgeMs is 0.
-    // We don't have direct access to the cache timestamp here, but the worker
-    // logs whether it hit cache. We approximate cacheAgeMs=0 for fresh,
-    // otherwise leave it null and let the FSM treat it as not-stale.
     envelope.scope = {
-      grantedScopes: Array.isArray(result) ? result : [],
-      cacheAgeMs: null, // unknown at façade level; not stale → no DEGRADED trigger
+      grantedScopes: scopes,
+      cacheAgeMs: 0,
     };
     signalDispatch.emitEnvelope({ envelope });
   }
-  return result;
+
+  return scopes;
 }
 
 module.exports = { detectDynamic };

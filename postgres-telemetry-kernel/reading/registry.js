@@ -10,6 +10,9 @@ const WORKER_MAP = {
   'db.post-queue':       './workers/post-queue-worker',
   'db.scheduled-posts':  './workers/post-queue-worker',
   'db.accounts':         './workers/accounts-worker',
+  'db.scope-cache':      '../substrates/graph-capability/workers/read-scope-cache-worker',
+  'db.credential':       '../substrates/graph-capability/workers/read-credential-worker',
+  'db.encryption-key':   '../substrates/graph-capability/workers/read-key-worker',
 };
 
 function getWorker(domain) {

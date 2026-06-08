@@ -555,10 +555,14 @@ const DOMAIN_EVENT_MAP = {
   DEDUP_REPLAY_DETECTED: 'dedup',
   DEDUP_BATCH_END: 'dedup',
   CHECK_AND_MARK_DEDUP: 'dedup',
+  CHECK_MUTATION_DEDUP: 'dedup',
+  CHECK_EMISSION_DEDUP: 'dedup',
   REPAIR_CONVERSATION: 'dedup',
   REPAIR_CONVERSATION_COMPLETE: 'dedup',
   DEDUP_RETRY_IN_PROGRESS: 'dedup',
   DEDUP_RETRY_EXHAUSTED: 'dedup',
+  DEDUP_MUTATION_BLOCKED: 'dedup',
+  DEDUP_EMISSION_BLOCKED: 'dedup',
 
   // Reconciliation domain
   RECONCILIATION_TICK: 'reconciliation',
@@ -2328,7 +2332,13 @@ async function bootstrap() {
   const healthSubstrate = require('../../graph-capability-kernel/substrates/health-substrate');
   healthSubstrate.wire(module.exports);
 
-  // 3. Dispatch bootstrap event to the FSM — the FSM decides WHAT health work
+  // 3. Wire the graph-capability DB substrate — workers for governed reads/writes
+  const gcDbSubstrate = require('../../postgres-telemetry-kernel/substrates/graph-capability');
+  gcDbSubstrate.setGovernance(module.exports);
+  gcDbSubstrate.start();
+  console.log('[constitutional-kernel] Graph-capability DB substrate wired');
+
+  // 4. Dispatch bootstrap event to the FSM — the FSM decides WHAT health work
   //    to run (RUN_TOKEN_HEALTH_CHECK, RUN_UAT_REFRESH_CHECK). CK routes the
   //    actions to the health membrane subscribers. Health substrate executes
   //    mechanically — it never decides WHEN.

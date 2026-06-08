@@ -930,6 +930,62 @@ function requireCapability(businessAccountId, requiredScopes = []) {
   }
 }
 
+// CK reference — set via setGovernance() by the orchestrator.
+// Used for cross-domain dispatches (e.g. DB_WRITE_REQUESTED → persist-telemetry).
+let _governance = null;
+
+function setGovernance(gov) {
+  _governance = gov;
+}
+
+/**
+ * Request a credential store operation through the constitutional flow.
+ * Chain: substrate → FSM (this) → CK.dispatch(DB_WRITE_REQUESTED) → persist-telemetry FSM → writer.
+ * Fire-and-forget: returns { success: true } immediately after dispatching.
+ *
+ * @param {{ operation: string, userId: string, businessAccountId?: string,
+ *           igBusinessAccountId?: string, pageAccessToken?: string,
+ *           userAccessToken?: string, pageId?: string, pageName?: string,
+ *           scope?: string[], expiresAt?: string|null, dataAccessExpiresAt?: string|null,
+ *           tokenType: 'page'|'user', signalCb?: Function }} params
+ */
+function requestCredentialStore(params) {
+  if (!_governance) {
+    console.warn('[graph-capability-fsm] No governance set — DB write NOT dispatched');
+    return { success: false, error: 'governance_not_set' };
+  }
+  const {
+    operation, userId, businessAccountId, igBusinessAccountId,
+    pageAccessToken, userAccessToken, pageId, pageName,
+    scope, expiresAt, dataAccessExpiresAt, tokenType, signalCb,
+  } = params;
+
+  _governance.dispatch({
+    type: 'DB_WRITE_REQUESTED',
+    domain: 'graph-capability',
+    accountId: businessAccountId || igBusinessAccountId || userId,
+    table: 'instagram_credentials',
+    operation: 'upsert_credential',
+    rows: [{
+      operation,
+      userId,
+      businessAccountId: businessAccountId || igBusinessAccountId,
+      igBusinessAccountId,
+      pageAccessToken,
+      userAccessToken,
+      pageId,
+      pageName,
+      scope,
+      expiresAt,
+      dataAccessExpiresAt,
+      tokenType,
+      signalCb,
+    }],
+  });
+
+  return { success: true };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 10. Public API
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -942,6 +998,10 @@ module.exports = {
   getHealth,
   init,
   evaluateTriggerCriteria,
+  // CK wiring
+  setGovernance,
+  // Cross-domain dispatch — credential store via constitutional flow
+  requestCredentialStore,
   // Per-cred verdict — sole source of truth
   getCapabilityVerdict,
   // Per-cred capability gate — migrated from verdict-gate.js

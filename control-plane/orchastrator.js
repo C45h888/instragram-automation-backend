@@ -153,6 +153,16 @@ function _wire() {
   constitutional.registerWorker('dedup', 'clear-tick',
     require('../dedup-kernel/substrates/dedup/workers/clear-tick-worker'));
 
+  // ── dedup-fsm — mutation/emission dedup workers (Phase 8, Layer 2+3) ─
+  constitutional.registerWorker('dedup', 'check-mutation-dedup',
+    require('../dedup-kernel/substrates/dedup-mutation/workers/check-mutation-dedup-worker'));
+  constitutional.registerWorker('dedup', 'mark-mutation-in-flight',
+    require('../dedup-kernel/substrates/dedup-mutation/workers/mark-mutation-in-flight-worker'));
+  constitutional.registerWorker('dedup', 'check-emission-dedup',
+    require('../dedup-kernel/substrates/dedup-mutation/workers/check-emission-dedup-worker'));
+  constitutional.registerWorker('dedup', 'mark-emission-in-flight',
+    require('../dedup-kernel/substrates/dedup-mutation/workers/mark-emission-in-flight-worker'));
+
   // Wire each membrane orchestrator
   cadenceOrchestrator.wire(constitutional);
   acquisitionOrchestrator.wire(constitutional, acquisitionFsm);

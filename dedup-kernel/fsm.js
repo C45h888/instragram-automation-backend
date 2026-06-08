@@ -37,13 +37,24 @@ function _obs() {
 
 // Dedup substrate — called directly by FSM for mechanical cleanup (clearTick).
 // The FSM is the intelligence layer; it owns the substrate for non-worker
-// operations. Workers handle bounded I/O; substrate handles cache management.
+// operations. Workers handle bounded I/O; substrate performs mechanics.
 let _dedupSubstrate = null;
 function _substrate() {
   if (!_dedupSubstrate) {
     _dedupSubstrate = require('./substrates/dedup');
   }
   return _dedupSubstrate;
+}
+
+// Mutation/emission dedup substrate — Phase 8 extension.
+// Owns: mutation-layer and emission-layer dedup checks and marks.
+// Separate from the intake dedup substrate to keep namespaces isolated.
+let _mutationDedupSubstrate = null;
+function _mutationSubstrate() {
+  if (!_mutationDedupSubstrate) {
+    _mutationDedupSubstrate = require('./substrates/dedup-mutation');
+  }
+  return _mutationDedupSubstrate;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -385,6 +396,187 @@ const TRANSITION_MAP = {
         reason: checkResult.reason,
         existingIntentId: checkResult.existingIntentId,
         isReplay: checkResult.reason === 'replay',
+      }];
+    },
+  },
+
+  // ── CHECK_MUTATION_DEDUP (Phase 8) ─────────────────────────────────────────
+  // Mutation-layer dedup gate: checks + marks Layer 2 (mutation namespace).
+  // Belt-and-suspenders: also checks Layer 1 (intake) key — if the same intent
+  // was already allowed at intake but evaluation ran twice, the mutation is
+  // blocked as a replay.
+  //
+  // External callers dispatch CHECK_MUTATION_DEDUP to CK → CK routes to
+  // dedup FSM → FSM calls mutation-dedup workers → substrate.
+  // On duplicate: emits DEDUP_MUTATION_BLOCKED observability event.
+  // The emission-orchestrator catches the blocked result and skips the mutation.
+  CHECK_MUTATION_DEDUP: {
+    target: (event) => _localState, // stay in current state
+    guard: (event) => {
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { accountId, actionType, resourceId, intentId } = event;
+
+      // ── 1. Check via bounded worker (CK gate) ──────────────────────
+      let checkResult;
+      try {
+        if (ctx && typeof ctx.invokeWorker === 'function') {
+          checkResult = await ctx.invokeWorker('check-mutation-dedup', {
+            accountId, actionType, resourceId, intentId,
+          });
+        } else {
+          checkResult = await _mutationSubstrate().isInFlightMutation(
+            accountId, actionType, resourceId, intentId
+          );
+        }
+      } catch (err) {
+        console.warn(`[dedup-fsm] check-mutation-dedup failed: ${err.message}, failing open`);
+        if (_governance) {
+          _governance.dispatch({
+            type: 'WORKER_OUTCOME_REPORTED',
+            accountId, intentId,
+            domain: 'dedup:mutation',
+            status: 'failed',
+            result: null,
+            error: err.message,
+            errorShape: { category: 'transient', code: err.code || null, retryable: true, retryAfterSeconds: null },
+            params: { operation: 'check-mutation-dedup', actionType, resourceId },
+          });
+        }
+        checkResult = { blocked: false, reason: null, existingIntentId: null };
+      }
+
+      // ── 2. Duplicate → blocked ─────────────────────────────────────
+      if (checkResult.blocked) {
+        return [{
+          type: 'DEDUP_MUTATION_BLOCKED',
+          accountId, actionType, resourceId, intentId,
+          reason: checkResult.reason,
+          existingIntentId: checkResult.existingIntentId,
+        }];
+      }
+
+      // ── 3. Mark in-flight via bounded worker (CK gate) ─────────────
+      try {
+        if (ctx && typeof ctx.invokeWorker === 'function') {
+          await ctx.invokeWorker('mark-mutation-in-flight', {
+            accountId, actionType, resourceId, intentId,
+          });
+        } else {
+          await _mutationSubstrate().markInFlightMutation(accountId, actionType, resourceId, { intentId });
+        }
+      } catch (err) {
+        console.warn(`[dedup-fsm] mark-mutation-in-flight failed: ${err.message}, failing open`);
+        if (_governance) {
+          _governance.dispatch({
+            type: 'WORKER_OUTCOME_REPORTED',
+            accountId, intentId,
+            domain: 'dedup:mutation',
+            status: 'failed',
+            result: null,
+            error: err.message,
+            errorShape: { category: 'transient', code: err.code || null, retryable: true, retryAfterSeconds: null },
+            params: { operation: 'mark-mutation-in-flight', actionType, resourceId },
+          });
+        }
+      }
+
+      return [{
+        type: 'DEDUP_MUTATION_CHECKED',
+        accountId, actionType, resourceId, intentId,
+        blocked: false,
+        reason: null,
+      }];
+    },
+  },
+
+  // ── CHECK_EMISSION_DEDUP (Phase 8) ─────────────────────────────────────────
+  // Emission-layer dedup gate: checks + marks Layer 3 (emission namespace).
+  // Belt-and-suspenders: also checks Layer 1 (intake) key.
+  //
+  // Prevents the same intent from triggering the IG API twice (e.g., if the
+  // retry worker re-executes after a transient failure that actually succeeded).
+  //
+  // On duplicate: emits DEDUP_EMISSION_BLOCKED observability event.
+  // The content/engagement substrates catch the blocked result and skip the call.
+  CHECK_EMISSION_DEDUP: {
+    target: (event) => _localState, // stay in current state
+    guard: (event) => {
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { accountId, actionType, resourceId, intentId } = event;
+
+      // ── 1. Check via bounded worker (CK gate) ──────────────────────
+      let checkResult;
+      try {
+        if (ctx && typeof ctx.invokeWorker === 'function') {
+          checkResult = await ctx.invokeWorker('check-emission-dedup', {
+            accountId, actionType, resourceId, intentId,
+          });
+        } else {
+          checkResult = await _mutationSubstrate().isInFlightEmission(
+            accountId, actionType, resourceId, intentId
+          );
+        }
+      } catch (err) {
+        console.warn(`[dedup-fsm] check-emission-dedup failed: ${err.message}, failing open`);
+        if (_governance) {
+          _governance.dispatch({
+            type: 'WORKER_OUTCOME_REPORTED',
+            accountId, intentId,
+            domain: 'dedup:emission',
+            status: 'failed',
+            result: null,
+            error: err.message,
+            errorShape: { category: 'transient', code: err.code || null, retryable: true, retryAfterSeconds: null },
+            params: { operation: 'check-emission-dedup', actionType, resourceId },
+          });
+        }
+        checkResult = { blocked: false, reason: null, existingIntentId: null };
+      }
+
+      // ── 2. Duplicate → blocked ─────────────────────────────────────
+      if (checkResult.blocked) {
+        return [{
+          type: 'DEDUP_EMISSION_BLOCKED',
+          accountId, actionType, resourceId, intentId,
+          reason: checkResult.reason,
+          existingIntentId: checkResult.existingIntentId,
+        }];
+      }
+
+      // ── 3. Mark in-flight via bounded worker (CK gate) ─────────────
+      try {
+        if (ctx && typeof ctx.invokeWorker === 'function') {
+          await ctx.invokeWorker('mark-emission-in-flight', {
+            accountId, actionType, resourceId, intentId,
+          });
+        } else {
+          await _mutationSubstrate().markInFlightEmission(accountId, actionType, resourceId, { intentId });
+        }
+      } catch (err) {
+        console.warn(`[dedup-fsm] mark-emission-in-flight failed: ${err.message}, failing open`);
+        if (_governance) {
+          _governance.dispatch({
+            type: 'WORKER_OUTCOME_REPORTED',
+            accountId, intentId,
+            domain: 'dedup:emission',
+            status: 'failed',
+            result: null,
+            error: err.message,
+            errorShape: { category: 'transient', code: err.code || null, retryable: true, retryAfterSeconds: null },
+            params: { operation: 'mark-emission-in-flight', actionType, resourceId },
+          });
+        }
+      }
+
+      return [{
+        type: 'DEDUP_EMISSION_CHECKED',
+        accountId, actionType, resourceId, intentId,
+        blocked: false,
+        reason: null,
       }];
     },
   },

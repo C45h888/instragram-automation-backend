@@ -9,28 +9,37 @@
 // Layer 2: each success path also builds a canonical observation envelope and
 // emits it via signal-dispatch.emitEnvelope() → ck.dispatch(CAPABILITY_OBSERVATION).
 
-const StoreWorker = require('./workers/store-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
-const RefreshWorker = require('./workers/refresh-worker');
+const ExchangeRefreshWorker = require('./workers/exchange-refresh-worker');
 const DetectWorker = require('./workers/detect-worker');
 const signalDispatch = require('../signal-dispatch');
 const fsm = require('../../fsm');
 
 /**
- * Store a UAT credential row.
+ * Store a UAT credential row. Dispatches through graph-capability FSM → CK → persist-telemetry FSM → credential-store-writer.
  * @param {{ userId: string, businessAccountId: string, userAccessToken: string, scope?: string[], expiresAt?: string|null, dataAccessExpiresAt?: string|null }} input
  */
 async function store(input) {
-  const { ...workerInput } = input;
-  if (!workerInput.userId || !workerInput.businessAccountId || !workerInput.userAccessToken) {
+  if (!input.userId || !input.businessAccountId || !input.userAccessToken) {
     return { success: false, error: 'userId, businessAccountId, userAccessToken are required' };
   }
-  const worker = new StoreWorker();
-  const result = await worker.execute(workerInput);
+
+  // Chain: substrate → graph-capability FSM → CK → persist-telemetry FSM → credential-store-writer
+  const result = fsm.requestCredentialStore({
+    operation: 'store_uat',
+    userId: input.userId,
+    businessAccountId: input.businessAccountId,
+    userAccessToken: input.userAccessToken,
+    scope: input.scope,
+    expiresAt: input.expiresAt,
+    dataAccessExpiresAt: input.dataAccessExpiresAt,
+    tokenType: 'user',
+  });
+
   if (result.success) {
     signalDispatch.emitEvaluate({
-      businessAccountId: workerInput.businessAccountId,
-      userId: workerInput.userId,
+      businessAccountId: input.businessAccountId,
+      userId: input.userId,
       source: 'vault.uat.store',
     });
   }
@@ -47,7 +56,7 @@ async function retrieve({ userId, businessAccountId }) {
   }
   const worker = new RetrieveWorker();
   const result = await worker.execute({ userId, businessAccountId });
-  signalDispatch.emitNewAccountConnected({
+  signalDispatch.emitEvaluate({
     businessAccountId,
     userId,
     source: 'vault.uat.retrieve',
@@ -60,30 +69,70 @@ async function retrieve({ userId, businessAccountId }) {
 }
 
 /**
- * Refresh a UAT via fb_exchange_token. On success, emits TOKEN_REFRESHED trigger.
+ * Refresh a UAT via fb_exchange_token. Façade orchestrates three bounded workers:
+ * retrieve → exchange-refresh → detect. Store dispatched through graph-capability FSM → CK → persist-telemetry.
  * @param {{ userId: string, businessAccountId: string }} input
  */
-async function refresh({ ...input }) {
+async function refresh(input) {
   if (!input.userId || !input.businessAccountId) {
     return { success: false, error: 'userId and businessAccountId are required' };
   }
-  const worker = new RefreshWorker();
-  const result = await worker.execute(input);
-  if (result.success) {
-    signalDispatch.emitNewAccountConnected({
-      businessAccountId: input.businessAccountId,
-      userId: input.userId,
-    });
-    // Layer 2: emit envelope — UAT refreshed, isDecryptable=true with new scope.
-    const envelope = fsm.newEnvelope({ businessAccountId: input.businessAccountId, userId: input.userId });
-    envelope.uat = {
-      isDecryptable: true,
-      expiresAt: result.expiresAt || null,
-      scope: result.scopes || [],
-    };
-    signalDispatch.emitEnvelope({ envelope });
+
+  // Step 1: Retrieve current UAT (bounded worker — decrypt + expiry check)
+  const retrieveWorker = new RetrieveWorker();
+  let current;
+  try {
+    current = await retrieveWorker.execute({ userId: input.userId, businessAccountId: input.businessAccountId });
+  } catch (err) {
+    return { success: false, error: `Retrieve failed: ${err.message}` };
   }
-  return result;
+
+  // Step 2: Exchange for fresh token (bounded worker — single fb_exchange_token call)
+  const exchangeWorker = new ExchangeRefreshWorker();
+  const exchangeResult = await exchangeWorker.execute({ token: current.token });
+  if (!exchangeResult.success) {
+    return { success: false, error: exchangeResult.error };
+  }
+
+  // Step 3: Validate the refreshed token (bounded worker — single /debug_token call)
+  const detectWorker = new DetectWorker();
+  const tokenInfo = await detectWorker.execute({ token: exchangeResult.accessToken });
+  if (!tokenInfo || !tokenInfo.isValid) {
+    return { success: false, error: 'Refreshed UAT failed /debug_token validation' };
+  }
+
+  const newExpiresAt = exchangeResult.expiresIn
+    ? new Date(Date.now() + exchangeResult.expiresIn * 1000).toISOString()
+    : null;
+  const dataAccessExpiresAt = tokenInfo.dataAccessExpiresAt
+    ? new Date(tokenInfo.dataAccessExpiresAt * 1000).toISOString()
+    : null;
+
+  // Step 4: Dispatch credential store through graph-capability FSM → CK → persist-telemetry FSM
+  fsm.requestCredentialStore({
+    operation: 'store_uat',
+    userId: input.userId,
+    businessAccountId: input.businessAccountId,
+    userAccessToken: exchangeResult.accessToken,
+    scope: tokenInfo.scopes,
+    expiresAt: newExpiresAt,
+    dataAccessExpiresAt,
+    tokenType: 'user',
+  });
+
+  signalDispatch.emitTokenRefreshed({
+    businessAccountId: input.businessAccountId,
+    userId: input.userId,
+  });
+  const envelope = fsm.newEnvelope({ businessAccountId: input.businessAccountId, userId: input.userId });
+  envelope.uat = {
+    isDecryptable: true,
+    expiresAt: newExpiresAt || null,
+    scope: tokenInfo.scopes || [],
+  };
+  signalDispatch.emitEnvelope({ envelope });
+
+  return { success: true, expiresAt: newExpiresAt, scopes: tokenInfo.scopes };
 }
 
 /**

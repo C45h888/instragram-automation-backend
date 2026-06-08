@@ -226,6 +226,7 @@ const TRANSITION_MAP = {
               worker: a.worker,
               actionType: a.actionType,
               record: a.record,
+              intentId: a.intentId,
             })),
           });
         }
@@ -254,6 +255,7 @@ const TRANSITION_MAP = {
               worker: a.worker,
               actionType: a.actionType,
               record: a.record,
+              intentId: a.intentId,
             })),
           });
         }

@@ -10,6 +10,9 @@ const WORKER_MAP = {
   batch_upsert_ugc:                   './ugc-writer',
   batch_upsert_media_stubs:           './content-writer',
   batch_fix_message_conversation_ids: './message-fix-writer',
+  upsert_credential:                  './credential-store-writer',
+  write_scope_cache:                  '../substrates/graph-capability/workers/write-scope-cache-worker',
+  update_credential_status:           '../substrates/graph-capability/workers/update-credential-status-worker',
 };
 
 function getWriter(operation) {

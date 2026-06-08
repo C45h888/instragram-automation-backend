@@ -16,7 +16,6 @@
 // The envelope shape is declared in graph-capability/observations.js.
 
 const ExchangeWorker = require('./workers/exchange-worker');
-const StoreWorker = require('./workers/store-worker');
 const RetrieveWorker = require('./workers/retrieve-worker');
 const signalDispatch = require('../signal-dispatch');
 const fsm = require('../../fsm');
@@ -44,7 +43,7 @@ async function exchange({ userAccessToken, businessAccountId, userId }) {
 }
 
 /**
- * Store a page access token: provision vault key, upsert business account, encrypt, upsert credential.
+ * Store a page access token. Dispatches through graph-capability FSM → CK → persist-telemetry FSM → credential-store-writer.
  * On success, emits NEW_ACCOUNT_CONNECTED so the capability FSM can evaluate.
  * @param {{ userId: string, igBusinessAccountId: string, pageAccessToken: string, pageId: string, pageName: string, scope?: string[], businessAccountId?: string, userId_?: string }} input
  */
@@ -53,22 +52,34 @@ async function store(input) {
   if (!workerInput.userId || !workerInput.igBusinessAccountId || !workerInput.pageAccessToken || !workerInput.pageName) {
     return { success: false, error: 'userId, igBusinessAccountId, pageAccessToken, pageName are required' };
   }
-  const worker = new StoreWorker();
-  const result = await worker.execute(workerInput);
 
-  if (result.success) {
+  // Chain: substrate → graph-capability FSM → CK → persist-telemetry FSM → credential-store-writer
+  // signalCb fires inside the writer on success so signal emission happens after the DB write.
+  const signalCb = (resolvedBaId) => {
     signalDispatch.emitNewAccountConnected({
-      businessAccountId: result.businessAccountId || businessAccountId,
+      businessAccountId: resolvedBaId || businessAccountId,
       userId: workerInput.userId || userId_,
     });
-    // Layer 2: emit a fresh envelope reporting the new PAT is decryptable.
     const envelope = fsm.newEnvelope({
-      businessAccountId: result.businessAccountId || businessAccountId,
+      businessAccountId: resolvedBaId || businessAccountId,
       userId: workerInput.userId || userId_,
     });
-    envelope.pat = { isDecryptable: true, ...result };
+    envelope.pat = { isDecryptable: true };
     signalDispatch.emitEnvelope({ envelope });
-  }
+  };
+
+  const result = fsm.requestCredentialStore({
+    operation: 'store_pat',
+    userId: workerInput.userId,
+    igBusinessAccountId: workerInput.igBusinessAccountId,
+    pageAccessToken: workerInput.pageAccessToken,
+    pageId: workerInput.pageId,
+    pageName: workerInput.pageName,
+    scope: workerInput.scope,
+    tokenType: 'page',
+    signalCb,
+  });
+
   return result;
 }
 
@@ -84,7 +95,7 @@ async function retrieve({ userId, businessAccountId }) {
   }
   const worker = new RetrieveWorker();
   const result = await worker.execute({ userId, businessAccountId });
-  signalDispatch.emitTokenRefreshed({
+  signalDispatch.emitEvaluate({
     businessAccountId,
     userId,
     source: 'vault.pat.retrieve',

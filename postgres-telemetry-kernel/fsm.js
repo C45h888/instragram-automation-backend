@@ -85,6 +85,8 @@ const VALID_TABLES = new Set([
   'post_queue',
   'scheduled_posts',
   'ugc_permissions',
+  'instagram_credentials',
+  'instagram_business_accounts',
 ]);
 
 const BACKPRESSURE_THRESHOLD = 10;
@@ -103,6 +105,9 @@ const READ_DOMAIN_WHITELIST = new Set([
   'ig.engagement',
   'ig.insights',
   'ig.ugc',
+  'db.scope-cache',
+  'db.credential',
+  'db.encryption-key',
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════════

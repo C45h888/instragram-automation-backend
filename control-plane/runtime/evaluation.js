@@ -61,7 +61,7 @@ async function evaluate(accountId, events) {
   const intents = [];
   const mutations = [];
 
-  for (const { table, record } of events) {
+  for (const { table, record, intentId } of events) {
     const outcome = publishingPolicy.evaluateRecord(table, record);
 
     if (outcome.action === 'skip') {
@@ -74,6 +74,7 @@ async function evaluate(accountId, events) {
         id: record.id,
         updates: outcome.updates,
         reason: outcome.reason,
+        intentId: intentId || null,
       });
       continue;
     }
@@ -81,14 +82,17 @@ async function evaluate(accountId, events) {
     if (outcome.action === 'emit') {
       const { intent } = outcome;
       const resourceId = record.id;
-      // Use pre-allocated intentId from dedup check, or generate fresh
-      const intentId = event.intentId || crypto.randomUUID();
+      // intentId is pre-allocated by _preFilterDedup (on the outer event object
+      // from the loop variable { table, record, intentId }). Reuse it to ensure
+      // the same intentId used at intake dedup check is used in the intent.
+      // If missing (non-orchestrator caller), generate fresh.
+      const intentId_out = intentId || crypto.randomUUID();
 
       // Dedup already checked by publishing orchestrator via CK → dedup FSM.
       // Events reaching here have passed dedup. No isInFlight/markInFlight.
 
       intents.push({
-        intent_id: intentId,
+        intent_id: intentId_out,
         account_id: accountId,
         action_type: intent.action_type,
         resource_id: resourceId,

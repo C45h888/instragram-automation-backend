@@ -54,9 +54,13 @@ async function emit(intents) {
 
   let emitted = 0;
   for (const intent of intents) {
-    const { account_id, action_type, resource_id, payload, queue_row_id, scheduled_post_id, intent_type } = intent;
+    const { account_id, action_type, resource_id, payload, queue_row_id, scheduled_post_id, intent_type, intent_id: provided_intent_id } = intent;
 
-    const intent_id = require('crypto').randomUUID();
+    // Use the pre-allocated intentId from the dedup chain (Phase 8+).
+    // For backward compat with intents emitted before Phase 8, fall back
+    // to generating a new UUID (the dedup chain won't have seen it but
+    // the operation will proceed — fail-open is the correct behavior).
+    const intent_id = provided_intent_id || require('crypto').randomUUID();
     const routingKey = domainForAction(action_type);  // e.g., 'publish:media'
     const fetch_type = routingKey;  // routingKey IS the fetch type for publish actions
 
@@ -109,10 +113,10 @@ async function emit(intents) {
  * Apply a state mutation via the mutation substrate.
  *
  * @param {{ table: string, id: string, updates: object, reason: string }} mut
+ * @param {string|null} [intentId] — pre-allocated intentId for mutation dedup gate (Phase 8+)
  * @returns {Promise<{ok: boolean, error?: string}>}
- *   ok=false when mutation substrate fails or input is invalid.
  */
-async function emitMutation(mut) {
+async function emitMutation(mut, intentId) {
   if (!mut || typeof mut !== 'object') {
     return { ok: false, error: `mutation must be an object, got ${typeof mut}` };
   }
@@ -128,7 +132,7 @@ async function emitMutation(mut) {
     previousState: 'PENDING',
     nextState: 'APPLIED',
     authority: 'emission-runtime',
-    raw: { table: mut.table, reason: mut.reason },
+    raw: { table: mut.table, reason: mut.reason, intentId: intentId || null },
   });
 
   await mutationSubstrate.applyMutation(mut.table, mut.id, mut.updates, undefined, mut.reason);
