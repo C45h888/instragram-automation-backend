@@ -49,12 +49,6 @@ const AUTH_FAILURE_MAX_STRIKES = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 3600000; // 1 hour default
 const MAX_RETRY_COUNT = 1;
 
-// ── Ingress retry state ─────────────────────────────────────────────────────
-// Activated by telemetry-coordination FSM when ingress lag detected.
-// Used to apply more aggressive retry cadence during lag events.
-let _ingressRetryActive = false;
-let _ingressRetryLag = 0;
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -99,8 +93,6 @@ const TRANSITION_MAP = {
         cooldownMs,
         openedAt: existing ? existing.openedAt : Date.now(),
         reopenedAt: existing ? Date.now() : null,
-        substrate,  // NEW: track which substrate triggered the breaker
-        affectedDomains: affectedDomains || [],
       });
 
       // Query substrate state for informed degradation
@@ -293,8 +285,6 @@ const TRANSITION_MAP = {
           _cancelRetry(intentId);
         }
       }
-      // Clear sanity rejection counter
-      clearSanityRejections(accountId);
       return [];
     },
   },
@@ -539,71 +529,6 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Ingress retry cadence activation (from telemetry-coordination FSM) ──
-  RETRY_CADENCE_REQUEST: {
-    target: (event) => _localState, // no state change — just activate retry mode
-    guard: () => ({ allowed: true }),
-    buildActions: (event) => {
-      const { source, lag, errorCategory, namespace, escalationState } = event;
-
-      if (event.source === 'ingress') {
-        _ingressRetryActive = true;
-        _ingressRetryLag = lag || 0;
-      }
-
-      if (event.source === 'worker') {
-        // Worker degradation — register error for alerting and cadence
-        if (namespace && errorCategory) {
-          _workerErrorRegistry.set(namespace, {
-            category: errorCategory,
-            failedWrites: lag || 0,
-            escalatedAt: Date.now(),
-            escalationState: escalationState || 'RETRYING',
-          });
-        }
-        _ingressRetryActive = true;
-      }
-
-      // Classify error for alert routing
-      if (errorCategory) {
-        const routingKey = ERROR_CATEGORY_ROUTING[errorCategory] ?? ERROR_CATEGORY_ROUTING.UNKNOWN;
-        // Alert routing is handled by action effects — the action itself carries the routing
-        // The consuming alert subscriber uses the routing key to determine handler
-      }
-
-      return [];
-    },
-  },
-
-  // ── Ingress retry cadence clear (from telemetry-coordination FSM) ────────
-  RETRY_CADENCE_CLEAR: {
-    target: (event) => _localState,
-    guard: () => ({ allowed: true }),
-    buildActions: (event) => {
-      if (event.source === 'ingress') {
-        _ingressRetryActive = false;
-        _ingressRetryLag = 0;
-      }
-
-      if (event.source === 'worker') {
-        // Clear worker error registry for the given namespace
-        if (event.namespace) {
-          _workerErrorRegistry.delete(event.namespace);
-        } else {
-          // No namespace: clear all worker registrations
-          _workerErrorRegistry.clear();
-        }
-        // If both sources are cleared, deactivate retry mode entirely
-        const stillHasWorkerEntries = _workerErrorRegistry.size > 0;
-        if (!event.source && !stillHasWorkerEntries) {
-          _ingressRetryActive = false;
-        }
-      }
-
-      return [];
-    },
-  },
-
   // ACQUISITION_INTENT_RECEIVED entry REMOVED in Step 7.
   // The event is routed by DOMAIN_EVENT_MAP → 'acquisition' domain.
   // engagement-fsm should NEVER receive this event directly.
@@ -729,6 +654,13 @@ const TRANSITION_MAP = {
             };
 
             const scheduleResult = await _scheduleRetry(context, actionTag, ctx);
+            // ORDERING ASSUMPTION: sanity gate fires BEFORE the timer is set
+            // and BEFORE any worker is invoked. The rejected event below is
+            // consumed by the FSM's own SANITY_CHECK_REJECTED handler (which
+            // cancels the held context). If a future refactor splits the
+            // sanity gate into pre-schedule AND pre-invoke, the rejected
+            // event must NOT be emitted on the pre-invoke path — the worker
+            // would already be in flight.
             if (!scheduleResult.scheduled) {
               // Sanity check rejected the schedule. Emit
               // SANITY_CHECK_REJECTED for the FSM's own handler
@@ -896,11 +828,6 @@ const _authFailureStrikes = new Map();
 // dispatch decision, the cancellation. Single source of truth.
 const _executionContexts = new Map();
 
-// ── Sanity check rejection counter: accountId → rejection count ─────────
-// Used to escalate to DEGRADED if many sanity rejections for the
-// same account. Reset on AUTH_SUCCESS.
-const _rejectionCounts = new Map();
-
 // ── Sanity check reference (canonical: ctx.sanityCheck) ────────────────
 // The ctx.sanityCheck is the universal gate. The FSM calls
 // ctx.sanityCheck(action) during evaluation. No module-level
@@ -963,21 +890,6 @@ function getWorkers() {
 }
 
 
-// ── Worker error registry: namespace → { category, failedWrites, escalatedAt } ─
-// Populated when RETRY_CADENCE_REQUEST arrives from 'worker' source.
-// Used for alert routing and error classification.
-const _workerErrorRegistry = new Map();
-
-// Error category → alert routing key mapping
-// Routes errors to the correct response handler based on error type
-const ERROR_CATEGORY_ROUTING = {
-  REDIS_UNAVAILABLE: 'REDIS_INFRASTRUCTURE',
-  LINEAGE_WRITE_FAILED: 'LEDGER_WRITE',
-  CK_DISPATCH_FAILED: 'CK_GOVERNANCE',
-  SERIALIZATION_ERROR: 'DATA_INTEGRITY',
-  UNKNOWN: 'UNKNOWN',
-};
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Dispatch — process event, ask constitutional for validation, transition
 //
@@ -986,7 +898,7 @@ const ERROR_CATEGORY_ROUTING = {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3.5. Retry orchestration — FSM-owned scheduling, timer, cancellation
-// ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
 // The FSM is the LOCAL intelligence layer. It owns:
 //   - the retry counter (canonical)
 //   - the timer (setTimeout, tracked by timeoutId)
@@ -1031,7 +943,6 @@ async function _scheduleRetry(context, actionTag, fsmCtx) {
   });
 
   if (!sanity.allowed) {
-    _recordRejection(context.accountId);
     return {
       scheduled: false,
       timeoutId: null,
@@ -1155,7 +1066,6 @@ async function _executeRetry(context, fsmCtx) {
   });
 
   if (!sanity.allowed) {
-    _recordRejection(context.accountId);
     return;
   }
 
@@ -1275,19 +1185,6 @@ function _buildExhaustedActions(params) {
     });
   }
   return actions;
-}
-
-function _recordRejection(accountId) {
-  const count = (_rejectionCounts.get(accountId) || 0) + 1;
-  _rejectionCounts.set(accountId, count);
-}
-
-function getSanityRejectionCount(accountId) {
-  return _rejectionCounts.get(accountId) || 0;
-}
-
-function clearSanityRejections(accountId) {
-  _rejectionCounts.delete(accountId);
 }
 
 /**
@@ -1573,6 +1470,4 @@ module.exports = {
   getExecutionContexts,
   getEngagementSnapshot,
   getLastTransitionedAt,
-  getSanityRejectionCount,
-  clearSanityRejections,
 };

@@ -48,14 +48,46 @@ async function store(input) {
 
 /**
  * Retrieve a UAT (decrypt + expiry check). Throws on failure.
+ * DB reads flow through CK.governedRead → persist-telemetry FSM.
+ * Decrypt RPC stays in vault worker.
  * @param {{ userId: string, businessAccountId: string }} input
  */
 async function retrieve({ userId, businessAccountId }) {
   if (!userId || !businessAccountId) {
     throw new Error('userId and businessAccountId are required');
   }
+
+  const ck = fsm.getGovernance();
+  if (!ck || typeof ck.governedRead !== 'function') {
+    throw new Error('Governance not available — GCFSM not bootstrapped');
+  }
+
+  // ── Credential lookup (constitutional) ──────────────────────────────────
+  const credResult = await ck.governedRead('db.credential', {
+    userId,
+    businessAccountId,
+    tokenType: 'user',
+  });
+  if (!credResult.success || !credResult.data) {
+    throw new Error('No UAT found. User must complete OAuth flow.');
+  }
+
+  // ── Business account lookup for encryption key (constitutional) ─────────
+  const baResult = await ck.governedRead('db.accounts', {
+    query: 'getBusinessAccount',
+    businessAccountId,
+  });
+
   const worker = new RetrieveWorker();
-  const result = await worker.execute({ userId, businessAccountId });
+  const result = await worker.execute({
+    encryptedToken: credResult.data.access_token_encrypted,
+    encryptionKeyId: baResult.success ? (baResult.data?.encryption_key_id || null) : null,
+    expiresAt: credResult.data.expires_at,
+    dataAccessExpiresAt: credResult.data.data_access_expires_at,
+    scope: credResult.data.scope,
+    issuedAt: credResult.data.issued_at,
+  });
+
   signalDispatch.emitEvaluate({
     businessAccountId,
     userId,

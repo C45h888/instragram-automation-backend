@@ -250,7 +250,11 @@ const TRANSITION_MAP = {
         }];
       }
 
-      // Forward read result to calling domain
+      // Forward read result to calling domain. Attach lineageId+lineageDomain
+      // to satisfy the canonical-source gate. The lineageDomain names
+      // persist-telemetry as the issuer (the executor of the read);
+      // the gate allows this because persist-telemetry is a registered
+      // constitutional citizen. (Phase 7 Findings, B1)
       const actions = [];
       if (ctx && ctx.dispatchGlobal) {
         ctx.dispatchGlobal({
@@ -260,6 +264,8 @@ const TRANSITION_MAP = {
           readId,
           data,
           latencyMs,
+          lineageId: `persist-telemetry-read-complete-${readId}`,
+          lineageDomain: 'persist-telemetry',
         });
       }
 

@@ -179,6 +179,19 @@ function makeStubCk() {
       if (!actionSubscribers.has(actionType)) actionSubscribers.set(actionType, []);
       actionSubscribers.get(actionType).push(handler);
     }),
+    // Mock governedRead — returns empty data by default.
+    // Individual tests override vi.mocked(ck.governedRead).mockResolvedValue(...)
+    // to inject specific scan results for their scenario.
+    governedRead: vi.fn(async (readDomain, params) => {
+      if (readDomain === 'db.credential') {
+        return { success: true, data: [], error: null, latencyMs: 0 };
+      }
+      if (readDomain === 'db.alerts') {
+        // checkExistingWarning: return false (no existing warning) by default
+        return { success: true, data: false, error: null, latencyMs: 0 };
+      }
+      return { success: false, data: null, error: 'unknown_domain', latencyMs: 0 };
+    }),
   };
 }
 

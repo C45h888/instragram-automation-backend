@@ -70,7 +70,7 @@ async function execute(params, governance) {
   const { query, igIds, threadIds } = params;
   const startTime = Date.now();
 
-  const VALID_QUERIES = ['getActiveAccounts', 'igIdToUserId', 'igThreadIdToUuid'];
+  const VALID_QUERIES = ['getActiveAccounts', 'igIdToUserId', 'igThreadIdToUuid', 'getBusinessAccount'];
   if (!VALID_QUERIES.includes(query)) {
     const elapsed = Date.now() - startTime;
     _emitObserved(governance, query, elapsed, `unknown_query: ${query}`);
@@ -153,6 +153,51 @@ async function execute(params, governance) {
       _setCache(query, result, hashCtx);
       _emitObserved(governance, query, elapsed);
       return { success: true, data: result, error: null, latencyMs: elapsed };
+    } catch (err) {
+      const elapsed = Date.now() - startTime;
+      _emitObserved(governance, query, elapsed, err.message);
+      return { success: false, data: null, error: err.message, latencyMs: elapsed };
+    }
+  }
+
+  // ── getBusinessAccount — single business account by UUID ─────────────────
+  if (query === 'getBusinessAccount') {
+    const { businessAccountId } = params;
+    if (!businessAccountId) {
+      return { success: false, data: null, error: 'businessAccountId required', latencyMs: Date.now() - startTime };
+    }
+
+    const baKey = _cacheKey('getBusinessAccount', businessAccountId);
+    const baCached = _getCached('getBusinessAccount', businessAccountId);
+    if (baCached !== null) {
+      _emitObserved(governance, query, Date.now() - startTime, null, true);
+      return { success: true, data: baCached, error: null, latencyMs: Date.now() - startTime, cached: true };
+    }
+
+    const supabase = getSupabaseAdmin();
+    if (!supabase) {
+      const elapsed = Date.now() - startTime;
+      _emitObserved(governance, query, elapsed, 'supabase_unavailable');
+      return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('instagram_business_accounts')
+        .select('*')
+        .eq('id', businessAccountId)
+        .single();
+
+      if (error) {
+        const elapsed = Date.now() - startTime;
+        if (error.code === 'PGRST116') return { success: false, data: null, error: 'business_account_not_found', latencyMs: elapsed };
+        return { success: false, data: null, error: error.message, latencyMs: elapsed };
+      }
+
+      const elapsed = Date.now() - startTime;
+      _setCache('getBusinessAccount', data, businessAccountId);
+      _emitObserved(governance, query, elapsed);
+      return { success: true, data, error: null, latencyMs: elapsed };
     } catch (err) {
       const elapsed = Date.now() - startTime;
       _emitObserved(governance, query, elapsed, err.message);

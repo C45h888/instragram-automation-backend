@@ -85,6 +85,8 @@ async function store(input) {
 
 /**
  * Retrieve and decrypt a page access token.
+ * DB reads flow through CK.governedRead → persist-telemetry FSM.
+ * Decrypt RPC stays in vault worker.
  * Throws on failure (matches legacy contract).
  * On success, emits CAPABILITY_EVALUATE so the FSM observes vault liveness.
  * @param {{ userId: string, businessAccountId: string }} input
@@ -93,8 +95,34 @@ async function retrieve({ userId, businessAccountId }) {
   if (!userId || !businessAccountId) {
     throw new Error('userId and businessAccountId are required');
   }
+
+  const ck = fsm.getGovernance();
+  if (!ck || typeof ck.governedRead !== 'function') {
+    throw new Error('Governance not available — GCFSM not bootstrapped');
+  }
+
+  // ── Credential lookup (constitutional) ──────────────────────────────────
+  const credResult = await ck.governedRead('db.credential', {
+    userId,
+    businessAccountId,
+    tokenType: 'page',
+  });
+  if (!credResult.success || !credResult.data) {
+    throw new Error('No page token found. User must complete OAuth flow first.');
+  }
+
+  // ── Business account lookup for encryption key (constitutional) ─────────
+  const baResult = await ck.governedRead('db.accounts', {
+    query: 'getBusinessAccount',
+    businessAccountId,
+  });
+
   const worker = new RetrieveWorker();
-  const result = await worker.execute({ userId, businessAccountId });
+  const result = await worker.execute({
+    encryptedToken: credResult.data.access_token_encrypted,
+    encryptionKeyId: baResult.success ? (baResult.data?.encryption_key_id || null) : null,
+  });
+
   signalDispatch.emitEvaluate({
     businessAccountId,
     userId,

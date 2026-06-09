@@ -1,29 +1,34 @@
 // graph-capability-kernel/substrates/health-substrate/index.js
-// Health substrate façade — orchestrator for the four health workers.
+// Health substrate façade — orchestrator for the health workers.
 //
 // Constitutional role:
-//   - scan-credentials-worker: detect + classify
+//   - credential scan: governedRead('db.credential', { query: 'scanActivePageCredentials' })
+//     → CK → persist-telemetry FSM → read-credential-worker (batch SELECT, constitutional)
+//   - UAT expiry scan: governedRead('db.credential', { query: 'scanExpiringUATs' })
+//     → CK → persist-telemetry FSM → read-credential-worker (date-filtered SELECT)
+//   - data-access scan + dedup: governedRead('db.credential', { query: 'scanDataAccessExpiry' })
+//     → CK → persist-telemetry FSM → read-credential-worker
+//     + governedRead('db.alerts', { query: 'checkExistingWarning' }) per cred for dedup
 //   - recovery-worker: UAT→PAT side effect (only on INVALID)
-//   - uat-refresh-worker: 14d expiring-UAT scan + refresh
-//   - data-access-expiry-worker: 30d data_access_expires_at scan + dedup
 //
 // This façade owns:
-//   - composing the four workers
+//   - composing the workers
 //   - 200ms rate-limit pacing between /debug_token calls
 //   - 1000ms rate-limit pacing between UAT refresh attempts
 //   - run-level audit log events (started / completed / error)
 //   - signal dispatch (emitEnvelope, emitEvaluate) post-worker
 //
 // This façade does NOT own:
-//   - DB writes (dispatched through FSM → CK → persist-telemetry)
-//   - /debug_token calls (scan-credentials-worker)
+//   - DB reads (dispatched through CK.governedRead → persist-telemetry FSM → reading-substrate)
+//   - DB writes (dispatched through fsm.requestDBWrite() → CK → persist-telemetry FSM → writer)
+//   - /debug_token calls (vault.uat.detect — single-call worker)
 //   - recovery I/O (recovery-worker)
-//   - refresh I/O (uat-refresh-worker)
-//   - dedup pre-check (data-access-expiry-worker)
+//   - refresh I/O (vault.uat.refresh — single-call worker)
+//   - alert dedup logic (delegated to read-alerts-worker via governedRead)
 //
 // Constitutional wiring:
-//   All DB mutations (alerts, lifecycle events, credential status updates)
-//   flow through: fsm.requestDBWrite() → CK.dispatch(DB_WRITE_REQUESTED) →
+//   All DB reads flow through: CK.governedRead() → persist-telemetry FSM → reading-substrate → worker.
+//   All DB writes flow through: fsm.requestDBWrite() → CK.dispatch(DB_WRITE_REQUESTED) →
 //   persist-telemetry FSM → writer. Fire-and-forget, matches existing
 //   best-effort semantics (no retry, console.warn on failure handled by writer).
 
@@ -32,10 +37,7 @@ const signalDispatch = require('../vault/signal-dispatch');
 const fsm = require('../../fsm');
 const vault = require('../vault');
 
-const ScanCredentialsWorker = require('./workers/scan-credentials-worker');
 const RecoveryWorker = require('./workers/recovery-worker');
-const UatRefreshWorker = require('./workers/uat-refresh-worker');
-const DataAccessExpiryWorker = require('./workers/data-access-expiry-worker');
 
 // Private delay — local to this substrate, no cross-import from helpers
 function delay(ms) {
@@ -170,8 +172,9 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
   }
 
   try {
-    const scanWorker = new ScanCredentialsWorker();
-    const { creds, stats: scanStats } = await scanWorker.execute({});
+    const result = await _governance.governedRead('db.credential', { query: 'scanActivePageCredentials' });
+    const creds = result.success ? (result.data || []) : [];
+    const scanStats = { total: creds.length };
 
     logAudit({
       event_type: 'token_health_run_started',
@@ -378,8 +381,9 @@ async function runUATRefreshCheck({ windowDays = 14, interCallDelayMs = 1000, da
 
   try {
     // ── Phase 1: 14-day expiring UAT scan + refresh ──
-    const refreshWorker = new UatRefreshWorker();
-    const { uats, stats: refreshScanStats } = await refreshWorker.execute({ windowDays, businessAccountId });
+    const refreshResult = await _governance.governedRead('db.credential', { query: 'scanExpiringUATs', windowDays, businessAccountId });
+    const uats = refreshResult.success ? (refreshResult.data || []) : [];
+    const refreshScanStats = { total: uats.length };
 
     let refreshed = 0;
     let failed = 0;
@@ -450,8 +454,30 @@ async function runUATRefreshCheck({ windowDays = 14, interCallDelayMs = 1000, da
     }
 
     // ── Phase 2: 30-day data_access_expires_at scan + dedup'd warning ──
-    const dedupWorker = new DataAccessExpiryWorker();
-    const { candidates, stats: dedupStats } = await dedupWorker.execute({ windowDays: dataAccessWindowDays, businessAccountId });
+    const daeResult = await _governance.governedRead('db.credential', { query: 'scanDataAccessExpiry', windowDays: dataAccessWindowDays, businessAccountId });
+    const expiringDataAccess = daeResult.success ? (daeResult.data || []) : [];
+
+    const candidates = [];
+    let daeDeduped = 0;
+
+    for (const uat of expiringDataAccess) {
+      const daysLeft = Math.ceil((new Date(uat.data_access_expires_at) - Date.now()) / (24 * 60 * 60 * 1000));
+
+      // Dedup: skip if an unresolved data_access_expiry_warning already exists
+      const dedupResult = await _governance.governedRead('db.alerts', {
+        query: 'checkExistingWarning',
+        businessAccountId: uat.business_account_id,
+        alertType: 'data_access_expiry_warning',
+      });
+      if (dedupResult.success && dedupResult.data) {
+        daeDeduped++;
+        continue;
+      }
+
+      candidates.push({ uat, daysLeft });
+    }
+
+    const dedupStats = { alertable: candidates.length, deduped: daeDeduped, total: expiringDataAccess.length };
 
     for (const c of candidates) {
       const { uat, daysLeft } = c;

@@ -630,7 +630,11 @@ const TRANSITION_MAP = {
         timeout,
       });
 
-      // Route to persist-telemetry
+      // Route to persist-telemetry. Attach lineageId+lineageDomain to
+      // satisfy the canonical-source gate. The lineageDomain names the
+      // source FSM (graph-capability); the CK's gate allows this
+      // because the source is a registered constitutional citizen.
+      // (Phase 7 Findings, B1)
       if (ctx && ctx.dispatchGlobal) {
         ctx.dispatchGlobal({
           type: 'DB_READ_REQUESTED',
@@ -638,6 +642,8 @@ const TRANSITION_MAP = {
           accountId: event.businessAccountId,
           readId,
           params,
+          lineageId: `graph-capability-data-request-${readId}`,
+          lineageDomain: 'graph-capability',
         });
       }
       return [];
@@ -1231,6 +1237,10 @@ function setGovernance(gov) {
   _governance = gov;
 }
 
+function getGovernance() {
+  return _governance;
+}
+
 // ── Dispatch ctx — built by the kernel root and shared with substrates ──────
 // The signal-dispatch module binds the FSM at install time and uses this ctx
 // to route substrate emissions into the FSM. The ctx shape is the same as
@@ -1431,6 +1441,7 @@ module.exports = {
   evaluateTriggerCriteria,
   // CK wiring
   setGovernance,
+  getGovernance,
   // Dispatch ctx shared with signal-dispatch (FSM is the constitutional ingress)
   setDispatchCtx,
   getDispatchContext,

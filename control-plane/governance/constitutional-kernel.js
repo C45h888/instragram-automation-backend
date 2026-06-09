@@ -1302,12 +1302,25 @@ function dispatch(event) {
                 `CK coordination cycle (lineageId missing)`,
       };
     }
-    // If lineageId is present, verify it was issued for this domain (cross-domain veto)
-    if (hasCanonicalLineage && event.lineageDomain && event.lineageDomain !== domainName) {
+    // If lineageId is present, the event is canonically sourced. Allow
+    // cross-domain lineage (e.g. graph-capability FSM dispatching
+    // DB_READ_REQUESTED destined for persist-telemetry). The previous
+    // strict veto rejected all cross-domain events, which broke the
+    // constitutional data-flow chain: any substrate calling
+    // _governance.governedRead() or any FSM dispatching a cross-domain
+    // request (CAPABILITY_DATA_REQUEST, DB_READ_COMPLETE) was silently
+    // rejected, and the chain stalled end-to-end. The lineageId is the
+    // canonical-source proof; the lineageDomain is a label of the issuer
+    // domain, not a constraint on the target. (Phase 7 Findings, B1)
+    //
+    // The veto is still enforced when the lineage claims a domain that
+    // is not registered as a constitutional citizen — that catches
+    // external noise with a fake lineageDomain.
+    if (hasCanonicalLineage && event.lineageDomain && !_domains.has(event.lineageDomain)) {
       return {
         allowed: false,
         reason: `cross-domain lineage veto: event for domain '${domainName}' carries ` +
-                `lineageId from '${event.lineageDomain}' — domain mismatch`,
+                `lineageId from unknown source domain '${event.lineageDomain}' — not a registered citizen`,
       };
     }
   }
@@ -2188,13 +2201,19 @@ function governedRead(readDomain, params = {}, timeoutMs = 15000) {
 
     subscribeAction('READ_RESULT_AVAILABLE', resultHandler);
 
-    // Dispatch the read request
+    // Dispatch the read request. Attach lineageId+lineageDomain to
+    // satisfy the canonical-source gate. The lineageDomain is the
+    // calling context (graph-capability by default — the substrate
+    // façade) and the lineageId is derived from the readId for
+    // round-trip traceability. (Phase 7 Findings, B1)
     const dispatchResult = dispatch({
       type: 'DB_READ_REQUESTED',
       readDomain,
       accountId: params.accountId,
       readId,
       params,
+      lineageId: `governedRead-${readId}`,
+      lineageDomain: 'graph-capability',
     });
 
     if (!dispatchResult.allowed) {
