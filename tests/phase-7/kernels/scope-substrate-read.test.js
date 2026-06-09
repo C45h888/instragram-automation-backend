@@ -28,6 +28,7 @@ const require_ = createRequire(import.meta.url);
 // mocked here so the real production code loads and runs unmodified.
 import Module from 'node:module';
 const realFsm = require_('../../../graph-capability-kernel/fsm.js');
+const { createStubCk } = require_('../runtime/stub-ck.js');
 
 // Mock signal-dispatch BEFORE importing scope-substrate
 const mockSignalDispatch = {
@@ -226,33 +227,9 @@ describe('Scope Substrate — detectDynamic()', () => {
   });
 
   it('SCENARIO 11 — cache miss falls through to /debug_token worker and dispatches DB_WRITE_REQUESTED', async () => {
-    // Mock CK returns null data (no cache) on the read, then accepts writes
-    const mockCk = {
-      dispatch: vi.fn((event) => {
-        if (event.type === 'CAPABILITY_DATA_REQUEST') {
-          return realFsm.dispatch(event, {
-            dispatchGlobal: (sub) => {
-              if (sub.type === 'DB_READ_REQUESTED') {
-                realFsm.dispatch(
-                  {
-                    type: 'READ_RESULT_AVAILABLE',
-                    businessAccountId: event.businessAccountId,
-                    accountId: event.businessAccountId,
-                    readId: event.readId,
-                    readDomain: event.readDomain,
-                    data: null, // cache miss
-                  },
-                  { dispatchGlobal: vi.fn(), validate: () => ({ allowed: true }) }
-                );
-              }
-            },
-            validate: () => ({ allowed: true }),
-          });
-        }
-        return { allowed: true };
-      }),
-    };
-    mockSignalDispatch.getCk.mockReturnValue(mockCk);
+    // Use stub-ck so DB_WRITE_REQUESTED is routed to persist-telemetry (F2b fix)
+    const { stubCk, teardown } = createStubCk({ realFsm });
+    mockSignalDispatch.getCk.mockReturnValue(stubCk);
 
     // Worker returns scopes
     mockDetectDynamicWorkerInstance.execute.mockResolvedValue(['scope2']);
@@ -274,11 +251,12 @@ describe('Scope Substrate — detectDynamic()', () => {
       source: 'vault.scope.detectDynamic',
     });
     // DB_WRITE_REQUESTED was dispatched to write the cache
-    const writeCall = mockCk.dispatch.mock.calls.find((c) => c[0].type === 'DB_WRITE_REQUESTED');
+    const writeCall = stubCk.findEvents('DB_WRITE_REQUESTED')[0];
     expect(writeCall).toBeDefined();
-    expect(writeCall[0].table).toBe('instagram_credentials');
-    expect(writeCall[0].operation).toBe('write_scope_cache');
-    expect(writeCall[0].accountId).toBe('ba-1');
+    expect(writeCall.table).toBe('instagram_credentials');
+    expect(writeCall.operation).toBe('write_scope_cache');
+    expect(writeCall.accountId).toBe('ba-1');
+    teardown();
   });
 
   it('SCENARIO 12 — governed read timeout falls through to /debug_token worker', async () => {

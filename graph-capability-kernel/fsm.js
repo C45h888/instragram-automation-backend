@@ -356,6 +356,15 @@ const TRANSITION_MAP = {
       const targetBaId = event && event.businessAccountId;
       const actions = [];
 
+      // Wire registered membranes on the first unscoped bootstrap. Idempotent.
+      // The CK never calls a substrate directly — the FSM is the only
+      // constitutional path from policy to execution. _wireMembranes is a
+      // no-op if no membranes are registered (e.g. in unit tests where the
+      // substrate is not required).
+      if (!targetBaId && _governance) {
+        _wireMembranes(_governance);
+      }
+
       // Targeted bootstrap: gate on per-cred cadence
       if (targetBaId) {
         if (_shouldCheck(targetBaId, 'token_health', now)) {
@@ -1222,6 +1231,60 @@ function setGovernance(gov) {
   _governance = gov;
 }
 
+// ── Dispatch ctx — built by the kernel root and shared with substrates ──────
+// The signal-dispatch module binds the FSM at install time and uses this ctx
+// to route substrate emissions into the FSM. The ctx shape is the same as
+// what the CK passes to fsm.dispatch today: { validate, dispatchGlobal,
+// getGlobalState, sanityCheck }. Built in graph-capability-kernel/index.js.
+let _dispatchCtx = null;
+
+function setDispatchCtx(ctx) {
+  _dispatchCtx = ctx;
+}
+
+function getDispatchContext() {
+  return _dispatchCtx;
+}
+
+// ── Membranes — downstream executors orchestrated by the FSM ────────────────
+// The FSM is the policy authority. Substrates (membranes) are delegated
+// executors: the FSM instantiates/registers them via setMembrane, and on
+// CAPABILITY_BOOTSTRAP the FSM invokes substrate.start(ck) so the
+// substrate can subscribe to the action fabric.
+//
+// The CK never calls a substrate or a worker directly. The FSM is the only
+// constitutional path from policy to execution.
+//
+// _membranes: name → { substrate, wired: boolean }
+let _membranes = new Map();
+
+function setMembrane(name, { substrate } = {}) {
+  if (!name || !substrate) return;
+  _membranes.set(name, { substrate, wired: false });
+}
+
+function resetMembrane(name) {
+  if (name) {
+    const entry = _membranes.get(name);
+    if (entry) entry.wired = false;
+  } else {
+    // Reset all membranes to unwired state (used by gck.uninstall for re-install)
+    for (const entry of _membranes.values()) {
+      entry.wired = false;
+    }
+  }
+}
+
+function _wireMembranes(ck) {
+  for (const [name, entry] of _membranes) {
+    if (entry.wired) continue;
+    if (typeof entry.substrate.start === 'function') {
+      entry.substrate.start(ck);
+      entry.wired = true;
+    }
+  }
+}
+
 /**
  * Request a credential store operation through the constitutional flow.
  * Chain: substrate → FSM (this) → CK.dispatch(DB_WRITE_REQUESTED) → persist-telemetry FSM → writer.
@@ -1368,6 +1431,12 @@ module.exports = {
   evaluateTriggerCriteria,
   // CK wiring
   setGovernance,
+  // Dispatch ctx shared with signal-dispatch (FSM is the constitutional ingress)
+  setDispatchCtx,
+  getDispatchContext,
+  // Membrane orchestration — FSM wires substrates during CAPABILITY_BOOTSTRAP
+  setMembrane,
+  resetMembrane,
   // Cross-domain dispatch — credential store via constitutional flow
   requestCredentialStore,
   // Cross-domain dispatch — generic DB write (alerts, lifecycle events, credential status)

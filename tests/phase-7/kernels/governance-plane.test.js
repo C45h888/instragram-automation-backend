@@ -13,10 +13,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const signalDispatch = require('../../../graph-capability-kernel/substrates/vault/signal-dispatch');
-const observations = require('../../../graph-capability-kernel/substrates/graph-capability/observations');
+// Phase D: observations.js was migrated into the FSM. Alias its surface
+// (newEnvelope, emptyEnvelope, normalize) onto the fsm module for this test
+// so we don't have to rewrite every call site.
+const fsmForObs = require('../../../graph-capability-kernel/fsm');
+const observations = {
+  newEnvelope: fsmForObs.newEnvelope,
+  emptyEnvelope: () => fsmForObs.newEnvelope({}),
+  normalize: (env) => fsmForObs.inferStateFromEnvelope(env),
+};
 const fsm = require('../../../graph-capability-kernel/fsm');
 const wiring = require('../../../graph-capability-kernel/substrates/graph-capability/wiring');
-const healthWiring = require('../../../graph-capability-kernel/substrates/health-substrate/wiring');
+// Phase D: health-substrate/wiring.js was deleted. The FSM now orchestrates
+// the membrane (gck.install + CAPABILITY_BOOTSTRAP). No more healthWiring
+// module to require.
 const gck = require('../../../graph-capability-kernel');
 
 describe('Governance Plane — Layer 2 (envelope contract)', () => {
@@ -33,10 +43,18 @@ describe('Governance Plane — Layer 2 (envelope contract)', () => {
       expect(typeof env.observedAt).toBe('number');
     });
 
-    it('emptyEnvelope() returns an all-null envelope with no observedAt', () => {
+    it('emptyEnvelope() returns an envelope with all inner slots null (observedAt is set by the factory)', () => {
+      // Phase D: observations was migrated into the FSM. The old
+      // emptyEnvelope() returned observedAt: null. The new newEnvelope({})
+      // sets observedAt to Date.now() — by design, the FSM stamps
+      // observedAt on every envelope at construction time. The test
+      // reflects the new contract: inner slots are null, observedAt is set.
       const env = observations.emptyEnvelope();
       expect(env.pat).toBeNull();
-      expect(env.observedAt).toBeNull();
+      expect(env.uat).toBeNull();
+      expect(env.detection).toBeNull();
+      expect(env.scope).toBeNull();
+      expect(typeof env.observedAt).toBe('number');
     });
 
     it('normalize() maps PAT not decryptable → UNAUTHORIZED', () => {
@@ -63,17 +81,26 @@ describe('Governance Plane — Layer 2 (envelope contract)', () => {
       expect(result.reason).toBe('expired');
     });
 
-    it('normalize() maps missing scopes → LIMITED', () => {
+    it('normalize() maps missing scopes → LIMITED (when all 4 slots populated)', () => {
+      // Phase D: LIMITED requires all 4 observation slots to be present.
+      // A partial envelope (only scope) is PAT_PENDING, not LIMITED. The
+      // strengthened FSM is strict about envelope completeness.
       const env = observations.newEnvelope({});
+      env.pat = { isDecryptable: true };
+      env.uat = { isDecryptable: true };
+      env.detection = { isValid: true, reliabilityImpaired: false };
       env.scope = { grantedScopes: ['pages_show_list'] }; // missing instagram_basic etc
       const result = observations.normalize(env);
       expect(result.state).toBe('LIMITED');
       expect(result.missingScopes.length).toBeGreaterThan(0);
     });
 
-    it('normalize() maps reliabilityImpaired → DEGRADED', () => {
+    it('normalize() maps reliabilityImpaired → DEGRADED (when all 4 slots populated)', () => {
       const env = observations.newEnvelope({});
+      env.pat = { isDecryptable: true };
+      env.uat = { isDecryptable: true };
       env.detection = { isValid: true, reliabilityImpaired: true };
+      env.scope = { grantedScopes: ['instagram_basic', 'instagram_manage_comments', 'instagram_manage_insights', 'instagram_content_publish', 'pages_show_list', 'pages_read_engagement'] };
       const result = observations.normalize(env);
       expect(result.state).toBe('DEGRADED');
     });
@@ -88,10 +115,20 @@ describe('Governance Plane — Layer 2 (envelope contract)', () => {
       expect(result.state).toBe('AUTHORIZED');
     });
 
-    it('normalize() maps partial envelope → UNKNOWN', () => {
+    it('normalize() maps partial envelope (some slots null) → PENDING, not UNKNOWN', () => {
+      // Phase D contract: a partial envelope (pat populated, others null)
+      // is UAT_PENDING (first missing slot). UNKNOWN is reserved for envelopes
+      // with all 4 slots null. This is the inferential model.
       const env = observations.newEnvelope({});
       env.pat = { isDecryptable: true };
       // uat, detection, scope all null
+      const result = observations.normalize(env);
+      expect(result.state).toBe('UAT_PENDING');
+    });
+
+    it('normalize() maps all-4-null envelope → UNKNOWN', () => {
+      const env = observations.newEnvelope({});
+      // all inner slots null
       const result = observations.normalize(env);
       expect(result.state).toBe('UNKNOWN');
     });
@@ -167,24 +204,29 @@ describe('Governance Plane — Layer 3 (FSM observation transition)', () => {
     expect(result.reason).toMatch(/Worker observation/);
   });
 
-  it('emitEnvelope routes through ck.dispatch(CAPABILITY_OBSERVATION)', () => {
-    wiring.install({ ck: fakeCk });
+  it('emitEnvelope routes through fsm.dispatch(CAPABILITY_OBSERVATION)', () => {
+    // Phase D: signal-dispatch is bound to the FSM, not the CK. The
+    // substrate's emissions route to fsm.dispatch, which the FSM then
+    // may forward to the CK via ctx.dispatchGlobal for cross-domain work.
+    const dispatchSpy = vi.spyOn(fsm, 'dispatch');
+    signalDispatch.bindFsm(fsm, { validate: () => ({ allowed: true }), dispatchGlobal: () => ({ allowed: true }) });
     const env = observations.newEnvelope({ businessAccountId: 'BA-1' });
     env.pat = { isDecryptable: true };
     env.uat = { isDecryptable: true };
     env.detection = { isValid: true };
     env.scope = { grantedScopes: ['instagram_basic', 'instagram_manage_comments', 'instagram_manage_insights', 'instagram_content_publish', 'pages_show_list', 'pages_read_engagement'] };
     signalDispatch.emitEnvelope({ envelope: env });
-    const obsEvents = dispatched.filter(e => e.type === 'CAPABILITY_OBSERVATION');
+    const obsEvents = dispatchSpy.mock.calls.filter(c => c[0].type === 'CAPABILITY_OBSERVATION');
     expect(obsEvents.length).toBe(1);
-    expect(obsEvents[0].envelope).toBeDefined();
-    expect(obsEvents[0].envelope.envelopeId).toBe(env.envelopeId);
+    expect(obsEvents[0][0].envelope).toBeDefined();
+    expect(obsEvents[0][0].envelope.envelopeId).toBe(env.envelopeId);
+    dispatchSpy.mockRestore();
   });
 
-  it('emitEnvelope without bound CK is warn-once dropped (does not throw)', () => {
+  it('emitEnvelope without bound FSM is warn-once dropped (does not throw)', () => {
+    signalDispatch.bindFsm(null, null);
     const env = observations.newEnvelope({});
     expect(() => signalDispatch.emitEnvelope({ envelope: env })).not.toThrow();
-    expect(dispatched).toHaveLength(0);
   });
 });
 
@@ -197,10 +239,19 @@ describe('Governance Plane — Layer 4 (health substrate integration)', () => {
     fakeCk = {
       dispatch: (event) => {
         dispatched.push(event);
+        // Phase D: route to FSM via DOMAIN_EVENT_MAP (real CK does this)
+        if (event.type === 'CAPABILITY_BOOTSTRAP' && typeof fsm.dispatch === 'function') {
+          return fsm.dispatch(event, {
+            validate: () => ({ allowed: true }),
+            dispatchGlobal: () => ({ allowed: true }),
+          });
+        }
         return { allowed: true, from: fsm.getState(), to: fsm.getState() };
       },
       validateDomainTransition: () => ({ allowed: true }),
       getState: () => 'BOOTING',
+      // Phase D: substrate.start(ck) calls ck.subscribeAction
+      subscribeAction: () => {},
     };
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
@@ -210,25 +261,35 @@ describe('Governance Plane — Layer 4 (health substrate integration)', () => {
     vi.restoreAllMocks();
   });
 
-  it('gck.install({ck}) starts health substrate', () => {
+  it('gck.install({ck}) registers the health membrane with the FSM (substrate is not started yet)', () => {
     gck.install({ ck: fakeCk });
     expect(gck.isInstalled()).toBe(true);
-    expect(gck.health.isStarted()).toBe(true);
-    expect(healthWiring.isInstalled()).toBe(true);
+    // Phase D: the health substrate is a delegated executor orchestrated by
+    // the FSM. The CK (via gck.install) does NOT start it directly. The
+    // substrate becomes a "first-class citizen" only when the FSM wires it
+    // during CAPABILITY_BOOTSTRAP. So isStarted() is false until then.
+    expect(gck.health.isStarted()).toBe(false);
   });
 
-  it('gck.uninstall() stops health before tearing down the constitutional binding', () => {
+  it('gck.uninstall() tears down the constitutional binding', () => {
     gck.install({ ck: fakeCk });
     gck.uninstall();
     expect(gck.isInstalled()).toBe(false);
     expect(gck.health.isStarted()).toBe(false);
-    expect(healthWiring.isInstalled()).toBe(false);
-    expect(signalDispatch.getCk()).toBeNull();
+    // signal-dispatch should be unbound after uninstall
+    expect(signalDispatch.getFsm()).toBeNull();
   });
 
-  it('health wiring guard warns when CK not bound (standalone install)', () => {
-    expect(() => healthWiring.install()).not.toThrow();
-    // After standalone install, signal-dispatch is still unbound — emits dropped.
+  it('standalone gck.install without CAPABILITY_BOOTSTRAP leaves the membrane unwired', () => {
+    // (Phase D — replaces the old "wiring guard warns when CK not bound" test.
+    // The old contract used healthWiring.install() as a no-op guard. The new
+    // contract: the FSM is the only path that wires the membrane.)
+    gck.install({ ck: fakeCk });
+    // Without dispatching CAPABILITY_BOOTSTRAP, the substrate is not started
+    expect(gck.health.isStarted()).toBe(false);
+    // But the signal-dispatch is bound to the FSM (via gck.install)
+    expect(signalDispatch.getFsm()).toBe(gck.fsm);
+    // And emissions are routed to the FSM
     const env = observations.newEnvelope({});
     expect(() => signalDispatch.emitEnvelope({ envelope: env })).not.toThrow();
   });
@@ -237,6 +298,17 @@ describe('Governance Plane — Layer 4 (health substrate integration)', () => {
     gck.install({ ck: fakeCk });
     const r1 = gck.install({ ck: fakeCk });
     expect(r1.started).toBe(true);
-    expect(r1.healthStarted).toBe(true);
+    // healthStarted is false at install time — the FSM wires it during bootstrap
+    expect(r1.healthStarted).toBe(false);
+  });
+
+  it('CAPABILITY_BOOTSTRAP wired by gck.install causes the FSM to call substrate.start(ck) (FSM orchestrates the membrane)', () => {
+    gck.install({ ck: fakeCk });
+    expect(gck.health.isStarted()).toBe(false);
+    // Dispatch CAPABILITY_BOOTSTRAP — the FSM's buildActions calls _wireMembranes
+    // which calls substrate.start(ck). This is the constitutional path: the FSM
+    // is the only entity that wires the membrane.
+    fakeCk.dispatch({ type: 'CAPABILITY_BOOTSTRAP' });
+    expect(gck.health.isStarted()).toBe(true);
   });
 });

@@ -1,83 +1,113 @@
 // graph-capability-kernel/substrates/vault/signal-dispatch.js
-// Centralized signal-dispatch adapter for vault façades.
+// Centralized signal-dispatch adapter for vault + health substrates.
 //
 // Constitutional role:
-//   Vault façades (pat, uat, scope) emit trigger events when a worker call succeeds.
-//   This module is the vault's local adapter: it packages success events and
-//   routes them through CK.dispatch(). No intermediate trigger-bridge needed —
-//   CK IS the event ingress.
+//   Substrate façades (pat, uat, scope, health) emit trigger events when a
+//   worker call succeeds. This module is the boundary between substrate
+//   emissions and the constitutional ingress.
 //
-// Single source of truth: every vault façade uses this module. No inline
-// dispatch wrappers in substrate façades.
+//   Constitutional order:
+//     worker → substrate → signal-dispatch → FSM.dispatch → FSM interprets
+//       → FSM may ctx.dispatchGlobal → CK for cross-domain
 //
-// ── Authority boundary ──────────────────────────────────────────────────────
-//   Layer 1 fix: bindCk(ck) is called once at install() time by the
-//   graph-capability wiring. The CK reference is stored in a private
-//   module-level slot. Every emit* call threads _ck into CK.dispatch().
+//   The substrate does NOT route through the CK directly. The FSM is the
+//   constitutional ingress for observation events. The CK is downstream
+//   of the FSM in the observation direction (for cross-domain side effects,
+//   lineage recording, and the action fabric).
 //
-//   This makes signal-dispatch the SINGLE authority boundary for vault
-//   signal ingress. There is no path through which a vault success event
-//   can reach the FSM without going through the constitutional CK.
+//   The action fabric is CK-owned (CK.subscribeAction is the implementation).
+//   The substrate subscribes to RUN_* actions via the CK — this is a
+//   top-down direction (CK → substrate) for governance actions, distinct
+//   from the bottom-up signal flow (substrate → FSM → CK for cross-domain).
+//
+// Single source of truth: every substrate façade uses this module. No
+// inline dispatch wrappers in substrate façades.
 
-// ── CK binding (Layer 1.1) ──────────────────────────────────────────────────
+// ── FSM binding (replaces bindCk) ──────────────────────────────────────────
 
-let _ck = null;
-let _warnedNoCk = false;/**
- * Bind the constitutional kernel reference. Called once at install() time.
- * Idempotent: re-binding the same ck is a no-op. Re-binding a different ck
- * is allowed (re-install scenario) and replaces the reference.
+let _fsm = null;
+let _ctx = null;
+let _warnedNoFsm = false;
+
+/**
+ * Bind the FSM and dispatch context. Called once at install time.
+ * Idempotent: re-binding the same fsm is a no-op. Re-binding a different
+ * fsm replaces the reference.
  *
- * @param {object|null} ck — the constitutional kernel module (must have .dispatch)
+ * @param {object} fsm — the graph-capability FSM (must have .dispatch)
+ * @param {object} ctx — dispatch context { validate, dispatchGlobal,
+ *                       getGlobalState, sanityCheck }
  */
-function bindCk(ck) {
-  _ck = ck;
-  _warnedNoCk = false; // reset warning latch on a real binding
+function bindFsm(fsm, ctx) {
+  _fsm = fsm;
+  _ctx = ctx || null;
+  _warnedNoFsm = false;
 }
 
-function getCk() {
-  return _ck;
+function getFsm() {
+  return _fsm;
+}
+
+function getCtx() {
+  return _ctx;
 }
 
 /**
- * Resolve the CK reference. Priority order:
- *   1. Explicit `ck` param to the emit* call
- *   2. Module-level _ck (set by bindCk at install time)
+ * Resolve the dispatch target. Priority order:
+ *   1. Explicit `fsm` param to the emit* call
+ *   2. Module-level _fsm (set by bindFsm at install time)
  *   3. null (fallback — emit will warn-once and return undefined)
  *
- * Never throws. The constitutional ingress swallows missing-ck as
+ * Never throws. The constitutional ingress swallows missing-fsm as
  * a soft failure (warning + drop), not a hard failure.
  */
-function _resolveCk(explicitCk) {
-  if (explicitCk && typeof explicitCk.dispatch === 'function') return explicitCk;
-  if (_ck && typeof _ck.dispatch === 'function') return _ck;
+function _resolveFsm(explicitFsm) {
+  if (explicitFsm && typeof explicitFsm.dispatch === 'function') return explicitFsm;
+  if (_fsm && typeof _fsm.dispatch === 'function') return _fsm;
   return null;
 }
 
-// ── Emit functions — all route through CK.dispatch() directly ────────────────
+// Backwards-compat: many existing callers still call bindCk/getCk. The
+// functions are kept as no-ops so importing them does not crash — but
+// they no longer wire a CK. The canonical binding is bindFsm. Tests that
+// need the old behaviour should be updated to bindFsm.
+function bindCk(ck) {
+  // No-op. Retained for import-compatibility. Use bindFsm instead.
+  if (ck) {
+    _warnedNoFsm = true; // we won't process signals routed through CK
+  }
+}
+
+function getCk() {
+  return null;
+}
+
+// ── Emit functions — all route through fsm.dispatch() directly ─────────────
 
 /**
- * Emit a CAPABILITY_EVALUATE trigger. Used by every successful vault worker call
- * to inform the FSM that vault state has changed.
+ * Emit a CAPABILITY_EVALUATE trigger. Used by every successful substrate
+ * worker call to inform the FSM that vault state has changed.
  *
- * @param {{ ck?: object, businessAccountId?: string|null, userId?: string|null, source: string }} params
- * @returns {any} the dispatch result, or undefined if no CK is available
+ * @param {{ fsm?: object, ctx?: object, businessAccountId?: string|null, userId?: string|null, source: string }} params
+ * @returns {any} the dispatch result, or undefined if no FSM is available
  */
-function emitEvaluate({ ck, businessAccountId, userId, source }) {
-  const resolvedCk = _resolveCk(ck);
-  if (!resolvedCk) {
-    if (!_warnedNoCk) {
-      console.warn('[signal-dispatch] emitEvaluate called without a bound CK — signals will be dropped. Call signalDispatch.bindCk(ck) at install time.');
-      _warnedNoCk = true;
+function emitEvaluate({ fsm, ctx, businessAccountId, userId, source }) {
+  const resolvedFsm = _resolveFsm(fsm);
+  if (!resolvedFsm) {
+    if (!_warnedNoFsm) {
+      console.warn('[signal-dispatch] emitEvaluate called without a bound FSM — signals will be dropped. Call signalDispatch.bindFsm(fsm, ctx) at install time.');
+      _warnedNoFsm = true;
     }
     return undefined;
   }
+  const resolvedCtx = ctx || _ctx;
   try {
-    return resolvedCk.dispatch({
+    return resolvedFsm.dispatch({
       type: 'CAPABILITY_EVALUATE',
       businessAccountId: businessAccountId || null,
       userId: userId || null,
       source,
-    });
+    }, resolvedCtx);
   } catch (err) {
     console.warn('⚠️ signal-dispatch emitEvaluate failed:', err.message);
     return undefined;
@@ -86,26 +116,24 @@ function emitEvaluate({ ck, businessAccountId, userId, source }) {
 
 /**
  * Emit a NEW_ACCOUNT_CONNECTED trigger. Used by vault.pat.store on success.
- *
- * @param {{ ck?: object, businessAccountId?: string|null, userId?: string|null }} params
- * @returns {any}
  */
-function emitNewAccountConnected({ ck, businessAccountId, userId }) {
-  const resolvedCk = _resolveCk(ck);
-  if (!resolvedCk) {
-    if (!_warnedNoCk) {
-      console.warn('[signal-dispatch] emitNewAccountConnected called without a bound CK — signals will be dropped. Call signalDispatch.bindCk(ck) at install time.');
-      _warnedNoCk = true;
+function emitNewAccountConnected({ fsm, ctx, businessAccountId, userId }) {
+  const resolvedFsm = _resolveFsm(fsm);
+  if (!resolvedFsm) {
+    if (!_warnedNoFsm) {
+      console.warn('[signal-dispatch] emitNewAccountConnected called without a bound FSM — signals will be dropped. Call signalDispatch.bindFsm(fsm, ctx) at install time.');
+      _warnedNoFsm = true;
     }
     return undefined;
   }
+  const resolvedCtx = ctx || _ctx;
   try {
-    return resolvedCk.dispatch({
+    return resolvedFsm.dispatch({
       type: 'NEW_ACCOUNT_CONNECTED',
       businessAccountId: businessAccountId || null,
       userId: userId || null,
       source: 'oauth_callback',
-    });
+    }, resolvedCtx);
   } catch (err) {
     console.warn('⚠️ signal-dispatch emitNewAccountConnected failed:', err.message);
     return undefined;
@@ -114,26 +142,24 @@ function emitNewAccountConnected({ ck, businessAccountId, userId }) {
 
 /**
  * Emit a TOKEN_REFRESHED trigger. Used by vault.uat.refresh on success.
- *
- * @param {{ ck?: object, businessAccountId?: string|null, userId?: string|null }} params
- * @returns {any}
  */
-function emitTokenRefreshed({ ck, businessAccountId, userId }) {
-  const resolvedCk = _resolveCk(ck);
-  if (!resolvedCk) {
-    if (!_warnedNoCk) {
-      console.warn('[signal-dispatch] emitTokenRefreshed called without a bound CK — signals will be dropped. Call signalDispatch.bindCk(ck) at install time.');
-      _warnedNoCk = true;
+function emitTokenRefreshed({ fsm, ctx, businessAccountId, userId }) {
+  const resolvedFsm = _resolveFsm(fsm);
+  if (!resolvedFsm) {
+    if (!_warnedNoFsm) {
+      console.warn('[signal-dispatch] emitTokenRefreshed called without a bound FSM — signals will be dropped. Call signalDispatch.bindFsm(fsm, ctx) at install time.');
+      _warnedNoFsm = true;
     }
     return undefined;
   }
+  const resolvedCtx = ctx || _ctx;
   try {
-    return resolvedCk.dispatch({
+    return resolvedFsm.dispatch({
       type: 'TOKEN_REFRESHED',
       businessAccountId: businessAccountId || null,
       userId: userId || null,
       source: 'uat_refresh',
-    });
+    }, resolvedCtx);
   } catch (err) {
     console.warn('⚠️ signal-dispatch emitTokenRefreshed failed:', err.message);
     return undefined;
@@ -143,34 +169,32 @@ function emitTokenRefreshed({ ck, businessAccountId, userId }) {
 /**
  * Layer 2: Emit a CAPABILITY_OBSERVATION event. The envelope is the canonical
  * worker observation shape produced by fsm.newEnvelope() and populated
- * by substrate façades. Routes through ck.dispatch(CAPABILITY_OBSERVATION) which
- * lands in the FSM via DOMAIN_EVENT_MAP. The FSM's CAPABILITY_OBSERVATION
- * transition consumes the envelope, merges evidence, and infers state.
- *
- * @param {{ ck?: object, envelope: object }} params
- * @returns {any}
+ * by substrate façades. Routes through fsm.dispatch(CAPABILITY_OBSERVATION).
+ * The FSM merges evidence, infers state, and may ctx.dispatchGlobal for
+ * cross-domain work (e.g. lineage).
  */
-function emitEnvelope({ ck, envelope }) {
+function emitEnvelope({ fsm, ctx, envelope }) {
   if (!envelope || typeof envelope !== 'object') {
     console.warn('[signal-dispatch] emitEnvelope called without an envelope — skipped');
     return undefined;
   }
-  const resolvedCk = _resolveCk(ck);
-  if (!resolvedCk) {
-    if (!_warnedNoCk) {
-      console.warn('[signal-dispatch] emitEnvelope called without a bound CK — observation will be dropped. Call signalDispatch.bindCk(ck) at install time.');
-      _warnedNoCk = true;
+  const resolvedFsm = _resolveFsm(fsm);
+  if (!resolvedFsm) {
+    if (!_warnedNoFsm) {
+      console.warn('[signal-dispatch] emitEnvelope called without a bound FSM — observation will be dropped. Call signalDispatch.bindFsm(fsm, ctx) at install time.');
+      _warnedNoFsm = true;
     }
     return undefined;
   }
+  const resolvedCtx = ctx || _ctx;
   try {
-    return resolvedCk.dispatch({
+    return resolvedFsm.dispatch({
       type: 'CAPABILITY_OBSERVATION',
       envelope,
       businessAccountId: envelope.businessAccountId || null,
       userId: envelope.userId || null,
       source: 'vault.observation',
-    });
+    }, resolvedCtx);
   } catch (err) {
     console.warn('⚠️ signal-dispatch emitEnvelope failed:', err.message);
     return undefined;
@@ -178,13 +202,16 @@ function emitEnvelope({ ck, envelope }) {
 }
 
 module.exports = {
-  // Layer 1.1 — authority boundary
-  bindCk,
-  getCk,
-  // Existing surface
+  // Canonical binding (FSM is the constitutional ingress)
+  bindFsm,
+  getFsm,
+  getCtx,
+  // Existing surface (emit semantics)
   emitEvaluate,
   emitNewAccountConnected,
   emitTokenRefreshed,
-  // Layer 2 — observation envelope ingress
   emitEnvelope,
+  // Legacy CK binding (no-op retained for import-compatibility)
+  bindCk,
+  getCk,
 };

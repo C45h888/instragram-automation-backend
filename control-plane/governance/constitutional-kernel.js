@@ -2370,24 +2370,29 @@ async function sanityCheck(domainName, action) {
 async function bootstrap() {
   console.log('[constitutional-kernel] Bootstrap — installing graph-capability kernel...');
 
-  // 1. Install the graph-capability kernel
+  // 1. Install the graph-capability kernel. The kernel root (gck.install) builds
+  //    the dispatch ctx, registers the health-substrate as a delegated executor
+  //    membrane with the FSM, and binds signal-dispatch to the FSM. The CK does
+  //    NOT call substrates or workers directly — the FSM is the only
+  //    constitutional path from policy to execution.
   const gck = require('../../graph-capability-kernel');
   const installResult = gck.install({ ck: module.exports });
   console.log('[constitutional-kernel] Graph-capability kernel installed:', installResult);
 
-  // 2. Wire the health membrane to CK's action fabric
-  const healthSubstrate = require('../../graph-capability-kernel/substrates/health-substrate');
-  healthSubstrate.wire(module.exports);
-
-  // 3. Wire the graph-capability DB substrate — workers for governed reads/writes
+  // 2. Wire the graph-capability DB substrate — workers for governed reads/writes.
+  //    This is a substrate (delegated executor), not a constitutional citizen. It
+  //    receives its governance ref for cross-domain dispatches; the CK never
+  //    invokes its workers directly.
   const gcDbSubstrate = require('../../postgres-telemetry-kernel/substrates/graph-capability');
   gcDbSubstrate.setGovernance(module.exports);
   gcDbSubstrate.start();
   console.log('[constitutional-kernel] Graph-capability DB substrate wired');
 
-  // 4. Dispatch bootstrap event to the FSM — the FSM decides WHAT health work
-  //    to run (RUN_TOKEN_HEALTH_CHECK, RUN_UAT_REFRESH_CHECK). CK routes the
-  //    actions to the health membrane subscribers. Health substrate executes
+  // 3. Dispatch bootstrap event to the FSM — the FSM decides WHAT health work
+  //    to run (RUN_TOKEN_HEALTH_CHECK, RUN_UAT_REFRESH_CHECK). The FSM
+  //    internally wires the health membrane (subscribes to the action fabric)
+  //    on the first unscoped bootstrap. CK routes the actions to the membrane
+  //    subscribers via its action fabric. Health substrate executes
   //    mechanically — it never decides WHEN.
   const result = await dispatch({
     type: 'CAPABILITY_BOOTSTRAP',
@@ -2396,7 +2401,7 @@ async function bootstrap() {
 
   console.log('[constitutional-kernel] Bootstrap complete — CAPABILITY_BOOTSTRAP dispatched:', result);
 
-  // 5. Start the cadence tick loop (Phase C) — recurring CAPABILITY_CADENCE_TICK
+  // 4. Start the cadence tick loop (Phase C) — recurring CAPABILITY_CADENCE_TICK
   //    dispatch. The FSM owns the per-cred gating policy; this loop just wakes
   //    the FSM on a schedule. The interval is deliberately smaller than the
   //    smallest cadence window (TOKEN_HEALTH_WINDOW_MS=24h), so creds are
