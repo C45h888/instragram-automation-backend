@@ -1,36 +1,25 @@
-// control-plane/orchestration/retry-worker.js
-// Bounded single-attempt execution worker.
+// acquisition-kernel/retry-worker.js
+// Execution Bridge: bounded retry-aware acquisition loop.
+// Kernelized from: control-plane/runtime/execution-bridge.js
+// Refactored in Phase 6a: governance now mediates retry behaviour.
 //
-// Owns: one execution attempt — fetch + parsing dispatch + signal
-//        emission. One bounded I/O call.
-// Does NOT own: state mutation, scheduling retries, calling other
-//               workers, acting on signals it emits.
+// Owns: executing a single bounded attempt for one acquisition intent,
+//        recording telemetry/quota/metrics, emitting categorised signals.
+// Does NOT own: governance policy, retry decisions, classification,
+//               state mutation — those are engagement-fsm responsibilities.
 //
-// CONSTITUTIONAL CONTRACT (Step 3 — corrected per refinement):
-//   - The worker is operationally complete. It parses the IG
-//     response, identifies the response shape (success, rate_limit,
-//     auth_failure, transient, permanent), and REPORTS the
-//     categorised signal to governance.
-//   - The worker is semantically blind in the sense that it does
-//     NOT decide what to do. It does NOT schedule retries, does
-//     NOT call rate-limiter, does NOT mutate engagement state,
-//     does NOT call other workers.
-//   - Pre-flight: asks governance "may I attempt this?" via
-//     CIRCUIT_BREAKER_CHECK dispatch. engagement-fsm answers via
-//     actions. The worker reads actions, never state directly.
-//   - Post-attempt: emits categorised signals upward. Each signal
-//     is a report of what happened. Governance routes to the
-//     correct FSM. The FSM consumes the classification-worker
-//     output (deterministic pure function) and decides the next
-//     action. The FSM emits the next worker invocation if needed.
-//   - The orchestrator receives the return value (Step 5) and CK
-//     enriches the observation with executor-plane data.
+// Architectural invariants:
+//   Signals UP    → governance.dispatch() reports outcome to CK
+//   Authority ↓   → governance.dispatch(CIRCUIT_BREAKER_CHECK) asks FSM for permission
+//   Substrates ↓  → telemetry/quota/metrics are recorded here (mechanical)
+//                   but metrics now flow through governance.recordMetric()
+//                   for constitutional routing (CK → scheduling FSM → worker → substrate)
 //
-// One attempt → one categorised signal bundle upward → done.
+// The worker is semantically blind. It does not classify errors, does not
+// decide retry policy, does not schedule. It executes, records, and reports.
 
 const quota = require('../substrates/quota');
 const telemetry = require('../substrates/telemetry');
-const metricsSubstrate = require('../substrates/metrics-substrate');
 const parsing = require('./parsing');
 
 /**
@@ -70,62 +59,108 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
   if (gateActive) {
     const latencyMs = Date.now() - startTime;
     console.log(`[retry-worker] ${domain}/${accountId} circuit-breaker gate active, skipping intent ${intentId}`);
-    await _recordFailure(domain, accountId, intentId, 'circuit_breaker_active', 0);
+    await _recordFailure(domain, accountId, intentId, 'circuit_breaker_active', 0, governance);
     _emitTransition(intentId, 'PENDING', 'SKIPPED', { accountId, domain, reason: 'gate_active' });
     // Report the gate-block to governance. engagement-fsm will see this.
     governance.dispatch({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'skipped',
-      reason: 'circuit_breaker_gate_active',
-      latencyMs,
+      error: 'circuit_breaker_active',
+      params,
     });
     return {
-      status: 'failed', count: 0, error: 'circuit_breaker_gate_active',
-      instagram_id: null, latencyMs, transportMeta: { gate: 'closed_active' },
-      errorCategory: 'rate_limit', errorCode: null,
+      status: 'skipped',
+      count: 0,
+      error: 'circuit_breaker_active',
+      instagram_id: null,
+      latencyMs,
+      transportMeta: null,
+      errorCategory: 'circuit_breaker',
+      errorCode: null,
     };
   }
 
-  // Observability: attempt start transition
-  _emitTransition(intentId, 'PENDING', 'ATTEMPTING', { accountId, domain });
+  // ── Parse intent parameters (declarative) ───────────────────────────────
+  const parsed = parsing.parse(intentId, params);
+  const jobId = parsed ? parsed.job_id : null;
 
-  // ── Single bounded attempt ───────────────────────────────────────────────
-  let result;
+  // ── Fetch from IG transport ─────────────────────────────────────────────
+  let result = null;
   try {
-    result = await routing.fetch(accountId, params);
+    result = await routing.fetch(accountId, intentId, parsed || { ...params, job_id: jobId });
   } catch (err) {
-    // Catch-block error — transport threw before buildErrorResponse ran.
-    // Wrap as raw error with no categorisation. The classification-worker
-    // (called by engagement-fsm) will determine the category.
-    result = {
-      success: false, count: 0,
-      error: err.message, code: null,
-      retryable: null, error_category: null, retry_after_seconds: null,
-      _usagePct: null, instagram_id: null, igUserId: null, pageId: null,
+    const latencyMs = Date.now() - startTime;
+    console.error(`[retry-worker] ${domain}/${accountId} fetch error:`, err.message);
+    await _recordFailure(domain, accountId, intentId, 'fetch_error', latencyMs, governance);
+    governance.dispatch({
+      type: 'WORKER_OUTCOME_REPORTED',
+      accountId, intentId, domain,
+      status: 'failed',
+      error: err.message,
+      errorShape: { category: 'transient', code: null, retryable: true, retryAfterSeconds: null },
+      params,
+    });
+    return {
+      status: 'failed',
+      count: 0,
+      error: err.message,
+      instagram_id: null,
+      latencyMs,
+      transportMeta: null,
+      errorCategory: 'fetch_error',
+      errorCode: null,
     };
   }
 
   const latencyMs = Date.now() - startTime;
 
-  // ── Quota tracking ───────────────────────────────────────────────────────
-  if (result._usagePct != null) {
-    quota.updateQuotaUsage(accountId, result._usagePct);
-  }
+  // ── Post-process result ─────────────────────────────────────────────────
+  if (result) {
+    // Record post-acquisition to telemetry
+    // (telemetry.recordAcquisition is called in success/failure paths below)
 
-  // ── Persist on success → dispatch to parsing substrate (async) ──────────
-  if (result.success) {
-    const { jobId } = parsing.dispatch(
-      domain, result, accountId, intentId,
-      { igUserId: result.igUserId, pageId: result.pageId, pageToken: result.pageToken }
-    );
+    // Record quota consumption per-scope
+    const quotas = result.quota || {};
+    for (const [scope, consumed] of Object.entries(quotas)) {
+      quota.consume(domain, accountId, scope, consumed);
+    }
 
-    governance.dispatch({
-      type: 'PARSING_DISPATCHED',
-      accountId, domain, intentId,
-      jobId,
-      rawCount: result.count || 0,
-    });
+    // Quota depleted check — emit LOG_DEGRADED only (quota substrate
+    // tracks remaining; the FSM is blind but governance can interrogate
+    // quota substrate on WORKER_OUTCOME_REPORTED with QUOTA_EXHAUSTED shape)
+    if (result.quota_exhausted) {
+      const depleted = Array.isArray(result.quota_exhausted)
+        ? result.quota_exhausted : [result.quota_exhausted];
+      governance.dispatch({
+        type: 'WORKER_OUTCOME_REPORTED',
+        accountId, domain, intentId,
+        status: 'completed',
+        error: `quota_exhausted: ${depleted.join(', ')}`,
+        errorShape: { category: 'quota_exhausted', code: 4, retryable: false, retryAfterSeconds: null },
+        params,
+        result,
+      });
+      return {
+        status: 'completed',
+        count: result.count || 0,
+        error: `quota_exhausted: ${depleted.join(', ')}`,
+        instagram_id: result.instagram_id || null,
+        latencyMs,
+        transportMeta: result.meta || null,
+        errorCategory: 'quota_exhausted',
+        errorCode: 4,
+      };
+    }
+
+    // Recording identity to acquisition map (so dedup can match IG IDs to intent IDs)
+    if (result.instagram_id) {
+      const { getRedisClient } = require('../config/redis');
+      const redis = getRedisClient();
+      if (redis && redis.status === 'ready') {
+        redis.set(`acquisition:${domain}:${result.instagram_id}`, intentId, 'EX', 86400).catch(() => {});
+      }
+    }
 
     result.count = 0;
     result.instagram_id = result.instagram_id || null;
@@ -134,10 +169,10 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
   // ── Record outcome to telemetry + metrics ───────────────────────────────
   if (result.success) {
     await telemetry.recordAcquisition(domain, accountId, intentId, 'completed', result.count, latencyMs, null);
-    metricsSubstrate.record(domain, 'completed', latencyMs, accountId);
+    await governance.recordMetric(domain, 'completed', latencyMs, accountId);
   } else {
     const errorTag = result.error_category || result.error || 'unknown';
-    await _recordFailure(domain, accountId, intentId, errorTag, latencyMs);
+    await _recordFailure(domain, accountId, intentId, errorTag, latencyMs, governance);
   }
 
   // Observability: attempt result transition (COMPLETED or FAILED)
@@ -152,62 +187,47 @@ async function executeSingle(accountId, domain, params, intentId, governance, ro
   // It does NOT call retry-cadence. It does NOT mutate state.
   //
   // Governance routes this observation to the correct FSM. The FSM
-  // consults the classification-worker (deterministic pure function
-  // — raw error → classified action tag) and decides the next action.
-  //
-  // The categories below are RESPONSE-SHAPE categories (what the IG
-  // API told us), not action categories (what we should do about it).
-  // The classification-worker is what bridges between the two.
+  // (engagement-fsm) classifies the errorShape via its paired
+  // classification-worker and emits the appropriate downstream signal
+  // (TRANSIENT_RETRY, AUTH_FAILURE, RATE_LIMIT, PERMANENT_FAILURE).
   governance.dispatch({
     type: 'WORKER_OUTCOME_REPORTED',
-    accountId, intentId, domain,
+    accountId,
+    domain,
+    intentId,
+    jobId,
     status: result.success ? 'completed' : 'failed',
-    // Raw outcome + response-shape categorisation from the IG transport
-    result: result.success ? { count: result.count || 0 } : null,
-    error: result.success ? null : (result.error || null),
-    // Response-shape categorisation from the IG transport. This is
-    // INFORMATION, not a DECISION. The classification-worker
-    // interprets it.
-    errorShape: result.success ? null : {
-      category: result.error_category || null,
-      code: result.code || null,
-      retryable: result.retryable ?? null,
-      retryAfterSeconds: result.retry_after_seconds || null,
-    },
-    latencyMs,
-    transportMeta: {
-      success: result.success,
-      instagramId: result.instagram_id || null,
-      igUserId: result.igUserId || null,
-      pageId: result.pageId || null,
-    },
+    result,
+    error: result.error || null,
+    errorShape: result.errorShape || null,
+    errorCategory: result.error_category || null,
+    errorCode: result.error_code || null,
+    params,
   });
 
   return {
     status: result.success ? 'completed' : 'failed',
-    count: result.success ? (result.count || 0) : 0,
-    error: result.success ? null : (result.error || null),
+    count: result.count || 0,
+    error: result.error || null,
     instagram_id: result.instagram_id || null,
     latencyMs,
-    transportMeta: {
-      success: result.success,
-      igUserId: result.igUserId || null,
-      pageId: result.pageId || null,
-    },
+    transportMeta: result.meta || null,
     errorCategory: result.error_category || null,
-    errorCode: result.code || null,
+    errorCode: result.error_code || null,
   };
 }
 
-/**
- * Emit observability transition for attempt state changes.
- */
-function _emitTransition(intentId, previousState, nextState, extraRaw = {}) {
+// ═══════════════════════════════════════════════════════════════════════════════
+// Private helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function _emitTransition(intentId, previousState, nextState, extra = {}) {
   try {
     const observability = require('../control-plane/observability/emitters/transition-emitter');
+    const extraRaw = extra || {};
     observability.transition({
-      domain: 'execution',
-      entity: 'attempt',
+      domain: 'acquisition',
+      entity: 'intent',
       entityId: intentId,
       previousState,
       nextState,
@@ -222,9 +242,9 @@ function _emitTransition(intentId, previousState, nextState, extraRaw = {}) {
 /**
  * Record a failed acquisition to telemetry + metrics substrate.
  */
-async function _recordFailure(domain, accountId, intentId, errorTag, latencyMs) {
+async function _recordFailure(domain, accountId, intentId, errorTag, latencyMs, governance) {
   await telemetry.recordAcquisition(domain, accountId, intentId, 'failed', 0, latencyMs, errorTag);
-  metricsSubstrate.record(domain, 'failed', latencyMs, accountId);
+  await governance.recordMetric(domain, 'failed', latencyMs, accountId);
 }
 
 module.exports = { executeSingle };

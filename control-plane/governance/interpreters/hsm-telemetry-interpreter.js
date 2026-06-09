@@ -11,7 +11,7 @@
 //
 // Filter criteria: NONE (pass-through — full observability)
 
-const metricsSubstrate = require('../../../substrates/metrics-substrate');
+const metricsSubstrate = require('../../../scheduling-kernel/substrates/metrics');
 
 /**
  * Get all telemetry signals (full observability for HSM).

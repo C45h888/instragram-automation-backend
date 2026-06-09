@@ -31,7 +31,7 @@
 // Circuit-breaker state (canonical) lives in engagement-fsm (retry-cadence-kernel).
 // The adapter reads via getCircuitBreakers() — the canonical snapshot export.
 
-const metricsSubstrate = require('../../../substrates/metrics-substrate');
+const metricsSubstrate = require('../../../scheduling-kernel/substrates/metrics');
 const quota = require('../../../substrates/quota');
 
 const POLL_INTERVAL_MS = 30_000;

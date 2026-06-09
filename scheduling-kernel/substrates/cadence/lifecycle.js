@@ -1,32 +1,25 @@
 // scheduling-kernel/substrates/cadence/lifecycle.js
-// Account Lifecycle: bounded account discovery and removal tracking.
+// Account Lifecycle: bounded account membership tracking.
 // Kernelized from: control-plane/runtime/lifecycle.js
 //
-// Owns: discovering active accounts, tracking membership, signalling removal.
-// Does NOT own: evaluation, emission, signal intake, operational safety,
-//               worker execution (workers are deprecated — HSM governs acquisition).
+// Owns: tracking active account membership, detecting adds/removals.
+// Does NOT own: governance policy, observability emission, reading data,
+//               callback chains — those belong to the FSM and CK.
 //
-// Workers (BRPOP loops) have been DEPRECATED. All acquisition now flows
-// through the governance HSM: governance discovers intents from Redis in
-// its tick() cycle, the orchestrator executes them via execution-bridge.
+// Architectural invariant:
+//   This substrate is PURELY MECHANICAL. It receives data, compares against
+//   its internal Set, and returns deltas. It does NOT call governance,
+//   does NOT emit observability, does NOT register callbacks.
+//   The FSM governs. The worker executes. The substrate provides mechanics.
 //
 // Contract:
-//   lifecycle.refresh()  → discover accounts, track membership, signal removals
-//   lifecycle.stopAll()  → clear all tracked accounts
-//   lifecycle.onRemove(fn) → register removal callback
+//   lifecycle.refresh(accounts)  → { added: string[], removed: string[], currentIds: string[] }
+//   lifecycle.stopAll()          → clear all tracked accounts
+//   lifecycle.status()           → { accounts: number }
+//   lifecycle.getAccountIds()    → string[]
 
-const { getRedisClient } = require('../../../config/redis');
-
-/** Set of currently active account IDs */
+/** Set of currently active account IDs — the sole mutable state. */
 const _activeAccounts = new Set();
-
-/** Called when an account is removed so other modules can clean up. */
-let _onRemove = null;
-
-/** Governance reference — injected at boot, used for governed reads. */
-let _governance = null;
-
-function setGovernance(g) { _governance = g; }
 
 /**
  * Returns live runtime state. Deterministic, no side effects.
@@ -37,102 +30,61 @@ function status() {
 }
 
 /**
- * Register a callback invoked when an account is removed during refresh.
- * @param {Function} fn — (accountId: string) => void
- * @throws {Error} if fn is not a function
+ * Returns the currently tracked active account IDs.
+ * Deterministic, no side effects.
+ * @returns {string[]}
  */
-function onRemove(fn) {
-  if (typeof fn !== 'function') {
-    throw new Error(`[lifecycle] onRemove handler must be a function, got ${typeof fn}`);
-  }
-  _onRemove = fn;
+function getAccountIds() {
+  return Array.from(_activeAccounts);
 }
 
 /**
- * Discover active accounts, track new ones, signal removed ones.
- * Notifies the onRemove callback for cleanup in other modules.
+ * Compare provided accounts against the internal membership set.
+ * Returns added and removed account IDs. Pure mechanical operation —
+ * no governance calls, no observability, no callbacks.
  *
- * Acquisition execution is now governed by the HSM — this function only
- * tracks account membership. The governance kernel's tick() discovers
- * intents from Redis queues using the account list.
+ * The caller (worker, invoked by FSM) provides the account data.
+ * The FSM obtained it through a governed read via CK.
  *
- * @returns {Promise<{ok: boolean, error?: string, added: number, removed: number}>}
+ * @param {Array<{id: string}>} accounts — active accounts from governed read
+ * @returns {{ added: string[], removed: string[], currentIds: string[] }}
  */
-async function refresh() {
-  const redis = getRedisClient();
-  if (!redis || redis.status !== 'ready') {
-    console.warn('[lifecycle] Redis not ready — skipping refresh');
-    return { ok: false, error: 'redis unavailable', added: 0, removed: 0 };
+function refresh(accounts) {
+  if (!Array.isArray(accounts)) {
+    return { added: [], removed: [], currentIds: getAccountIds() };
   }
 
-  if (!_governance) {
-    console.warn('[lifecycle] governance not wired — skipping refresh');
-    return { ok: false, error: 'governance not wired', added: 0, removed: 0 };
-  }
-
-  const result = await _governance.governedRead('db.accounts', { query: 'getActiveAccounts' });
-  if (!result.success) {
-    console.warn('[lifecycle] governed read failed:', result.error);
-    return { ok: false, error: result.error, added: 0, removed: 0 };
-  }
-  const accounts = result.data;
   const currentIds = new Set(accounts.map(a => a.id));
+  const added = [];
+  const removed = [];
 
-  let added = 0;
-  let removed = 0;
-
-  // Track new accounts
-  for (const accountId of currentIds) {
-    if (!_activeAccounts.has(accountId)) {
-      _activeAccounts.add(accountId);
-      added++;
-      console.log(`[lifecycle] Account ${accountId} added`);
-      // Observability: account lifecycle transition
-      _emitTransition(accountId, 'UNKNOWN', 'ACTIVE');
+  // Discover newly added accounts
+  for (const id of currentIds) {
+    if (!_activeAccounts.has(id)) {
+      _activeAccounts.add(id);
+      added.push(id);
+      console.log(`[lifecycle] Account ${id} added`);
     }
   }
 
-  // Signal removed accounts
-  for (const accountId of _activeAccounts) {
-    if (!currentIds.has(accountId)) {
-      _activeAccounts.delete(accountId);
-      removed++;
-      // Observability: account lifecycle transition
-      _emitTransition(accountId, 'ACTIVE', 'REMOVED');
-      if (_onRemove) _onRemove(accountId);
-      console.log(`[lifecycle] Account ${accountId} removed`);
+  // Discover removed accounts
+  for (const id of _activeAccounts) {
+    if (!currentIds.has(id)) {
+      _activeAccounts.delete(id);
+      removed.push(id);
+      console.log(`[lifecycle] Account ${id} removed`);
     }
   }
 
-  return { ok: true, added, removed };
+  return { added, removed, currentIds: Array.from(currentIds) };
 }
 
 /**
- * Emit observability transition for account lifecycle changes.
- */
-function _emitTransition(accountId, previousState, nextState) {
-  try {
-    const observability = require('../../../control-plane/observability/emitters/transition-emitter');
-    observability.transition({
-      domain: 'lifecycle',
-      entity: 'account',
-      entityId: accountId,
-      previousState,
-      nextState,
-      authority: 'lifecycle-runtime',
-      raw: {},
-    });
-  } catch (err) {
-    console.warn('[lifecycle] Observability transition error:', err.message);
-  }
-}
-
-/**
- * Clear all tracked accounts.
+ * Clear all tracked accounts. Used at shutdown.
  */
 function stopAll() {
   _activeAccounts.clear();
   console.log('[lifecycle] All accounts cleared');
 }
 
-module.exports = { status, refresh, stopAll, onRemove, setGovernance };
+module.exports = { status, getAccountIds, refresh, stopAll };

@@ -17,7 +17,7 @@
 
 const constitutional = require('./governance/constitutional-kernel');
 const substrateRegistry = require('../acquisition-kernel/substrate-registry');
-const metricsSubstrate = require('../substrates/metrics-substrate');
+const metricsSubstrate = require('../scheduling-kernel/substrates/metrics');
 const { getRedisClient } = require('../config/redis');
 const cadence = require('../scheduling-kernel/substrates/cadence/cadence');
 const lifecycle = require('../scheduling-kernel/substrates/cadence/lifecycle');
@@ -163,6 +163,18 @@ function _wire() {
   constitutional.registerWorker('dedup', 'mark-emission-in-flight',
     require('../dedup-kernel/substrates/dedup-mutation/workers/mark-emission-in-flight-worker'));
 
+  // ── scheduling-fsm — cadence maintenance + metrics workers ──────────
+  constitutional.registerWorker('scheduling', 'lifecycle-refresh',
+    require('../scheduling-kernel/workers/lifecycle-refresh-worker'));
+  constitutional.registerWorker('scheduling', 'safety-check',
+    require('../scheduling-kernel/workers/safety-check-worker'));
+  constitutional.registerWorker('scheduling', 'metrics-report',
+    require('../scheduling-kernel/workers/metrics-report-worker'));
+  constitutional.registerWorker('scheduling', 'metrics-query',
+    require('../scheduling-kernel/workers/metrics-query-worker'));
+  constitutional.registerWorker('scheduling', 'metrics-flush',
+    require('../scheduling-kernel/workers/metrics-flush-worker'));
+
   // Wire each membrane orchestrator
   cadenceOrchestrator.wire(constitutional);
   acquisitionOrchestrator.wire(constitutional, acquisitionFsm);
@@ -239,12 +251,12 @@ async function startAllWorkers() {
   await metricsSubstrate.init();
 
   // Wire governance into runtime modules — governed reads require this
-  lifecycle.setGovernance(constitutional);
   signalIntake.setGovernance(constitutional);
 
-  await lifecycle.refresh();
+  // Fetch accounts and seed lifecycle substrate
   const result = await constitutional.governedRead('db.accounts', { query: 'getActiveAccounts' });
   const accounts = result.success ? result.data : [];
+  lifecycle.refresh(accounts);
 
   // Start acquisition-fsm timeout sweeper — force-closes intents that exceed
   // intentTimeoutMs. Sweeper runs as a setInterval, owned by the orchastrator
@@ -283,6 +295,7 @@ async function startAllWorkers() {
     });
   }
 
+  cadence.setGovernance((event) => constitutional.dispatch(event));
   cadence.every(REFRESH_INTERVAL_MS, async () => {
     constitutional.dispatch({ type: 'CADENCE_TICK' });
   });

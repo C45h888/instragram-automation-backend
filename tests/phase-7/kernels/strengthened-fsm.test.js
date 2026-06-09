@@ -14,8 +14,11 @@
 import { beforeEach, describe, test, expect } from 'vitest';
 
 const fsm = require('../../../graph-capability-kernel/fsm');
-const verdictGate = require('../../../graph-capability-kernel/substrates/graph-capability/verdict-gate');
-const observations = require('../../../graph-capability-kernel/substrates/graph-capability/observations');
+// G1 migration: verdict-gate.js and observations.js were deleted and merged
+// into the FSM. verdict-gate.peekVerdict → fsm.getCapabilityVerdict.
+// verdict-gate.requireCapability(userId, baId, scopes) → fsm.requireCapability(baId, scopes)
+// (the userId arg was dropped from the contract — FSM is per-credential by BA only).
+// observations.newEnvelope → fsm.newEnvelope (identical shape).
 
 const BA_A = '00000000-0000-0000-0000-aaaaaaaaaaaa';
 const BA_B = '00000000-0000-0000-0000-bbbbbbbbbbbb';
@@ -34,7 +37,7 @@ function allRequiredScopes() {
 }
 
 function freshFullEnvelope(businessAccountId, opts = {}) {
-  const env = observations.newEnvelope({ businessAccountId, userId: opts.userId || UA_A });
+  const env = fsm.newEnvelope({ businessAccountId, userId: opts.userId || UA_A });
   env.pat = { isDecryptable: true, ...(opts.pat || {}) };
   env.uat = { isDecryptable: true, ...(opts.uat || {}) };
   env.detection = { isValid: true, reliabilityImpaired: false, reason: null, ...(opts.detection || {}) };
@@ -46,7 +49,7 @@ function freshFullEnvelope(businessAccountId, opts = {}) {
 }
 
 function partialEnvelope(businessAccountId, slot) {
-  const env = observations.newEnvelope({ businessAccountId, userId: UA_A });
+  const env = fsm.newEnvelope({ businessAccountId, userId: UA_A });
   env[slot] = { isDecryptable: slot === 'pat' || slot === 'uat' ? true : undefined,
                 isValid: slot === 'detection' ? true : undefined,
                 grantedScopes: slot === 'scope' ? allRequiredScopes() : undefined,
@@ -146,23 +149,23 @@ describe('PENDING inference from partial envelope', () => {
     expect(fsm.inferStateFromEnvelope(null).state).toBe('UNKNOWN');
   });
   test('envelope with all 4 null → UNKNOWN (not PENDING)', () => {
-    const env = observations.newEnvelope({ businessAccountId: BA_A });
+    const env = fsm.newEnvelope({ businessAccountId: BA_A });
     expect(fsm.inferStateFromEnvelope(env).state).toBe('UNKNOWN');
   });
 });
 
 describe('envelope merge', () => {
   test('merges pat-only envelope into existing, retains existing uat', () => {
-    const a = observations.newEnvelope({ businessAccountId: BA_A });
+    const a = fsm.newEnvelope({ businessAccountId: BA_A });
     a.uat = { isDecryptable: true, scope: ['x'] };
-    const b = observations.newEnvelope({ businessAccountId: BA_A });
+    const b = fsm.newEnvelope({ businessAccountId: BA_A });
     b.pat = { isDecryptable: true };
     const merged = fsm.mergeEnvelope(a, b);
     expect(merged.uat.scope).toEqual(['x']);
     expect(merged.pat.isDecryptable).toBe(true);
   });
   test('null merge returns existing', () => {
-    const a = observations.newEnvelope({ businessAccountId: BA_A });
+    const a = fsm.newEnvelope({ businessAccountId: BA_A });
     a.pat = { isDecryptable: true };
     expect(fsm.mergeEnvelope(a, null)).toBe(a);
   });
@@ -245,13 +248,13 @@ describe('consecutive failures per cred', () => {
 describe('verdict-gate reads per-cred FSM', () => {
   test('AUTHORIZED + required scopes present → allowed', () => {
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, fakeCk);
-    const v = verdictGate.requireCapability(UA_A, BA_A, ['instagram_basic', 'pages_read_engagement']);
+    const v = fsm.requireCapability(BA_A, ['instagram_basic', 'pages_read_engagement']);
     expect(v.allowed).toBe(true);
     expect(v.state).toBe('AUTHORIZED');
   });
   test('LIMITED → denied with missing scopes', () => {
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A, { grantedScopes: ['instagram_basic'] }) }, fakeCk);
-    const v = verdictGate.requireCapability(UA_A, BA_A, ['instagram_basic', 'instagram_content_publish']);
+    const v = fsm.requireCapability(BA_A, ['instagram_basic', 'instagram_content_publish']);
     expect(v.allowed).toBe(false);
     expect(v.state).toBe('LIMITED');
     expect(v.missingScopes).toContain('instagram_content_publish');
@@ -259,7 +262,7 @@ describe('verdict-gate reads per-cred FSM', () => {
   test('UAT_PENDING → denied with reason naming the missing slot', () => {
     // partialEnvelope(BA_A, 'uat') sets only uat, so pat is first missing → PAT_PENDING
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: partialEnvelope(BA_A, 'uat') }, fakeCk);
-    const v = verdictGate.requireCapability(UA_A, BA_A, ['instagram_basic']);
+    const v = fsm.requireCapability(BA_A, ['instagram_basic']);
     expect(v.allowed).toBe(false);
     expect(v.state).toBe('PAT_PENDING');
     expect(v.reason).toContain('pat');
@@ -268,22 +271,22 @@ describe('verdict-gate reads per-cred FSM', () => {
     const env = freshFullEnvelope(BA_A);
     env.pat.isDecryptable = false;
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: env }, fakeCk);
-    expect(verdictGate.requireCapability(UA_A, BA_A, ['instagram_basic']).allowed).toBe(false);
+    expect(fsm.requireCapability(BA_A, ['instagram_basic']).allowed).toBe(false);
   });
   test('DEGRADED → allowed (with warning reason)', () => {
     const env = freshFullEnvelope(BA_A, { detection: { reliabilityImpaired: true } });
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: env }, fakeCk);
-    const v = verdictGate.requireCapability(UA_A, BA_A, ['instagram_basic']);
+    const v = fsm.requireCapability(BA_A, ['instagram_basic']);
     expect(v.state).toBe('DEGRADED');
   });
   test('UNKNOWN cred → denied with capability-not-yet-evaluated', () => {
-    const v = verdictGate.requireCapability(UA_A, '99999999-0000-0000-0000-999999999999', ['instagram_basic']);
+    const v = fsm.requireCapability('99999999-0000-0000-0000-999999999999', ['instagram_basic']);
     expect(v.allowed).toBe(false);
     expect(v.state).toBe('UNKNOWN');
   });
   test('peekVerdict returns per-cred state', () => {
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, fakeCk);
-    const v = verdictGate.peekVerdict(BA_A);
+    const v = fsm.getCapabilityVerdict(BA_A);
     expect(v.state).toBe('AUTHORIZED');
     expect(v.evidence).toBeTruthy();
   });
@@ -293,7 +296,7 @@ describe('FSM is sole interpreter', () => {
   test('verdict-gate does not mutate state', () => {
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, fakeCk);
     const before = fsm.exportState(BA_A).lastTransitionedAt;
-    verdictGate.requireCapability(UA_A, BA_A, ['instagram_basic']);
+    fsm.requireCapability(BA_A, ['instagram_basic']);
     expect(fsm.exportState(BA_A).lastTransitionedAt).toBe(before);
   });
   test('FSM has no public setter for state', () => {
@@ -314,7 +317,7 @@ describe('event validation', () => {
     expect(fsm.dispatch({ type: 'CAPABILITY_OBSERVATION' }, fakeCk).allowed).toBe(false);
   });
   test('rejects CAPABILITY_OBSERVATION without businessAccountId', () => {
-    const env = observations.newEnvelope({ businessAccountId: null });
+    const env = fsm.newEnvelope({ businessAccountId: null });
     const r = fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: env }, fakeCk);
     expect(r.allowed).toBe(false);
   });

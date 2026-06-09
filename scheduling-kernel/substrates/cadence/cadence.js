@@ -5,14 +5,28 @@
 // Owns: running a background loop at a fixed interval, stop signalling.
 // Does NOT own: worker pool refresh, operational checks — it just calls the callback.
 //
+// Constitutional routing: all lifecycle events (start/stop/complete/failed) flow
+// through CK.dispatch(). No direct observability writes. The callback (tick action)
+// is caller-provided and expected to dispatch CADENCE_TICK through CK.
+//
 // Contract:
-//   cadence.every(intervalMs, callback)  → start background loop
-//   cadence.stop()                        → stop loop
+//   cadence.setGovernance(fn)           → wire CK dispatch function
+//   cadence.every(intervalMs, callback) → start background loop
+//   cadence.stop()                      → stop loop
 
 let _stopping = false;
 let _loopPromise = null;
 let _intervalMs = null;
 let _lastTickAt = null; // timestamp of last tick — for reconciliation engine
+
+// ── Governance dispatch (set by CK at boot) ────────────────────────────
+let _governanceDispatch = null;
+
+function setGovernance(dispatchFn) {
+  if (typeof dispatchFn === 'function') {
+    _governanceDispatch = dispatchFn;
+  }
+}
 
 function _sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -39,6 +53,22 @@ function lastTick() {
 }
 
 /**
+ * Dispatch a lifecycle event through CK if wired.
+ * Falls back to console log if governance not wired (e.g. tests).
+ */
+function _dispatchLifecycle(type, details = {}) {
+  if (_governanceDispatch) {
+    try {
+      _governanceDispatch({ type, ...details });
+    } catch (err) {
+      console.warn(`[cadence] Governance dispatch failed for ${type}:`, err.message);
+    }
+  } else {
+    console.log(`[cadence] ${type} (no governance wired)`);
+  }
+}
+
+/**
  * Start a periodic background loop. Callback is awaited each cycle.
  * Idempotent — calling on an already-running loop logs a warning and is a no-op.
  *
@@ -60,6 +90,7 @@ function every(intervalMs, callback) {
   _stopping = false;
   _intervalMs = intervalMs;
   console.log(`[cadence] Started — running every ${intervalMs}ms`);
+  _dispatchLifecycle('CADENCE_LOOP_STARTED', { intervalMs });
 
   _loopPromise = (async () => {
     while (!_stopping) {
@@ -67,13 +98,14 @@ function every(intervalMs, callback) {
       if (_stopping) break;
       try {
         _lastTickAt = Date.now();
-        // Observability: cadence tick transition
-        _emitTransition('TICKING');
         await callback();
-        // Observability: cadence return to idle after tick complete
-        _emitTransition('IDLE');
+        _dispatchLifecycle('CADENCE_CYCLE_COMPLETED', { tickAt: _lastTickAt });
       } catch (err) {
         console.error('[cadence] Cycle error:', err.message);
+        _dispatchLifecycle('CADENCE_CYCLE_FAILED', {
+          tickAt: _lastTickAt,
+          error: err.message,
+        });
       }
     }
     _loopPromise = null;
@@ -87,8 +119,7 @@ function every(intervalMs, callback) {
  * Awaitable — resolves when loop has fully exited.
  */
 async function stop() {
-  // Observability: cadence stopped transition
-  _emitTransition('STOPPED');
+  _dispatchLifecycle('CADENCE_LOOP_STOPPED', { intervalMs: _intervalMs });
   _stopping = true;
   if (_loopPromise) {
     await _loopPromise;
@@ -96,25 +127,4 @@ async function stop() {
   _intervalMs = null;
 }
 
-/**
- * Emit observability transition for cadence state changes.
- */
-function _emitTransition(nextState) {
-  try {
-    const observability = require('../../../control-plane/observability/emitters/transition-emitter');
-    const previousState = _loopPromise ? 'TICKING' : 'IDLE';
-    observability.transition({
-      domain: 'cadence',
-      entity: 'cadence',
-      entityId: 'cadence',
-      previousState,
-      nextState,
-      authority: 'cadence-runtime',
-      raw: { intervalMs: _intervalMs },
-    });
-  } catch (err) {
-    console.warn('[cadence] Observability transition error:', err.message);
-  }
-}
-
-module.exports = { every, stop, status, lastTick };
+module.exports = { setGovernance, every, stop, status, lastTick };

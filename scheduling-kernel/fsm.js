@@ -54,24 +54,7 @@ function getGovernance() {
   return _governance;
 }
 
-// ── Worker registry (local) ───────────────────────────────────────────
-// Each FSM holds its own worker map. CK registration happens at boot
-// via constitutional.registerWorker(fsmName, workerName, worker).
-// The CTX gate (ctx.invokeWorker) validates ownership through CK.
-const _workers = new Map();
-
-function registerWorker(name, worker) {
-  _workers.set(name, worker);
-}
-
-function getWorker(name) {
-  return _workers.get(name) || null;
-}
-
-function getWorkers() {
-  return _workers;
-}
-
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // 1. Local State Registry
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -96,14 +79,25 @@ const STATE_REGISTRY = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRANSITION_MAP = {
-  // ── Cadence tick → sequence maintenance actions ────────────────────────
-  // Gated by ctx.sanityCheck (the universal gate). When the system
-  // is in DEGRADED state, the gate can veto the cadence tick's
-  // actions (e.g. fire REFRESH_LIFECYCLE, CHECK_SAFETY) but the
-  // FSM still acknowledges the tick. This is the "gate the
-  // emission, not the state" semantics (Item a follow-up).
+  // ── Cadence tick → SCANNING: FSM-owned governed read + lifecycle worker ──
+  // The FSM is locally reactive: if stuck in a non-IDLE state from a prior
+  // failed cycle, it self-recovers by resetting to SCANNING and retrying.
+  // The FSM owns the governed read — it fetches accounts through CK, then
+  // passes them to the lifecycle-refresh worker. The worker is a pure executor;
+  // the FSM makes all governance decisions.
+  //
+  // Stuck-state recovery: if CADENCE_TICK arrives while FSM is still in
+  // SCANNING/REFRESHING/CHECKING from a prior failed attempt, the FSM logs
+  // the anomaly and retries from SCANNING. The cadence timer (90s) is the
+  // recovery mechanism — next tick always resets and retries.
   CADENCE_TICK: {
-    target: () => _localState, // no state change — sequences actions
+    target: (event) => {
+      if (_localState !== 'IDLE') {
+        console.warn(`[scheduling-fsm] Stuck in ${_localState} — self-recovering to SCANNING`);
+      }
+      _lastCycleStartedAt = Date.now();
+      return 'SCANNING';
+    },
     guard: () => ({ allowed: true }),
     buildActions: async (event, ctx) => {
       const gate = await _resolveSanityCheck(ctx, {
@@ -111,54 +105,289 @@ const TRANSITION_MAP = {
         domain: 'scheduling',
       });
       if (!gate.allowed) return [];
-      return [
-        { type: 'REFRESH_LIFECYCLE' },
-        { type: 'CHECK_SAFETY' },
-        { type: 'REPORT_METRICS' },
-        { type: 'UPDATE_DOMAIN_LIST', domains: DOMAIN_LIST },
-      ];
+
+      // ── FSM-owned governed read — fetch active accounts through CK ──────
+      let accounts = [];
+      const gov = getGovernance();
+      if (gov && typeof gov.governedRead === 'function') {
+        try {
+          const readResult = await gov.governedRead('db.accounts', { query: 'getActiveAccounts' });
+          accounts = readResult.success ? readResult.data : [];
+        } catch (err) {
+          console.error('[scheduling-fsm] Governed read failed:', err.message);
+          return [{ type: 'LOG_DEGRADED', substate: 'GOVERNED_READ_FAILURE', reason: err.message }];
+        }
+      }
+
+      // ── Invoke worker with account data ────────────────────────────────
+      let workerResult = null;
+      try {
+        workerResult = await ctx.invokeWorker('lifecycle-refresh', { accounts });
+      } catch (err) {
+        console.error('[scheduling-fsm] lifecycle-refresh worker failed:', err.message);
+        return [{ type: 'LOG_DEGRADED', substate: 'LIFECYCLE_FAILURE', reason: err.message }];
+      }
+
+      // ── Emit per-account lifecycle events + aggregate refresh event ────
+      const actions = [];
+      const added = workerResult ? workerResult.added : [];
+      const removed = workerResult ? workerResult.removed : [];
+      const currentIds = workerResult ? workerResult.currentIds : [];
+
+      for (const id of added) {
+        actions.push({ type: 'ACCOUNT_ADDED', accountId: id });
+      }
+      for (const id of removed) {
+        actions.push({ type: 'ACCOUNT_REMOVED', accountId: id });
+      }
+      actions.push({
+        type: 'LIFECYCLE_REFRESHED',
+        accountIds: currentIds,
+        added,
+        removed,
+      });
+
+      return actions;
     },
   },
 
-  // ── Maintenance acknowledgements ────────────────────────────────────────
-  // Gated by ctx.sanityCheck. When the system is overloaded, the
-  // gate can block account updates.
+  // ── Lifecycle refreshed → REFRESHING: invoke safety-check worker ────────
+  // The orchestrator fans LIFECYCLE_REFRESHED back into CK, which routes
+  // it here. FSM transitions SCANNING → REFRESHING, invokes safety-check
+  // worker, then emits SAFETY_CHECK_COMPLETE for the next step.
   LIFECYCLE_REFRESHED: {
-    target: () => _localState,
-    guard: () => ({ allowed: true }),
-    buildActions: async (event, ctx) => {
-      if (event.accountIds && event.accountIds.length > 0) {
-        const gate = await _resolveSanityCheck(ctx, {
-          operation: 'update_accounts',
-          domain: 'scheduling',
-          accountIds: event.accountIds,
-        });
-        if (!gate.allowed) return [];
-        return [{ type: 'UPDATE_ACCOUNTS', accountIds: event.accountIds }];
+    target: 'REFRESHING',
+    guard: (event) => {
+      if (_localState !== 'SCANNING') {
+        return { allowed: false, reason: `LIFECYCLE_REFRESHED only valid from SCANNING, got ${_localState}` };
       }
-      return [];
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      // Store accounts from lifecycle refresh for later emission
+      if (event.accountIds && event.accountIds.length > 0) {
+        _lastLifecycleAccountIds = event.accountIds;
+        // Also emit UPDATE_ACCOUNTS so the membrane can update CK's account list
+        try {
+          await ctx.invokeWorker('safety-check', {});
+        } catch (err) {
+          console.error('[scheduling-fsm] safety-check worker failed:', err.message);
+          return [{ type: 'LOG_DEGRADED', substate: 'SAFETY_FAILURE', reason: err.message }];
+        }
+        return [{ type: 'SAFETY_CHECK_COMPLETE' }];
+      }
+      // No accounts — skip safety check, go straight to metrics
+      return [{ type: 'SAFETY_CHECK_COMPLETE' }];
     },
   },
 
   SAFETY_CHECK_COMPLETE: {
-    target: () => _localState,
-    guard: () => ({ allowed: true }),
-    buildActions: () => [],
+    target: 'CHECKING',
+    guard: (event) => {
+      if (_localState !== 'REFRESHING') {
+        return { allowed: false, reason: `SAFETY_CHECK_COMPLETE only valid from REFRESHING, got ${_localState}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      let metricsResult = null;
+      try {
+        metricsResult = await ctx.invokeWorker('metrics-report', {});
+      } catch (err) {
+        console.error('[scheduling-fsm] metrics-report worker failed:', err.message);
+        return [{ type: 'LOG_DEGRADED', substate: 'METRICS_FAILURE', reason: err.message }];
+      }
+
+      if (metricsResult && metricsResult.signals) {
+        return [{
+          type: 'WORKER_METRICS_REPORTED',
+          total: metricsResult.signals.total,
+          failed: metricsResult.signals.failed,
+          failureRate: metricsResult.signals.failureRate,
+          windowMs: metricsResult.signals.windowMs,
+        }];
+      }
+      return [{ type: 'WORKER_METRICS_REPORTED', total: 0, failed: 0, failureRate: 0, windowMs: 0 }];
+    },
   },
 
-  // ── Worker metrics — domain evaluates health, reports to constitutional ─
-  // Policy threshold evaluation has been moved to engagement-telemetry-interpreter.
-  // The interpreter applies failureRate >= 0.5 and emits RETRY_PRESSURE to the
-  // observability plane. This handler acknowledges the raw metrics report only.
-  WORKER_METRICS_REPORTED: {
-    target: () => {
-      return _localState; // no state change
-    },
+  // ── Cadence lifecycle events — emitted by cadence substrate via CK ────
+  CADENCE_LOOP_STARTED: {
+    target: () => _localState,
     guard: () => ({ allowed: true }),
     buildActions: (event) => {
-      // No threshold evaluation here — interpreter handles policy.
-      // Just acknowledge the raw metrics for observability.
+      console.log(`[scheduling-fsm] Cadence loop started — interval ${event.intervalMs}ms`);
       return [];
+    },
+  },
+  CADENCE_LOOP_STOPPED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      console.log(`[scheduling-fsm] Cadence loop stopped`);
+      return [];
+    },
+  },
+  CADENCE_CYCLE_COMPLETED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      _lastCadenceCycleCompletedAt = event.tickAt || Date.now();
+      return [];
+    },
+  },
+  CADENCE_CYCLE_FAILED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      console.error(`[scheduling-fsm] Cadence cycle failed: ${event.error || 'unknown'}`);
+      return [{ type: 'LOG_DEGRADED', substate: 'CADENCE_FAILURE', reason: event.error || 'cadence cycle failed' }];
+    },
+  },
+
+  // ── Metrics record → buffer (FAST PATH) ─────────────────────────────────
+  // Routed by CK.recordMetric(). The FSM buffers the record instead of
+  // writing immediately. The buffer is drained on METRICS_FLUSH (cadence-driven).
+  // Callers get immediate acknowledgment — the FSM owns when writes commit.
+  METRICS_RECORD_REQUESTED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      _writeBuffer.push({
+        domain: event.domain,
+        status: event.status,
+        latencyMs: event.latencyMs,
+        accountId: event.accountId || null,
+        metricId: event.metricId,
+        ts: Date.now(),
+      });
+      return [{
+        type: 'METRICS_RECORD_ACCEPTED',
+        metricId: event.metricId,
+        bufferSize: _writeBuffer.length,
+      }];
+    },
+  },
+
+  // ── Metrics query → cache (FAST PATH) ───────────────────────────────────
+  // Routed by CK.queryMetrics(). The FSM checks the read cache first.
+  // Cache hit → return cached data immediately. Cache miss → invoke
+  // metrics-query-worker and cache the result. Cache is invalidated
+  // on METRICS_FLUSH (new writes change the data).
+  METRICS_QUERY_REQUESTED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const cacheKey = `query:${event.queryType}:${JSON.stringify(event.params || {})}`;
+      const cached = _readCache.get(cacheKey);
+
+      if (cached) {
+        return [
+          { type: 'METRICS_CACHE_HIT', queryId: event.queryId, queryType: event.queryType },
+          { type: 'METRICS_QUERY_COMPLETE', queryId: event.queryId, data: cached.data },
+        ];
+      }
+
+      // Cache miss — invoke worker
+      try {
+        const result = await ctx.invokeWorker('metrics-query', {
+          queryType: event.queryType,
+          params: event.params,
+        });
+        _readCache.set(cacheKey, { data: result.data, cachedAt: Date.now() });
+        return [
+          { type: 'METRICS_CACHE_MISS', queryId: event.queryId, queryType: event.queryType },
+          { type: 'METRICS_QUERY_COMPLETE', queryId: event.queryId, data: result.data },
+        ];
+      } catch (err) {
+        console.error('[scheduling-fsm] metrics-query worker failed:', err.message);
+        return [{
+          type: 'METRICS_QUERY_COMPLETE',
+          queryId: event.queryId,
+          data: null,
+          error: err.message,
+        }];
+      }
+    },
+  },
+
+  // ── Metrics flush → drain buffer (CADENCE-DRIVEN) ────────────────────────
+  // Fired at the end of each CADENCE_TICK cycle (CHECKING → FLUSHING → IDLE).
+  // Drains the write buffer, invokes metrics-flush-worker for batch write,
+  // clears the read cache (fresh data after write), updates _lastFlushAt.
+  METRICS_FLUSH: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const count = _writeBuffer.length;
+      if (count === 0) {
+        return [{ type: 'METRICS_BUFFER_DRAINED', count: 0 }];
+      }
+
+      // Snapshot and clear buffer (atomic — new writes during flush go to fresh buffer)
+      const batch = _writeBuffer.splice(0);
+      _readCache.clear(); // invalidate cache — data is stale after write
+
+      try {
+        const result = await ctx.invokeWorker('metrics-flush', { records: batch });
+        _lastFlushAt = Date.now();
+        return [{
+          type: 'METRICS_BUFFER_DRAINED',
+          count: result.count || 0,
+          errors: result.errors || null,
+        }];
+      } catch (err) {
+        console.error('[scheduling-fsm] metrics-flush worker failed:', err.message);
+        // Re-queue: put records back at front of buffer for next flush
+        _writeBuffer.unshift(...batch);
+        return [{
+          type: 'METRICS_FLUSH_FAILED',
+          count,
+          error: err.message,
+        }];
+      }
+    },
+  },
+
+  // ── Worker metrics → IDLE: drain metrics buffer, emit domain list ────
+  // The orchestrator fans WORKER_METRICS_REPORTED back into CK, which
+  // routes it here. FSM transitions CHECKING → IDLE. Before returning to
+  // IDLE, the FSM drains the metrics write buffer via METRICS_FLUSH.
+  // This ensures all buffered writes from the cycle are committed.
+  // Emits UPDATE_DOMAIN_LIST and UPDATE_ACCOUNTS to close the cycle.
+  WORKER_METRICS_REPORTED: {
+    target: 'IDLE',
+    guard: (event) => {
+      if (_localState !== 'CHECKING') {
+        return { allowed: false, reason: `WORKER_METRICS_REPORTED only valid from CHECKING, got ${_localState}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const actions = [];
+
+      // ── Drain metrics write buffer (cadence-driven commit) ──────────
+      const count = _writeBuffer.length;
+      if (count > 0) {
+        const batch = _writeBuffer.splice(0);
+        _readCache.clear();
+        try {
+          await ctx.invokeWorker('metrics-flush', { records: batch });
+          _lastFlushAt = Date.now();
+          actions.push({ type: 'METRICS_BUFFER_DRAINED', count });
+        } catch (err) {
+          console.error('[scheduling-fsm] metrics-flush failed:', err.message);
+          _writeBuffer.unshift(...batch);
+          actions.push({ type: 'METRICS_FLUSH_FAILED', count, error: err.message });
+        }
+      }
+
+      actions.push({ type: 'UPDATE_DOMAIN_LIST', domains: DOMAIN_LIST });
+      if (_lastLifecycleAccountIds && _lastLifecycleAccountIds.length > 0) {
+        actions.unshift({ type: 'UPDATE_ACCOUNTS', accountIds: _lastLifecycleAccountIds });
+        _lastLifecycleAccountIds = null;
+      }
+      return actions;
     },
   },
 };
@@ -172,6 +401,14 @@ let _lastTransitionedAt = null; // last state change timestamp for temporal alig
 
 // ── Cadence tracking — updated on every CADENCE_TICK ────────────────────────
 let _lastCadenceTickAt = null;
+let _lastCadenceCycleCompletedAt = null; // updated by CADENCE_CYCLE_COMPLETED
+let _lastCycleStartedAt = null; // set by CADENCE_TICK target function — cycle start timestamp
+let _lastLifecycleAccountIds = null; // stored during LIFECYCLE_REFRESHED, emitted at cycle end
+
+// ── Metrics buffer + cache — FSM-owned mutated state ──────────────────────
+const _writeBuffer = [];       // [{ domain, status, latencyMs, accountId, metricId, ts }]
+const _readCache = new Map();  // key → { data, cachedAt }
+let _lastFlushAt = null;       // timestamp of last successful flush
 
 // ── Canonical domain list — governance-controlled polling targets ─────────────
 // All domains the sync substrate is permitted to poll. This list is the
@@ -319,6 +556,10 @@ function getLastCadenceTick() {
   return _lastCadenceTickAt;
 }
 
+function getLastCadenceCycleCompleted() {
+  return _lastCadenceCycleCompletedAt;
+}
+
 /**
  * Returns the canonical domain list. Used by the sync substrate
  * to receive domain configuration via UPDATE_DOMAIN_LIST action.
@@ -335,9 +576,6 @@ function getLastTransitionedAt() {
 module.exports = {
   setGovernance,
   getGovernance,
-  registerWorker,
-  getWorker,
-  getWorkers,
   name: 'scheduling',
   dispatch,
   init,
@@ -345,6 +583,7 @@ module.exports = {
   exportState,
   getHealth,
   getLastCadenceTick,
+  getLastCadenceCycleCompleted,
   getLastTransitionedAt,
   getDomainList,
 };

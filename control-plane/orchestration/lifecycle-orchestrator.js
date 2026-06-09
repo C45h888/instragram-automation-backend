@@ -10,7 +10,6 @@
 // lifecycle events without interpreting what account changes mean.
 // It never decides which accounts to keep or remove.
 
-const lifecycle = require('../runtime/lifecycle');
 const { clearCredentialCache } = require('../../graph-capability-kernel/substrates/credential-resolver');
 
 /**

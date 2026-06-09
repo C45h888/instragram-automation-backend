@@ -11,7 +11,7 @@
 //
 // Filter criteria: domain field matches FSM's jurisdiction
 
-const metricsSubstrate = require('../../../substrates/metrics-substrate');
+const metricsSubstrate = require('../../../scheduling-kernel/substrates/metrics');
 
 const FSM_DOMAINS = {
   acquisition: 'acquisition',

@@ -93,6 +93,12 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   'INTENT_BUFFER_SATURATED','INTENT_BUFFER_DRAINED','COORDINATION_QUEUED','COORDINATION_DEQUEUED',
   'DOMAIN_STATE_SYNCED','GLOBAL_STATE_SYNCED','LINEAGE_PROBE','LINEAGE_PROBE_ACK',
   'WORKER_LAG_DETECTED','WORKER_LAG_CLEARED','INGRESS_LAG_DETECTED','INGRESS_LAG_CLEARED',
+  'CADENCE_LOOP_STARTED','CADENCE_LOOP_STOPPED','CADENCE_CYCLE_COMPLETED','CADENCE_CYCLE_FAILED',
+  'CADENCE_TICK',
+  'LIFECYCLE_REFRESHED','SAFETY_CHECK_COMPLETE','WORKER_METRICS_REPORTED',
+  'METRICS_RECORD_REQUESTED','METRICS_QUERY_REQUESTED',
+  'METRICS_FLUSH','METRICS_RECORD_ACCEPTED','METRICS_BUFFER_DRAINED','METRICS_FLUSH_FAILED',
+  'METRICS_CACHE_HIT','METRICS_CACHE_MISS',
   'PROJECTION_FLUSH_REQUESTED','PROJECTION_FLUSH_COMPLETE','PROJECTION_REBUILD_REQUESTED',
   'PROJECTION_REBUILD_COMPLETE','SEMANTIC_PROJECTION_TRANSITION','LINEAGE_COMPACTION_COMPLETE',
   'REPLAY_STALENESS_DETECTED','REPLAY_STALENESS_CLEARED','INTENT_VALIDATION_FAILED',
@@ -556,6 +562,14 @@ const DOMAIN_EVENT_MAP = {
   WORKER_METRICS_REPORTED: 'scheduling',
   LIFECYCLE_REFRESHED: 'scheduling',
   SAFETY_CHECK_COMPLETE: 'scheduling',
+  METRICS_RECORD_REQUESTED: 'scheduling',
+  METRICS_QUERY_REQUESTED: 'scheduling',
+  METRICS_FLUSH: 'scheduling',
+  // Cadence lifecycle — emitted by cadence substrate through CK.dispatch()
+  CADENCE_LOOP_STARTED: 'scheduling',
+  CADENCE_LOOP_STOPPED: 'scheduling',
+  CADENCE_CYCLE_COMPLETED: 'scheduling',
+  CADENCE_CYCLE_FAILED: 'scheduling',
 
   // Dedup domain
   DEDUP_BATCH_BEGIN: 'dedup',
@@ -2191,6 +2205,123 @@ function governedRead(readDomain, params = {}, timeoutMs = 15000) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// 15c. Metrics API — constitutional write + read for metrics substrate
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Execute a governed metrics record through CK → scheduling FSM → metrics-record-worker.
+ * Returns a Promise that resolves when the record is confirmed.
+ * Same pattern as governedRead() — Promise + subscribe + dispatch + await.
+ *
+ * @param {string} domain    — 'comments'|'messages'|'media'|'insights'|'ugc'|'publish:*'
+ * @param {string} status    — 'completed'|'failed'
+ * @param {number} latencyMs — execution time in ms
+ * @param {string} [accountId] — business account UUID
+ * @param {number} [timeoutMs] — max wait time (default 5000ms)
+ * @returns {Promise<{success: boolean, metricId?: string, error?: string}>}
+ */
+function recordMetric(domain, status, latencyMs, accountId, timeoutMs = 5000) {
+  const metricId = require('crypto').randomUUID();
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Metrics record timed out after ${timeoutMs}ms: ${domain}/${status}`));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+    };
+
+    const resultHandler = (action) => {
+      if (action.metricId !== metricId) return;
+      cleanup();
+      // METRICS_RECORD_ACCEPTED confirms the record was buffered.
+      // Presence of metricId in the action means success.
+      resolve({
+        success: true,
+        metricId,
+        bufferSize: action.bufferSize || 0,
+      });
+    };
+
+    subscribeAction('METRICS_RECORD_ACCEPTED', resultHandler);
+
+    // FSM dispatch always returns a Promise (async function), but the handler
+    // is synchronous so it resolves immediately — no I/O wait.
+    dispatch({
+      type: 'METRICS_RECORD_REQUESTED',
+      metricId,
+      domain,
+      status,
+      latencyMs,
+      accountId: accountId || null,
+    }).then((dispatchResult) => {
+      if (!dispatchResult.allowed) {
+        cleanup();
+        resolve({ success: false, metricId, error: dispatchResult.reason || 'record rejected by governance' });
+      }
+    }).catch((err) => {
+      cleanup();
+      resolve({ success: false, metricId, error: err.message });
+    });
+  });
+}
+
+/**
+ * Execute a governed metrics query through CK → scheduling FSM → metrics-query-worker.
+ * Returns a Promise that resolves with the query result.
+ * Same pattern as governedRead() — Promise + subscribe + dispatch + await.
+ *
+ * @param {string} queryType  — 'health'|'domain'|'account'
+ * @param {object} [params]   — { domain, accountId } depending on queryType
+ * @param {number} [timeoutMs] — max wait time (default 5000ms)
+ * @returns {Promise<{success: boolean, data?: any, error?: string}>}
+ */
+function queryMetrics(queryType, params = {}, timeoutMs = 5000) {
+  const queryId = require('crypto').randomUUID();
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Metrics query timed out after ${timeoutMs}ms: ${queryType}`));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+    };
+
+    const resultHandler = (action) => {
+      if (action.queryId !== queryId) return;
+      cleanup();
+      resolve({
+        success: action.error ? false : true,
+        data: action.data || null,
+        error: action.error || null,
+      });
+    };
+
+    subscribeAction('METRICS_QUERY_COMPLETE', resultHandler);
+
+    // Dispatch is async because FSM handlers return Promises.
+    dispatch({
+      type: 'METRICS_QUERY_REQUESTED',
+      queryId,
+      queryType,
+      params,
+    }).then((dispatchResult) => {
+      if (!dispatchResult.allowed) {
+        cleanup();
+        resolve({ success: false, data: null, error: dispatchResult.reason || 'query rejected by governance' });
+      }
+    }).catch((err) => {
+      cleanup();
+      resolve({ success: false, data: null, error: err.message });
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // 15. Module initialization
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2447,4 +2578,6 @@ module.exports = {
   getIngressState,
   getReadingSubstrate: () => readingSubstrate,
   governedRead,
+  recordMetric,
+  queryMetrics,
 };

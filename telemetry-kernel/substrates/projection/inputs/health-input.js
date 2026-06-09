@@ -1,4 +1,4 @@
-const metricsSubstrate = require('../../../../substrates/metrics-substrate');
+const metricsSubstrate = require('../../../../scheduling-kernel/substrates/metrics');
 
 async function getNormalizedInputWindow({ pollIntervalMs, tickCount, failureHistory = [], lastFailureRate = 0 }) {
   const healthSignals = metricsSubstrate.getHealthSignals();

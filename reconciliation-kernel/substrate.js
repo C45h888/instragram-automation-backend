@@ -23,8 +23,8 @@ const ingressSubstrate = require('../control-plane/governance/ingress-consistenc
 
 function _buildSubstrateQueries() {
   const dedupOrch = require('../../dedup-kernel/orchestrator');
-  const metricsSubstrate = require('../substrates/metrics-substrate');
-  const cadence = require('../control-plane/runtime/cadence');
+  const metricsSubstrate = require('../../scheduling-kernel/substrates/metrics');
+  const cadence = require('../scheduling-kernel/substrates/cadence/cadence');
 
   return {
     dedupIsInFlight: async (accountId, actionType, resourceId) => {
