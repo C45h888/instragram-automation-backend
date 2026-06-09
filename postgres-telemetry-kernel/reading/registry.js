@@ -15,6 +15,8 @@ const WORKER_MAP = {
   'db.encryption-key':   '../substrates/graph-capability/workers/read-key-worker',
   'db.alerts':           '../substrates/alerts/workers/read-alerts-worker',
   'db.lifecycle-events': '../substrates/alerts/workers/read-lifecycle-events-worker',
+  'db.user-profiles':   './workers/user-profiles-worker',
+  'db.api-usage':       './workers/api-usage-worker',
 };
 
 function getWorker(domain) {

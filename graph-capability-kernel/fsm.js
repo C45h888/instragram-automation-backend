@@ -390,6 +390,37 @@ const TRANSITION_MAP = {
     },
   },
 
+  // ── API Rate Limit Check — GCFSM owns Instagram API rate-limit policy ────
+  // Called by middleware rate-limiter via CK.dispatch(API_RATE_LIMIT_CHECK).
+  // GCFSM uses governedRead to query api_usage through the postgres-telemetry
+  // kernel, then returns the result as API_RATE_LIMIT_RESULT.
+  API_RATE_LIMIT_CHECK: {
+    target: null,
+    guard: (event) => {
+      if (!event.userId) {
+        return { allowed: false, reason: 'API_RATE_LIMIT_CHECK requires userId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { userId, limit = 200 } = event;
+      const result = await _governance.governedRead('db.api-usage', {
+        query: 'checkHourlyLimit',
+        userId,
+        limit,
+      });
+      const data = result.success ? result.data : { current: 0, limit, remaining: limit };
+      return [{
+        type: 'API_RATE_LIMIT_RESULT',
+        userId,
+        allowed: data.current < data.limit,
+        current: data.current,
+        limit: data.limit,
+        remaining: data.remaining,
+      }];
+    },
+  },
+
   // ── Aggregate worker observation arrives ────────────────────────────────
   // This is the SOLE event that mutates per-cred evidence. The aggregator
   // merges the new envelope into the existing per-cred record, then

@@ -573,18 +573,6 @@ async function startServer() {
       console.log('\n✅ Database connection established');
       console.log(`   Connected to: ${connectionInfo.url}`);
       console.log(`   Connection established at: ${connectionInfo.timestamp}`);
-      
-      // Verify with a test query
-      const admin = getSupabaseAdmin();
-      if (admin) {
-        const { count, error } = await admin
-          .from('user_profiles')
-          .select('*', { count: 'exact', head: true });
-        
-        if (!error) {
-          console.log(`   Database verified: ${count || 0} user profiles`);
-        }
-      }
     } else {
       console.warn('\n⚠️  Starting without database connection');
       console.warn('   Database features will be unavailable');
@@ -619,6 +607,16 @@ async function startServer() {
   try {
     await constitutionalKernel.bootstrap();
     console.log('✅ Graph Capability Plane bootstrapped via CK');
+
+    // Verify database health through constitutional flow
+    try {
+      const dbCheck = await constitutionalKernel.governedRead('db.user-profiles', { query: 'count' });
+      if (dbCheck.success) {
+        console.log(`   Database verified: ${dbCheck.data} user profiles`);
+      }
+    } catch (_) {
+      // Non-blocking — server continues even if health check fails
+    }
   } catch (capabilityErr) {
     console.error('[GraphCapability] Bootstrap via CK failed:', capabilityErr.message);
   }
@@ -668,17 +666,6 @@ async function startServer() {
 
     server.close(async () => {
       console.log('🔒 HTTP server closed');
-      
-      // Close database connections
-      try {
-        const admin = getSupabaseAdmin();
-        if (admin) {
-          // Supabase client doesn't need explicit closing
-          console.log('🔒 Database connections cleaned up');
-        }
-      } catch (error) {
-        console.error('Error during cleanup:', error);
-      }
       
       console.log('👋 Server shutdown complete');
       process.exit(0);

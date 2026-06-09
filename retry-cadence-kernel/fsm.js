@@ -49,6 +49,16 @@ const AUTH_FAILURE_MAX_STRIKES = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 3600000; // 1 hour default
 const MAX_RETRY_COUNT = 1;
 
+// ── Deferred retry policy (R7) ─────────────────────────────────────────────
+// When CK rejects a schedule (HALTED/DEAD/etc.), the intent is pushed
+// to _deferredIntents. On SANITY_CHECK_RESUMED the deferred intents
+// drain — each with exponential backoff, capped at DEFERRED_MAX_DELAY_MS.
+// After DEFERRED_MAX_ATTEMPTS rejections the intent goes terminal.
+const DEFERRED_BASE_DELAY_MS = 30000;   // 30s first re-try
+const DEFERRED_MAX_DELAY_MS  = 300000;  // 5min cap
+const DEFERRED_BACKOFF_MULTIPLIER = 2;
+const DEFERRED_MAX_ATTEMPTS = 5;        // after 5 deferrals, terminal
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Local State Registry
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -71,6 +81,12 @@ const STATE_REGISTRY = {
   },
   RETRY_EXHAUST: {
     description: 'Per-intent retry budget consumed — permanent failure returned',
+  },
+  // DEFERRED is an internal substate, not a transition target. The
+  // local state stays IDLE/CIRCUIT_OPEN/etc. while intents are deferred.
+  // The state registry entry exists for observability/dashboards.
+  DEFERRED: {
+    description: 'CK is HALTED/DEAD; one or more intents are deferred awaiting CK_RESUMED',
   },
 };
 
@@ -361,68 +377,49 @@ const TRANSITION_MAP = {
       // For partition_write_failure source, include namespace+projectionId
       // in the intentId so concurrent failures from different namespaces
       // don't collapse into a single retry context.
-      const domain = 'telemetry-coordination';
+      // R3: accept event.domain if present, fall back to telemetry-coordination
+      const domain = event.domain || 'telemetry-coordination';
       const intentId = source === 'partition_write_failure'
         ? `telemetry-failure-${namespace}-${projectionId || Date.now()}`
         : `telemetry-ingress-${Date.now()}`;
       const accountId = '*'; // system-wide, not per-account
 
-      const paired = retryCadenceStore.dispatch(domain, accountId, intentId, {
-        source,
-        lag,
-        escalationState,
-        namespace,
-        projectionId,
-        projectionType,
-        signalsHash,
-        errorMessage,
-        errorName,
-        failedAt,
-        consecutiveFailures,
-      });
-      const existing = _executionContexts.get(intentId);
-      const newCount = existing ? existing.count + 1 : 0;
-      const maxRetries = paired.maxRetries || 0;
+  // ── Build and schedule — R1 + R12 + R3 all funnelled through helper ───────
+      const helperParams = {
+        source, lag, escalationState,
+        namespace, projectionId, projectionType, signalsHash,
+        errorMessage, errorName, failedAt, consecutiveFailures,
+      };
+      const lastError = source === 'partition_write_failure'
+        ? { type: 'partition_write_failure', namespace, projectionId, errorMessage }
+        : { type: 'ingress_lag', lag, source };
 
-      if (newCount > maxRetries) {
-        _cancelRetry(intentId);
-        return _buildExhaustedActions({
-          accountId, domain, intentId,
-          error: 'telemetry_max_retries_exceeded',
-          retryCount: newCount,
+      const result = await _buildRetrySchedule({
+        domain, accountId, intentId,
+        params: helperParams,
+        lastError,
+        actionTag: { type: 'TRANSIENT_RETRY' },
+        retryAfterMs: null,
+        ctx,
+      });
+
+      if (result.kind === 'exhausted') {
+        // R12: pass source/lag as top-level fields. _buildExhaustedActions
+        // reads them directly (not params.params).
+        return result.actions.map(a => {
+          if (a.type === 'TELEMETRY_RETRY_EXHAUSTED') {
+            return { ...a, source, lag };
+          }
+          return a;
         });
       }
-
-      const context = {
-        domain, accountId, intentId,
-        params: {
-          source, lag, escalationState,
-          namespace, projectionId, projectionType, signalsHash,
-          errorMessage, errorName, failedAt, consecutiveFailures,
-        },
-        count: newCount,
-        maxRetries,
-        timeoutId: null,
-        retryWorker: paired.retryWorker,
-        classificationWorker: paired.classificationWorker,
-        policy: paired.policy,
-        lastError: source === 'partition_write_failure'
-          ? { type: 'partition_write_failure', namespace, projectionId, errorMessage }
-          : { type: 'ingress_lag', lag, source },
-        scheduledAt: null,
-        governance: _governance,
-        invokeWorker: ctx.invokeWorker,
-        workerName: _resolveWorkerName(domain, { params: { namespace } }),
-      };
-
-      const scheduleResult = await _scheduleRetry(context, { type: 'TRANSIENT_RETRY' }, ctx);
-      if (!scheduleResult.scheduled) {
+      if (result.kind === 'rejected') {
         return [{
           type: 'SANITY_CHECK_REJECTED',
           operation: 'telemetry_schedule_retry',
           accountId, domain, intentId,
-          retryCount: newCount,
-          reason: scheduleResult.sanityCheck.reason,
+          retryCount: result.newCount,
+          reason: result.sanityCheck.reason,
         }];
       }
 
@@ -432,8 +429,8 @@ const TRANSITION_MAP = {
         accountId,
         domain,
         intentId,
-        retryCount: newCount,
-        delayMs: scheduleResult.delayMs,
+        retryCount: result.newCount,
+        delayMs: result.delayMs,
         source,
         lag,
         escalationState,
@@ -478,51 +475,25 @@ const TRANSITION_MAP = {
     buildActions: async (event, ctx) => {
       const { accountId, domain, intentId, params, retryAfterMs } = event;
 
-      const paired = retryCadenceStore.dispatch(
-        domain, accountId, intentId, params || {});
-      const existing = _executionContexts.get(intentId);
-      // First attempt (no existing context) → count=0
-      // Retry (existing context) → count = previous count + 1
-      const newCount = existing ? existing.count + 1 : 0;
-      const maxRetries = paired.maxRetries || 0;
-
-      if (newCount > maxRetries) {
-        _cancelRetry(intentId);
-        return [{
-          type: 'RETRY_EXHAUSTED',
-          accountId, domain, intentId,
-          error: 'max_retries_exceeded',
-          retryCount: newCount,
-        }];
-      }
-
-      const context = {
-        domain, accountId, intentId,
-        params: params || {},
-        count: newCount,
-        maxRetries,
-        timeoutId: null,
-        retryWorker: paired.retryWorker,
-        classificationWorker: paired.classificationWorker,
-        policy: paired.policy,
+      const result = await _buildRetrySchedule({
+        domain, accountId, intentId, params,
         lastError: null,
-        scheduledAt: null,
-        governance: _governance, // passed to worker on invocation
-        invokeWorker: ctx.invokeWorker, // CTX gate — ownership, contract, sanity
-        workerName: _resolveWorkerName(domain, { params: params || {} }),
-      };
+        actionTag: null,
+        retryAfterMs: retryAfterMs || null,
+        ctx,
+      });
 
-      // If the caller provided a retryAfterMs (override), use it
-      const actionTag = retryAfterMs ? { retryAfterMs } : null;
-      const scheduleResult = await _scheduleRetry(context, actionTag, ctx);
-      if (!scheduleResult.scheduled) {
+      if (result.kind === 'exhausted') {
+        return result.actions;
+      }
+      if (result.kind === 'rejected') {
         return [{
           type: 'SANITY_CHECK_REJECTED',
           operation: 'schedule_retry',
           accountId, domain, intentId,
-          retryCount: newCount,
-          reason: scheduleResult.sanityCheck.reason,
-          alternatives: scheduleResult.sanityCheck.alternatives,
+          retryCount: result.newCount,
+          reason: result.sanityCheck.reason,
+          alternatives: result.sanityCheck.alternatives,
         }];
       }
       return [];
@@ -615,53 +586,24 @@ const TRANSITION_MAP = {
 
         switch (actionTag.type) {
           case 'TRANSIENT_RETRY': {
-            // FSM owns the scheduling decision. Build the
-            // execution context (or update an existing one),
-            // ask CK for permission, compute the delay,
-            // set the timer.
-            const paired = retryCadenceStore.dispatch(
-              domain, accountId, intentId, event.params || {});
-            const existing = _executionContexts.get(intentId);
-            // First attempt (no existing context) → count=0
-            // Retry (existing context) → count = previous count + 1
-            const newCount = existing ? existing.count + 1 : 0;
-            const maxRetries = paired.maxRetries || 0;
-
-            if (newCount > maxRetries) {
-              // Budget exhausted — terminal
-              _cancelRetry(intentId);
-              return _buildExhaustedActions({
-                accountId, domain, intentId,
-                error: 'max_retries_exceeded',
-                retryCount: newCount,
-              });
-            }
-
-            const context = {
+            // FSM owns the scheduling decision. Funnel through the
+            // canonical _buildRetrySchedule helper — same path as
+            // RETRY_REQUESTED. The classification ran once here, the
+            // actionTag is the classifier's verdict, the helper does
+            // paired-dispatch + budget + sanity + timer.
+            const result = await _buildRetrySchedule({
               domain, accountId, intentId,
               params: event.params || {},
-              count: newCount,
-              maxRetries,
-              timeoutId: null,
-              retryWorker: paired.retryWorker,
-              classificationWorker: paired.classificationWorker,
-              policy: paired.policy,
               lastError: errorShape,
-              scheduledAt: null,
-              governance: _governance, // passed to worker on invocation
-              invokeWorker: ctx.invokeWorker, // CTX gate — ownership, contract, sanity
-              workerName: _resolveWorkerName(domain, { params: event.params || {} }),
-            };
+              actionTag,
+              retryAfterMs: null,
+              ctx,
+            });
 
-            const scheduleResult = await _scheduleRetry(context, actionTag, ctx);
-            // ORDERING ASSUMPTION: sanity gate fires BEFORE the timer is set
-            // and BEFORE any worker is invoked. The rejected event below is
-            // consumed by the FSM's own SANITY_CHECK_REJECTED handler (which
-            // cancels the held context). If a future refactor splits the
-            // sanity gate into pre-schedule AND pre-invoke, the rejected
-            // event must NOT be emitted on the pre-invoke path — the worker
-            // would already be in flight.
-            if (!scheduleResult.scheduled) {
+            if (result.kind === 'exhausted') {
+              return result.actions;
+            }
+            if (result.kind === 'rejected') {
               // Sanity check rejected the schedule. Emit
               // SANITY_CHECK_REJECTED for the FSM's own handler
               // to process (cancellation, state update).
@@ -669,9 +611,9 @@ const TRANSITION_MAP = {
                 type: 'SANITY_CHECK_REJECTED',
                 operation: 'schedule_retry',
                 accountId, domain, intentId,
-                retryCount: newCount,
-                reason: scheduleResult.sanityCheck.reason,
-                alternatives: scheduleResult.sanityCheck.alternatives,
+                retryCount: result.newCount,
+                reason: result.sanityCheck.reason,
+                alternatives: result.sanityCheck.alternatives,
               }];
             }
 
@@ -686,8 +628,8 @@ const TRANSITION_MAP = {
                 accountId,
                 domain,
                 intentId,
-                retryCount: newCount,
-                delayMs: scheduleResult.delayMs,
+                retryCount: result.newCount,
+                delayMs: result.delayMs,
               }];
             }
             if (domain && domain.startsWith('dedup:')) {
@@ -696,8 +638,8 @@ const TRANSITION_MAP = {
                 accountId,
                 domain,
                 intentId,
-                retryCount: newCount,
-                delayMs: scheduleResult.delayMs,
+                retryCount: result.newCount,
+                delayMs: result.delayMs,
               }];
             }
             if (domain === 'reconciliation') {
@@ -706,8 +648,8 @@ const TRANSITION_MAP = {
                 accountId,
                 domain,
                 intentId,
-                retryCount: newCount,
-                delayMs: scheduleResult.delayMs,
+                retryCount: result.newCount,
+                delayMs: result.delayMs,
               }];
             }
             return [];
@@ -765,28 +707,89 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── SANITY_CHECK_REJECTED — the FSM's own reaction to its own rejections ─
+  // ── SANITY_CHECK_REJECTED — R7 deferred queue ────────────────────────────
   // When CK rejects a scheduling or invocation decision, the FSM
   // receives SANITY_CHECK_REJECTED. The FSM:
-  //   - cancels any held execution context for the intent
-  //     (no point keeping it if CK won't allow the schedule)
-  //   - tracks the rejection count for the account
-  //   - emits the appropriate terminal event:
-  //     * schedule_retry rejection → RETRY_EXHAUSTED with reason
-  //     * invoke_worker rejection → RETRY_EXHAUSTED with reason
+  //   - schedule_retry rejection → push to _deferredIntents, emit
+  //     DEFERRED_RETRY_SCHEDULED. The intent waits for SANITY_CHECK_RESUMED
+  //     (CK_RESUMED trigger from the constitutional kernel) before retrying.
+  //   - invoke_worker rejection → still terminal. The worker is already
+  //     in flight; the gate is downstream of the timer. Map to
+  //     RETRY_EXHAUSTED so the chain closes.
+  //   - after DEFERRED_MAX_ATTEMPTS rejections → terminal. Map to
+  //     RETRY_EXHAUSTED with the deferral history.
   //   - logs degraded state for observability
-  // The FSM does NOT retry the sanity check — CK's decision is final.
   SANITY_CHECK_REJECTED: {
     target: () => _localState,
     guard: () => ({ allowed: true }),
     buildActions: (event) => {
       const { accountId, intentId, operation, reason } = event;
 
-      // Cancel the held context (the decision was rejected, the
-      // intent is not going to retry)
-      _cancelRetry(intentId);
+      const isScheduleRejection = operation === 'schedule_retry';
 
-      // Log the rejection for observability
+      if (isScheduleRejection) {
+        // Look up existing deferral — if present, increment count
+        const existing = _deferredIntents.get(intentId);
+        const deferralCount = existing ? existing.deferralCount + 1 : 1;
+
+        if (deferralCount > DEFERRED_MAX_ATTEMPTS) {
+          // Too many deferrals — terminal
+          _cancelRetry(intentId);
+          _deferredIntents.delete(intentId);
+          return [
+            {
+              type: 'LOG_DEGRADED',
+              substate: 'DEFERRED_EXHAUSTED',
+              reason: `Deferred ${deferralCount - 1} times then rejected: ${reason}`,
+            },
+            ..._buildExhaustedActions({
+              accountId,
+              domain: event.domain,
+              intentId,
+              error: `sanity_check_rejected_after_deferral: ${reason}`,
+              operation,
+            }),
+          ];
+        }
+
+        // Defer — keep the held context but mark it deferred
+        _deferredIntents.set(intentId, {
+          domain: event.domain,
+          accountId,
+          intentId,
+          params: existing?.params || null,
+          lastError: existing?.lastError || null,
+          actionTag: existing?.actionTag || null,
+          retryAfterMs: existing?.retryAfterMs || null,
+          ctx: existing?.ctx || null,
+          deferredAt: Date.now(),
+          deferralCount,
+          reason,
+        });
+
+        const rawDelay = DEFERRED_BASE_DELAY_MS * Math.pow(DEFERRED_BACKOFF_MULTIPLIER, deferralCount - 1);
+        const delayMs = Math.min(rawDelay, DEFERRED_MAX_DELAY_MS);
+
+        return [
+          {
+            type: 'LOG_DEGRADED',
+            substate: 'SANITY_REJECTED_DEFERRED',
+            reason: `${operation} rejected (attempt ${deferralCount}/${DEFERRED_MAX_ATTEMPTS}): ${reason}`,
+          },
+          {
+            type: 'DEFERRED_RETRY_SCHEDULED',
+            accountId,
+            domain: event.domain,
+            intentId,
+            deferralCount,
+            delayMs,
+            reason,
+          },
+        ];
+      }
+
+      // Non-schedule rejection (invoke_worker) — terminal
+      _cancelRetry(intentId);
       return [
         {
           type: 'LOG_DEGRADED',
@@ -801,6 +804,77 @@ const TRANSITION_MAP = {
           operation,
         }),
       ];
+    },
+  },
+
+  // ── SANITY_CHECK_RESUMED — CK is back, drain deferred intents ───────────
+  // CK emits CK_RESUMED (HALTED/DEAD → NORMAL) and routes it here as
+  // SANITY_CHECK_RESUMED. The FSM drains _deferredIntents by re-running
+  // _buildRetrySchedule on each. Deferred intent that succeeds
+  // re-schedules its timer. Deferred intent still rejected either
+  // increments deferralCount (via the SANITY_CHECK_REJECTED handler) or
+  // goes terminal (DEFERRED_MAX_ATTEMPTS exceeded).
+  SANITY_CHECK_RESUMED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const drained = [];
+      const now = Date.now();
+
+      for (const [intentId, deferred] of _deferredIntents) {
+        // Compute per-intent backoff from deferralCount
+        const rawDelay = DEFERRED_BASE_DELAY_MS * Math.pow(DEFERRED_BACKOFF_MULTIPLIER, deferred.deferralCount - 1);
+        const delayMs = Math.min(rawDelay, DEFERRED_MAX_DELAY_MS);
+        const elapsed = now - deferred.deferredAt;
+
+        if (elapsed < delayMs) {
+          // Not yet time to retry this one
+          continue;
+        }
+
+        // Pop from deferred and re-schedule
+        _deferredIntents.delete(intentId);
+
+        const result = await _buildRetrySchedule({
+          domain: deferred.domain,
+          accountId: deferred.accountId,
+          intentId: deferred.intentId,
+          params: deferred.params || {},
+          lastError: deferred.lastError,
+          actionTag: deferred.actionTag,
+          retryAfterMs: deferred.retryAfterMs,
+          ctx: deferred.ctx || ctx,
+        });
+
+        if (result.kind === 'scheduled') {
+          drained.push({
+            type: 'RETRY_RESUMED',
+            accountId: deferred.accountId,
+            domain: deferred.domain,
+            intentId: deferred.intentId,
+            delayMs: result.delayMs,
+            deferralCount: deferred.deferralCount,
+          });
+        } else if (result.kind === 'rejected') {
+          // Re-rejected — emit SANITY_CHECK_REJECTED to re-enter the
+          // deferral path (which will check DEFERRED_MAX_ATTEMPTS)
+          drained.push({
+            type: 'SANITY_CHECK_REJECTED',
+            operation: 'schedule_retry',
+            accountId: deferred.accountId,
+            domain: deferred.domain,
+            intentId: deferred.intentId,
+            retryCount: result.newCount,
+            reason: result.sanityCheck.reason,
+            alternatives: result.sanityCheck.alternatives,
+          });
+        } else if (result.kind === 'exhausted') {
+          // Budget exhausted during drain
+          drained.push(...result.actions);
+        }
+      }
+
+      return drained;
     },
   },
 };
@@ -827,6 +901,17 @@ const _authFailureStrikes = new Map();
 // The FSM owns the counter, the timer, the delay computation, the
 // dispatch decision, the cancellation. Single source of truth.
 const _executionContexts = new Map();
+
+// ── Deferred intents (R7): intentId → DeferredIntent ─────────────────────
+// When CK rejects a schedule (HALTED/DEAD), the intent lands here instead
+// of going terminal. The intent waits for SANITY_CHECK_RESUMED (emitted
+// when CK transitions HALTED/DEAD → NORMAL). Drain logic in the
+// SANITY_CHECK_RESUMED handler re-calls _buildRetrySchedule per intent.
+//
+// DeferredIntent:
+//   { domain, accountId, intentId, params, lastError, actionTag,
+//     retryAfterMs, ctx, deferredAt, deferralCount, reason }
+const _deferredIntents = new Map();
 
 // ── Sanity check reference (canonical: ctx.sanityCheck) ────────────────
 // The ctx.sanityCheck is the universal gate. The FSM calls
@@ -864,6 +949,14 @@ let _governance = null;
 function setGovernance(governance) {
   if (governance && typeof governance.dispatch === 'function') {
     _governance = governance;
+    // R5: startup assertion — the CTX gate must be wired at install time.
+    // The legacy direct-invocation fallback in _executeRetry has been
+    // removed; without ctx.invokeWorker, every retry would fail with
+    // "gate not wired" at fire time. Fail-loud here so a misconfigured
+    // boot is caught immediately, not on the first failure.
+    if (typeof governance.invokeWorker !== 'function') {
+      throw new Error('[engagement-fsm] R5: setGovernance() called with a governance that does not expose invokeWorker(). The legacy fallback has been removed; the CTX gate is required.');
+    }
   }
 }
 
@@ -981,6 +1074,115 @@ async function _scheduleRetry(context, actionTag, fsmCtx) {
 }
 
 /**
+ * Build and schedule a retry attempt — the canonical retry-schedule path.
+ *
+ * Both RETRY_REQUESTED (external entry) and WORKER_OUTCOME_REPORTED →
+ * TRANSIENT_RETRY (worker outcome) funnel through this helper. The
+ * canonical budget + sanity + timer logic lives here; the two callers
+ * just supply their entry-specific input shape.
+ *
+ * Steps:
+ *   1. paired-dispatch (budget lookup, paired workers, policy)
+ *   2. budget check — if exceeded, return exhausted result
+ *   3. build ExecutionContext
+ *   4. _scheduleRetry (sanity gate + timer)
+ *   5. on rejection: caller emits SANITY_CHECK_REJECTED
+ *   6. on success: caller emits domain-specific RETRY_IN_PROGRESS (or none)
+ *
+ * The caller decides what to do with the three outcomes via the return shape:
+ *   { kind: 'exhausted', actions, newCount }   — budget gone
+ *   { kind: 'rejected', sanityCheck, newCount } — sanity said no
+ *   { kind: 'scheduled', delayMs, newCount }   — timer is set
+ *
+ * @param {object} input
+ * @param {string} input.domain
+ * @param {string} input.accountId
+ * @param {string} input.intentId
+ * @param {object} input.params — opaque worker params
+ * @param {object|null} input.lastError — errorShape or null
+ * @param {object|null} input.actionTag — classification output (delay override)
+ * @param {number|null} input.retryAfterMs — explicit delay override
+ * @param {object} input.ctx — dispatch ctx (for ctx.sanityCheck)
+ * @returns {Promise<
+ *   | { kind: 'exhausted', actions: Array, newCount: number }
+ *   | { kind: 'rejected', sanityCheck: object, newCount: number }
+ *   | { kind: 'scheduled', delayMs: number, newCount: number }
+ * >}
+ */
+async function _buildRetrySchedule(input) {
+  const { domain, accountId, intentId, params, lastError, actionTag, retryAfterMs, ctx } = input;
+
+  // 1. paired-dispatch
+  const paired = retryCadenceStore.dispatch(
+    domain, accountId, intentId, params || {});
+  const existing = _executionContexts.get(intentId);
+  // R11: count advances ONLY when sanity approves. The budget check
+  // below compares existing.count against maxRetries; the count is
+  // committed to the context AFTER sanity.allowed returns true. This
+  // means a sanity-rejected attempt does not consume the retry budget.
+  const maxRetries = paired.maxRetries || 0;
+
+  // 2. budget check (read-only — does not advance count)
+  if (existing && existing.count >= maxRetries) {
+    _cancelRetry(intentId);
+    return {
+      kind: 'exhausted',
+      actions: _buildExhaustedActions({
+        accountId, domain, intentId,
+        error: 'max_retries_exceeded',
+        retryCount: existing.count,
+      }),
+      newCount: existing.count,
+    };
+  }
+
+  // 3. ExecutionContext — count is the prospective count, committed later
+  const prospectiveCount = existing ? existing.count + 1 : 0;
+  const context = {
+    domain, accountId, intentId,
+    params: params || {},
+    count: existing ? existing.count : 0,  // current count, not yet advanced
+    maxRetries,
+    timeoutId: null,
+    retryWorker: paired.retryWorker,
+    classificationWorker: paired.classificationWorker,
+    policy: paired.policy,
+    lastError: lastError || null,
+    scheduledAt: null,
+    governance: _governance, // passed to worker on invocation
+    invokeWorker: ctx.invokeWorker, // CTX gate — ownership, contract, sanity
+    workerName: _resolveWorkerName(domain, { params: params || {} }),
+    // internal — passed to _scheduleRetry, NOT in worker-facing shape
+    _prospectiveCount: prospectiveCount,
+  };
+
+  // 4. actionTag resolution — explicit override wins, then classification
+  const effectiveActionTag = retryAfterMs ? { retryAfterMs } : actionTag;
+
+  // 5. schedule (sanity gate + timer)
+  const scheduleResult = await _scheduleRetry(context, effectiveActionTag, ctx);
+  if (!scheduleResult.scheduled) {
+    // R11: count NOT advanced. Rejection does not burn budget.
+    return {
+      kind: 'rejected',
+      sanityCheck: scheduleResult.sanityCheck,
+      newCount: existing ? existing.count : 0,
+    };
+  }
+
+  // R11: count advanced only now, post-sanity
+  const finalCount = existing ? existing.count + 1 : 1;
+  context.count = finalCount;
+  _executionContexts.set(intentId, context);
+
+  return {
+    kind: 'scheduled',
+    delayMs: scheduleResult.delayMs,
+    newCount: finalCount,
+  };
+}
+
+/**
  * Resolve the registered worker name for a domain.
  * Used to pass workerName through execution contexts so
  * _executeRetry can call ctx.invokeWorker(workerName, params).
@@ -1026,77 +1228,37 @@ function _resolveWorkerName(domain, context) {
 
 /**
  * Execute a retry attempt. Called by the setTimeout in _scheduleRetry.
- * Routes through the CTX gate (ctx.invokeWorker) when available —
- * validates ownership, contract, and sanity before invocation.
- * Falls back to direct retryWorker invocation if the gate is unset
- * (legacy path — should not happen in production after CK gate wiring).
+ * R5: routes ONLY through the CTX gate (ctx.invokeWorker) — validates
+ * ownership, contract, and sanity before invocation. The legacy direct
+ * retryWorker.execute() path has been removed; production callers MUST
+ * wire ctx.invokeWorker at install time. The startup assertion in
+ * setGovernance() verifies the gate is present at boot.
  *
- * @param {object} context — ExecutionContext (must include governance)
+ * @param {object} context — ExecutionContext (must include invokeWorker, workerName, governance)
  * @param {object|null} fsmCtx — the dispatch ctx (for ctx.sanityCheck)
  */
 async function _executeRetry(context, fsmCtx) {
-  // ── CTX gate path — ownership, contract, sanity validated by CK ──────
-  if (context.invokeWorker && context.workerName) {
-    try {
-      await context.invokeWorker(context.workerName, {
-        domain: context.domain,
-        accountId: context.accountId,
-        intentId: context.intentId,
-        params: context.params,
-        retryCount: context.count,
-        maxRetries: context.maxRetries,
-        governance: context.governance,
-      });
-      return;
-    } catch (err) {
-      console.error(`[engagement-fsm] CTX gate blocked worker '${context.workerName}' for ${context.intentId}:`, err.message);
-      return;
-    }
-  }
-
-  // ── Fallback: direct invocation (legacy, no gate) ─────────────────────
-  // Sanity check before invocation (universal gate)
-  const sanityCheck = _resolveSanityCheck(fsmCtx);
-  const sanity = await sanityCheck({
-    operation: 'invoke_worker',
-    accountId: context.accountId,
-    domain: context.domain,
-    intentId: context.intentId,
-    worker: context.retryWorker?.name || 'unknown',
-  });
-
-  if (!sanity.allowed) {
+  // R5: CTX gate path is the ONLY path. No fallback.
+  if (!context.invokeWorker || !context.workerName) {
+    console.error(`[engagement-fsm] R5: ctx.invokeWorker or workerName missing for ${context.intentId} — gate not wired. The legacy direct-invocation fallback has been removed.`);
     return;
   }
-
-  if (!context.retryWorker || typeof context.retryWorker.execute !== 'function') {
-    console.error(`[engagement-fsm] No retryWorker in context for ${context.intentId}`);
-    return;
-  }
-
-  // Invoke. The worker is responsible for emitting
-  // WORKER_OUTCOME_REPORTED. The worker receives the
-  // governance ref via the context — the FSM is the
-  // only place that holds the ref. The worker does
-  // NOT import it at module load (fail-loud if null).
   if (!context.governance) {
     console.error(`[engagement-fsm] No governance in context for ${context.intentId} — worker cannot dispatch`);
     return;
   }
   try {
-    await context.retryWorker.execute(
-      context.domain,
-      context.accountId,
-      context.intentId,
-      context.params,
-      context.count,
-      context.maxRetries,
-      // Governance reference — passed from FSM's context.
-      // The worker uses this to emit WORKER_OUTCOME_REPORTED.
-      context.governance,
-    );
+    await context.invokeWorker(context.workerName, {
+      domain: context.domain,
+      accountId: context.accountId,
+      intentId: context.intentId,
+      params: context.params,
+      retryCount: context.count,
+      maxRetries: context.maxRetries,
+      governance: context.governance,
+    });
   } catch (err) {
-    console.error(`[engagement-fsm] Retry worker threw for ${context.intentId}:`, err.message);
+    console.error(`[engagement-fsm] CTX gate blocked worker '${context.workerName}' for ${context.intentId}:`, err.message);
   }
 }
 
@@ -1173,6 +1335,11 @@ function _buildExhaustedActions(params) {
     });
   }
   if (params.domain === 'telemetry-coordination') {
+    // R12: read source/lag as top-level fields on the params object.
+    // Callers of _buildExhaustedActions for telemetry-coordination
+    // pass { accountId, domain, intentId, error, retryCount, source, lag }.
+    // The previous params.params?.source path always returned undefined
+    // because no caller passed a nested `params` field.
     actions.push({
       type: 'TELEMETRY_RETRY_EXHAUSTED',
       accountId: params.accountId,
@@ -1180,8 +1347,8 @@ function _buildExhaustedActions(params) {
       intentId: params.intentId,
       error: params.error,
       retryCount: params.retryCount,
-      source: params.params?.source,
-      lag: params.params?.lag,
+      source: params.source,
+      lag: params.lag,
     });
   }
   return actions;

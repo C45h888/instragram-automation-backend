@@ -89,6 +89,8 @@ const VALID_TABLES = new Set([
   'instagram_business_accounts',
   'token_lifecycle_events',
   'system_alerts',
+  'user_profiles',
+  'api_usage',
 ]);
 
 const BACKPRESSURE_THRESHOLD = 10;
@@ -112,6 +114,8 @@ const READ_DOMAIN_WHITELIST = new Set([
   'db.encryption-key',
   'db.alerts',
   'db.lifecycle-events',
+  'db.user-profiles',
+  'db.api-usage',
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════════

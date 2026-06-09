@@ -15,6 +15,7 @@ const WORKER_MAP = {
   insert_lifecycle_event:             '../substrates/alerts/workers/write-lifecycle-event-worker',
   write_scope_cache:                  '../substrates/graph-capability/workers/write-scope-cache-worker',
   update_credential_status:           '../substrates/graph-capability/workers/update-credential-status-worker',
+  log_api_request:                    './api-usage-writer',
 };
 
 function getWriter(operation) {

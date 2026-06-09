@@ -119,6 +119,7 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   // (the FSM owns the dispatch's semantics; CK owns the timing). They bypass the
   // canonical-source gate because CK IS the canonical source.
   'CAPABILITY_BOOTSTRAP','CAPABILITY_CADENCE_TICK',
+  'API_RATE_LIMIT_CHECK','API_RATE_LIMIT_RESULT',
   'EMERGENCY_HALT_CLEARED','GOVERNANCE_TRANSITION_EMITTED','DOMAIN_TRANSITION_EMITTED',
   'GOVERNANCE_TRANSITION_REJECTED','DOMAIN_TRANSITION_REJECTED','ENTRY_INGESTED',
   'ENTRY_NORMALIZED','ENTRY_PROJECTED','ENTRY_REJECTED','ENTRY_ACCEPTED','ENTRY_PERSISTED',
@@ -605,7 +606,8 @@ const DOMAIN_EVENT_MAP = {
   REPEATED_GRAPH_FAILURE: 'graph-capability',
   CAPABILITY_DATA_REQUEST: 'graph-capability',
   CAPABILITY_BOOTSTRAP: 'graph-capability',
-  CAPABILITY_CADENCE_TICK: 'graph-capability',  // Phase C: routed to graph-capability FSM by constitutional-kernel's cadence loop
+  CAPABILITY_CADENCE_TICK: 'graph-capability',
+  API_RATE_LIMIT_CHECK: 'graph-capability',  // Phase C: routed to graph-capability FSM by constitutional-kernel's cadence loop
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',
