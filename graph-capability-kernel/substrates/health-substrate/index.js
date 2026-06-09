@@ -43,36 +43,18 @@ function delay(ms) {
 }
 
 // ── Public lifecycle ─────────────────────────────────────────────────────────
+// ── Public lifecycle ─────────────────────────────────────────────────────────
 
 let _started = false;
+let _governance = null;
 
-function start() {
+function start(governance) {
   if (_started) return;
   _started = true;
-  console.log('[health] Substrate started — workers armed (scan / recovery / refresh / data-access-expiry)');
-}
+  _governance = governance;
 
-function stop() {
-  if (!_started) return;
-  _started = false;
-  console.log('[health] Substrate stopped');
-}
-
-function isStarted() {
-  return _started;
-}
-
-// ── Constitutional membrane wiring ──────────────────────────────────────────
-
-function wire(governance) {
-  if (!governance || typeof governance.subscribeAction !== 'function') {
-    console.warn('[health] wire() called without valid governance — membrane not wired');
-    return;
-  }
   governance.subscribeAction('RUN_TOKEN_HEALTH_CHECK', (action) => {
     console.log('[health] Membrane received RUN_TOKEN_HEALTH_CHECK — executing');
-    // Async: fire-and-forget so bootstrap doesn't block server startup.
-    // The health check runs independently; failures are logged, not fatal.
     runTokenHealthCheck().catch(err => {
       console.error('[health] RUN_TOKEN_HEALTH_CHECK failed:', err.message);
     });
@@ -84,6 +66,15 @@ function wire(governance) {
     });
   });
   console.log('[health] Membrane wired — subscribed to RUN_TOKEN_HEALTH_CHECK, RUN_UAT_REFRESH_CHECK');
+}
+
+function stop() {
+  if (!_started) return;
+  _started = false;
+}
+
+function isStarted() {
+  return _started;
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -146,6 +137,22 @@ async function _updateCredentialStatus({ credentialId, debugTokenChecked, isActi
   });
 }
 
+/**
+ * Batch-dispatch CAPABILITY_HEALTH_CHECK_COMPLETED per credential.
+ * The FSM stamps per-cred cadence timestamps so the next periodic tick
+ * doesn't redundantly re-trigger for credentials that just completed.
+ */
+function _dispatchCompletion(checkType, baIds) {
+  for (const baId of baIds) {
+    if (!baId) continue;
+    fsm.dispatch({
+      type: 'CAPABILITY_HEALTH_CHECK_COMPLETED',
+      checkType,
+      businessAccountId: baId,
+    });
+  }
+}
+
 // ── Public operations ───────────────────────────────────────────────────────
 
 /**
@@ -164,7 +171,7 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
 
   try {
     const scanWorker = new ScanCredentialsWorker();
-    const { creds, stats: scanStats } = await scanWorker.execute({ businessAccountId });
+    const { creds, stats: scanStats } = await scanWorker.execute({});
 
     logAudit({
       event_type: 'token_health_run_started',
@@ -180,6 +187,7 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
 
     let valid = 0, invalid = 0, skipped = 0, recovered = 0;
     const recoveryWorker = new RecoveryWorker();
+    const statusUpdates = [];  // batch: collect all credential status stamps
 
     for (const cred of creds) {
       const baId = cred.business_account_id;
@@ -229,8 +237,8 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
       }
 
       if (tokenInfo && tokenInfo.isValid) {
-        // VALID
-        await _updateCredentialStatus({
+        // VALID — collect stamp for batch dispatch
+        statusUpdates.push({
           credentialId: cred.id,
           debugTokenChecked: true,
           businessAccountId: baId,
@@ -277,9 +285,15 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
 
           recovered++;
           invalid++;
+          // Stamp recovered credential so next cadence tick doesn't re-process it
+          statusUpdates.push({
+            credentialId: cred.id,
+            debugTokenChecked: true,
+            businessAccountId: baId,
+          });
         } else {
-          // Recovery failed
-          await _updateCredentialStatus({
+          // Recovery failed — collect stamp for batch dispatch
+          statusUpdates.push({
             credentialId: cred.id,
             isActive: false,
             businessAccountId: baId,
@@ -309,6 +323,13 @@ async function runTokenHealthCheck({ scanWindowHours = 24, interCallDelayMs = 20
       }
 
       await delay(interCallDelayMs);
+    }
+
+    // Batch dispatch: all credential status stamps fire in parallel.
+    // This reduces N sequential round-trips (CK→FSM→writer→ACK) to one
+    // parallel wave. Total time = max(single write latency), not sum.
+    if (statusUpdates.length > 0) {
+      await Promise.all(statusUpdates.map(s => _updateCredentialStatus(s)));
     }
 
     const finalStats = {
@@ -493,7 +514,6 @@ module.exports = {
   start,
   stop,
   isStarted,
-  wire,
   runTokenHealthCheck,
   runUATRefreshCheck,
 };

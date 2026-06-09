@@ -65,10 +65,10 @@ const MEMBRANE_AUTHORITY_MAP = {
   'telemetry-coordination-fsm': ['telemetry-coordination-fsm'],
   'reconciliation-fsm':  ['reconciliation'],
   'scheduling-fsm':      ['scheduling'],
-  'graph-capability-fsm': ['graph-capability'],
+  'graph-capability': ['graph-capability'],
   'engagement-fsm':      ['engagement'],
   'dedup-fsm':           ['dedup'],
-  'persist-telemetry-fsm': ['persist-telemetry'],
+  'persist-telemetry': ['persist-telemetry'],
   'governance-kernel':   ['governance', 'execution', 'acquisition', 'publishing',
                           'scheduling', 'telemetry', 'reconciliation', 'projection'],
 };
@@ -108,6 +108,11 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   'WORKER_SPAWNED','WORKER_TERMINATED','WORKER_RESTARTED','SUBSTRATE_STARTED',
   'SUBSTRATE_STOPPED','SUBSTRATE_RECOVERED','KERNEL_BOOTSTRAP_COMPLETE',
   'KERNEL_SHUTDOWN_INITIATED','KERNEL_SHUTDOWN_COMPLETE','EMERGENCY_HALT_TRIGGERED',
+  // Phase C/D: graph-capability kernel lifecycle — CK-issued by bootstrap() and the cadence loop.
+  // These are domain events the constitutional kernel itself emits as a canonical source
+  // (the FSM owns the dispatch's semantics; CK owns the timing). They bypass the
+  // canonical-source gate because CK IS the canonical source.
+  'CAPABILITY_BOOTSTRAP','CAPABILITY_CADENCE_TICK',
   'EMERGENCY_HALT_CLEARED','GOVERNANCE_TRANSITION_EMITTED','DOMAIN_TRANSITION_EMITTED',
   'GOVERNANCE_TRANSITION_REJECTED','DOMAIN_TRANSITION_REJECTED','ENTRY_INGESTED',
   'ENTRY_NORMALIZED','ENTRY_PROJECTED','ENTRY_REJECTED','ENTRY_ACCEPTED','ENTRY_PERSISTED',
@@ -586,6 +591,7 @@ const DOMAIN_EVENT_MAP = {
   REPEATED_GRAPH_FAILURE: 'graph-capability',
   CAPABILITY_DATA_REQUEST: 'graph-capability',
   CAPABILITY_BOOTSTRAP: 'graph-capability',
+  CAPABILITY_CADENCE_TICK: 'graph-capability',  // Phase C: routed to graph-capability FSM by constitutional-kernel's cadence loop
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',

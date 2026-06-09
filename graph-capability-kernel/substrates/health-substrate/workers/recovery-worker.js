@@ -35,7 +35,7 @@ class RecoveryWorker {
    *   newPageName: string|null,
    * }>}
    */
-  async execute({ cred, triggerBridge }) {
+  async execute({ cred }) {
     if (!cred || !cred.user_id || !cred.business_account_id) {
       return { success: false, error: 'cred with user_id + business_account_id is required', newIgBusinessAccountId: null, newPageId: null, newPageName: null };
     }
@@ -66,7 +66,6 @@ class RecoveryWorker {
         pageId: exchangeResult.pageId,
         pageName: exchangeResult.pageName,
         scope: newScope,
-        triggerBridge,
       });
 
       clearCredentialCache(cred.business_account_id);

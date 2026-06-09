@@ -48,6 +48,7 @@ async function execute(params, governance) {
       });
 
     if (error) {
+      console.warn('[write-lifecycle-event-worker] Insert failed:', error.message);
       governance?.dispatch({ type: 'DB_WRITE_COMPLETE', domain, accountId, intentId,
         table, count: 0, status: 'failed', error: error.message });
       return { success: false, error: error.message };
@@ -57,6 +58,7 @@ async function execute(params, governance) {
       table, count: 1, status: 'success', error: null });
     return { success: true, error: null };
   } catch (err) {
+    console.warn('[write-lifecycle-event-worker] Insert failed:', err.message);
     governance?.dispatch({ type: 'DB_WRITE_COMPLETE', domain, accountId, intentId,
       table, count: 0, status: 'failed', error: err.message });
     return { success: false, error: err.message };

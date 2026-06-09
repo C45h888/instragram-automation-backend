@@ -3,7 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const vault = require('../../substrates/vault');
+const vault = require('../../graph-capability-kernel/substrates/vault');
 const constitutionalKernel = require('../../control-plane/governance/constitutional-kernel');
 const { getSupabaseAdmin, logAudit: logAuditService, fireAndForgetInsert } = require('../../config/supabase');
 const { clearCredentialCache } = require('../../helpers/credential-cache');

@@ -58,6 +58,12 @@ async function detectDynamic({ businessAccountId, userId, token, credentialId = 
           : Infinity;
         if (cacheAge < 7 * 24 * 60 * 60 * 1000) {
           console.log('✅ Using cached scope via governed read (age: ' + Math.floor(cacheAge / 1000 / 60 / 60) + 'h)');
+          // Emit envelope so FSM records the cached observation with real cacheAgeMs
+          if (businessAccountId) {
+            const cachedEnv = fsm.newEnvelope({ businessAccountId, userId });
+            cachedEnv.scope = { grantedScopes: result.data.scope_cache, cacheAgeMs: cacheAge };
+            signalDispatch.emitEnvelope({ envelope: cachedEnv });
+          }
           return result.data.scope_cache;
         }
       }
