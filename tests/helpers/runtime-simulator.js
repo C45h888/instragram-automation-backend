@@ -147,6 +147,20 @@ class RuntimeSimulator {
       CK.registerDomain(fsm);
     }
 
+    // 2a. Register scheduling workers — mirrors orchastrator.js worker bindings.
+    // Without this, scheduling FSM cannot invoke lifecycle-refresh, safety-check,
+    // or metrics-report workers through ctx.invokeWorker(). (Phase 7, B-NEW-2)
+    CK.registerWorker('scheduling', 'lifecycle-refresh',
+      require('../../scheduling-kernel/workers/lifecycle-refresh-worker'));
+    CK.registerWorker('scheduling', 'safety-check',
+      require('../../scheduling-kernel/workers/safety-check-worker'));
+    CK.registerWorker('scheduling', 'metrics-report',
+      require('../../scheduling-kernel/workers/metrics-report-worker'));
+    CK.registerWorker('scheduling', 'metrics-query',
+      require('../../scheduling-kernel/workers/metrics-query-worker'));
+    CK.registerWorker('scheduling', 'metrics-flush',
+      require('../../scheduling-kernel/workers/metrics-flush-worker'));
+
     // 3. Start telemetry projection workers (5 workers: runtime, integrity,
     //    authority, health, systemic). Phase 1 — emit PROJECTION_INTENT.
     await telemetryWorkers.startAll(this._telemetryPollMs);

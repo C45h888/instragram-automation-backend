@@ -73,6 +73,12 @@ const RETRY_WORKER_MAP = {
   'telemetry:health':    '../retry-cadence-kernel/workers/telemetry-retry-health-worker',
   'telemetry:systemic':  '../retry-cadence-kernel/workers/telemetry-retry-systemic-worker',
   'telemetry:capability': '../retry-cadence-kernel/workers/telemetry-retry-capability-worker',
+  // ── Persist-telemetry retry domain (phase 3) ─────────────────────────
+  // The stub was replaced by the connection-recovery-worker under the
+  // retry-execution-substrate. The substrate-registry still maps the
+  // domain to a retry worker for validate() symmetry.
+  'persist-telemetry':      '../retry-cadence-kernel/workers/connection-recovery-worker',
+  'persist-telemetry-read': '../retry-cadence-kernel/workers/connection-recovery-worker',
 };
 
 // Classification workers — semantically blind, bounded. They receive
@@ -102,6 +108,14 @@ const CLASSIFICATION_WORKER_MAP = {
   'telemetry:health':    '../retry-cadence-kernel/workers/classification-worker',
   'telemetry:systemic':  '../retry-cadence-kernel/workers/classification-worker',
   'telemetry:capability': '../retry-cadence-kernel/workers/classification-worker',
+  // Persist-telemetry classification is owned by the substrate
+  // (persistence-failure-substrate.js). The retry-cadence-kernel does
+  // NOT re-classify — it consumes the substrate's errorShape. So
+  // this entry maps to the substrate module, not a separate worker.
+  // The FSM's DB_PERSIST_FAILURE handler treats the substrate's
+  // reportFailure output as authoritative.
+  'persist-telemetry':      '../postgres-telemetry-kernel/substrates/persistence-failure-substrate',
+  'persist-telemetry-read': '../postgres-telemetry-kernel/substrates/persistence-failure-substrate',
 };
 
 // DOMAIN_REGISTRY — the canonical set of domain names. Publish
@@ -128,6 +142,13 @@ const DOMAIN_REGISTRY = {
   'telemetry:health':    { },  // health projection retry
   'telemetry:systemic':  { },  // systemic pressure projection retry
   'telemetry:capability': { },  // capability projection retry
+  // ── Persist-telemetry retry domain (base phase) ─────────────────
+  // Two domains: writes and reads. The substrate is the persistence
+  // domain itself; the FSM is the executor. No fetch or execute
+  // binding here — the retry worker is the only worker (currently
+  // a stub; phase 2 will replace it).
+  'persist-telemetry':      { },
+  'persist-telemetry-read': { },
 };
 
 function lookup(domain) {

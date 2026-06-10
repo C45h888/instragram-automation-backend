@@ -161,7 +161,7 @@ function _report(governance, opts) {
   };
   if (extra) Object.assign(payload, extra);
   if (governance && typeof governance.dispatch === 'function') {
-    governance.dispatch(payload);
+    (governance.dispatchGlobal || governance.dispatch)(payload);
   }
 }
 

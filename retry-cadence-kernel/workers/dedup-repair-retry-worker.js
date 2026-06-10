@@ -37,7 +37,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
       pageId: params.pageId,
     }, governance);
 
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: result.recovered > 0 ? 'completed' : 'failed',
@@ -50,7 +50,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
       retryCount,
     });
   } catch (err) {
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',

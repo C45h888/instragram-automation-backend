@@ -29,6 +29,8 @@ function _obs() {
 }
 
 const db = require('./writers');
+const { reportFailure } = require('./substrates/persistence-failure-substrate');
+const crypto = require('crypto');
 
 // Lazy reading-substrate reference — set by CK after instantiation
 let _readingSubstrate = null;
@@ -232,8 +234,13 @@ const TRANSITION_MAP = {
 
   DB_READ_COMPLETE: {
     target: () => {
-      if (_readsInFlight === 0 && _inFlight === 0) return 'IDLE';
-      if (_readsInFlight > 0) return 'READ_EXECUTING';
+      // Evaluate AFTER decrement: _readsInFlight is decremented in
+      // buildActions (line 248). If the current value is 1, after
+      // decrement it becomes 0 → transition to IDLE. If > 1, stay
+      // in READ_EXECUTING for remaining reads. (Phase 7, B-NEW-5)
+      const afterDecrement = Math.max(0, _readsInFlight - 1);
+      if (afterDecrement === 0 && _inFlight === 0) return 'IDLE';
+      if (afterDecrement > 0) return 'READ_EXECUTING';
       return _localState;
     },
     guard: () => {
@@ -247,11 +254,31 @@ const TRANSITION_MAP = {
       _readsInFlight = Math.max(0, _readsInFlight - 1);
 
       if (error) {
-        return [{
+        // Phase 6 / base-phase: emit a DB_READ_FAILED event carrying
+        // the normalized errorShape so the constitutional flow can
+        // route the read failure to the retry-cadence-kernel.
+        // The substrate (persistence-failure-substrate) is the
+        // canonical boundary; the FSM normalizes here at the dispatch
+        // boundary because readers return plain { success, error }
+        // rather than calling the substrate directly.
+        const errorShape = reportFailure({ message: error }, 'read');
+        const actions = [{
           type: 'LOG_DEGRADED',
           substate: 'READ_FAILURE',
           reason: `Read failed for ${readDomain}/${accountId}: ${error}`,
+        }, {
+          type: 'DB_READ_FAILED',
+          readDomain, accountId, readId,
+          errorShape, error, latencyMs,
         }];
+        if (ctx && ctx.dispatchGlobal) {
+          ctx.dispatchGlobal({
+            type: 'DB_PERSIST_FAILURE_READ',
+            readDomain, accountId, readId,
+            errorShape, error, latencyMs,
+          });
+        }
+        return actions;
       }
 
       // Forward read result to calling domain. Attach lineageId+lineageDomain
@@ -344,8 +371,13 @@ const TRANSITION_MAP = {
       // Track in-flight
       _inFlight++;
 
+      // Step 6: idempotency key generation for state-mutating writes.
+      // Hash of (lineageId + table + pkField + pkValue) per Q3.
+      // Same retry of the same intent produces the same key.
+      const idempotencyKey = _generateIdempotencyKey(accountId, intentId, table, rows);
+
       // Delegate to db writers substrate — async, non-blocking
-      db.dispatchWrite(operation, { domain, accountId, intentId, table, rows });
+      db.dispatchWrite(operation, { domain, accountId, intentId, table, rows, idempotencyKey });
 
       if (_inFlight > BACKPRESSURE_THRESHOLD) {
         return [{
@@ -413,11 +445,189 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
+
+  // ── DB_WRITE_FAILED — worker emitted a structured failure ──────────────
+  // Phase 2: the writer now emits the FULL analysis from the substrate
+  // (12-responsibility reliability engine). The guard accepts either
+  // analysis (canonical) or errorShape (legacy backwards compat).
+  // The FSM extracts severity and forwards the analysis to DB_PERSIST_FAILURE.
+  // For CRITICAL severity, a CRITICAL_FAILURE_OBSERVED action is emitted
+  // immediately (bypasses normal flow per spec §9).
+  DB_WRITE_FAILED: {
+    target: () => {
+      if (_inFlight === 0) return 'IDLE';
+      if (_inFlight > BACKPRESSURE_THRESHOLD) return 'BACKPRESSURE';
+      return _localState;
+    },
+    guard: (event) => {
+      // Accept either the full analysis (canonical) or legacy errorShape
+      if (!event || (!event.analysis && !event.errorShape)) {
+        return { allowed: false, reason: 'DB_WRITE_FAILED requires analysis or errorShape' };
+      }
+      if (_inFlight <= 0) {
+        return { allowed: false, reason: 'No writes in flight — cannot fail write' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { domain, accountId, intentId, table, count, analysis, errorShape, error } = event;
+      // analysis is the canonical shape; errorShape is the slim legacy wrapper.
+      // If only errorShape is present (backwards compat), use its fields.
+      const effectiveCategory = analysis?.category || errorShape?.category || 'UNKNOWN';
+      const effectiveSubtype = analysis?.subtype || errorShape?.subtype || 'unknown';
+      const effectiveRetryable = analysis?.retryable ?? errorShape?.retryable ?? false;
+      const effectiveSeverity = analysis?.severity || 'MEDIUM';
+      const effectiveIdempotencyKey = analysis?.idempotencyKey || null;
+      _inFlight = Math.max(0, _inFlight - 1);
+
+      const actions = [{
+        type: 'LOG_DEGRADED',
+        substate: 'WRITE_FAILURE',
+        reason: `DB write failed for ${domain}/${table}: category=${effectiveCategory} subtype=${effectiveSubtype} retryable=${effectiveRetryable} severity=${effectiveSeverity}`,
+      }];
+
+      // CRITICAL severity bypasses normal flow (Q2)
+      if (effectiveSeverity === 'CRITICAL') {
+        actions.push({
+          type: 'CRITICAL_FAILURE_OBSERVED',
+          domain, accountId, intentId, table,
+          category: effectiveCategory, subtype: effectiveSubtype,
+          severity: 'CRITICAL', analysis,
+        });
+      }
+      // HIGH severity fires observer but continues normal flow
+      if (effectiveSeverity === 'HIGH') {
+        actions.push({
+          type: 'HIGH_FAILURE_OBSERVED',
+          domain, accountId, intentId, table,
+          category: effectiveCategory, subtype: effectiveSubtype,
+          severity: 'HIGH', analysis,
+        });
+      }
+
+      // Forward full analysis to retry-cadence via the constitutional flow
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'DB_PERSIST_FAILURE',
+          domain, accountId, intentId, table,
+          operation: event.operation || null,
+          rows: event.rows || null,
+          analysis: analysis || null,
+          // backwards compat — keep errorShape so the retry-cadence FSM
+          // can fall back if analysis is null
+          errorShape: errorShape || { category: effectiveCategory, subtype: effectiveSubtype, retryable: effectiveRetryable },
+          error,
+          idempotencyKey: effectiveIdempotencyKey,
+        });
+      }
+
+      return actions;
+    },
+  },
+
+  // ── CRITICAL_FAILURE_OBSERVED — severity CRITICAL bypass ────────────────
+  // Per spec §9 / Q2: CRITICAL severity fires immediately regardless of
+  // the normal recommendation flow. The observer event is the action;
+  // the normal DB_WRITE_FAILED path continues independently.
+  CRITICAL_FAILURE_OBSERVED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => [{
+      type: 'LOG_CRITICAL',
+      substate: 'CRITICAL_FAILURE',
+      reason: `CRITICAL: ${event.category}/${event.subtype} on ${event.table || 'unknown'}`,
+      severity: 'CRITICAL',
+    }],
+  },
+
+  // ── HIGH_FAILURE_OBSERVED — severity HIGH observer ──────────────────────
+  HIGH_FAILURE_OBSERVED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => [{
+      type: 'LOG_DEGRADED',
+      substate: 'HIGH_FAILURE',
+      reason: `HIGH: ${event.category}/${event.subtype} on ${event.table || 'unknown'}`,
+      severity: 'HIGH',
+    }],
+  },
+
+  // ── DB_READ_FAILED — reader emitted a structured failure ───────────────
+  DB_READ_FAILED: {
+    target: () => {
+      if (_readsInFlight === 0 && _inFlight === 0) return 'IDLE';
+      if (_readsInFlight > 0) return 'READ_EXECUTING';
+      return _localState;
+    },
+    guard: (event) => {
+      if (!event || (!event.analysis && !event.errorShape)) {
+        return { allowed: false, reason: 'DB_READ_FAILED requires analysis or errorShape' };
+      }
+      if (_readsInFlight <= 0) {
+        return { allowed: false, reason: 'No reads in flight — cannot fail read' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event) => {
+      const { readDomain, accountId, readId, analysis, errorShape, error, latencyMs } = event;
+      const effectiveCategory = analysis?.category || errorShape?.category || 'UNKNOWN';
+      const effectiveSubtype = analysis?.subtype || errorShape?.subtype || 'unknown';
+      const effectiveRetryable = analysis?.retryable ?? errorShape?.retryable ?? false;
+      const effectiveSeverity = analysis?.severity || 'MEDIUM';
+      _readsInFlight = Math.max(0, _readsInFlight - 1);
+
+      const actions = [{
+        type: 'LOG_DEGRADED',
+        substate: 'READ_FAILURE',
+        reason: `DB read failed for ${readDomain}/${accountId}: category=${effectiveCategory} subtype=${effectiveSubtype} retryable=${effectiveRetryable} severity=${effectiveSeverity}`,
+      }];
+
+      if (effectiveSeverity === 'CRITICAL') {
+        actions.push({
+          type: 'CRITICAL_FAILURE_OBSERVED',
+          readDomain, accountId, readId,
+          category: effectiveCategory, subtype: effectiveSubtype,
+          severity: 'CRITICAL', analysis,
+        });
+      }
+
+      return actions;
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3. Domain-local runtime state
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Idempotency key generator (Step 6) ────────────────────────────────────
+// Hash of (lineageId + table + pkField + pkValue) per Q3.
+// Same retry of the same intent → same key.
+// Picks the primary key from the first row of the batch based on
+// the table's known conflict key.
+const TABLE_PK_MAP = {
+  instagram_comments:            'instagram_comment_id',
+  instagram_dm_messages:          'instagram_message_id',
+  instagram_dm_conversations:     'instagram_thread_id',
+  instagram_media:                'instagram_media_id',
+  ugc_content:                    'business_account_id',
+  api_usage:                      'user_id',
+  system_alerts:                  'business_account_id',
+  token_lifecycle_events:         'credential_id',
+  instagram_credentials:          'user_id',
+  instagram_business_accounts:    'user_id',
+};
+
+function _generateIdempotencyKey(accountId, intentId, table, rows) {
+  if (!intentId) return null;
+  const pkField = TABLE_PK_MAP[table] || null;
+  if (!pkField) return null;
+  const firstRow = (rows && rows[0]) || {};
+  const pkValue = firstRow[pkField] ?? null;
+  if (pkValue == null) return null;
+  const input = `${accountId || '*'}|${intentId}|${table}|${pkField}|${pkValue}`;
+  return crypto.createHash('sha256').update(input).digest('hex').slice(0, 32);
+}
 
 let _localState = 'IDLE';
 let _lastTransitionedAt = null;

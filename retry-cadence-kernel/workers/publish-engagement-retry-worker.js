@@ -22,7 +22,7 @@ const SUPPORTED_DOMAINS = ['publish:comment', 'publish:message'];
  */
 async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   if (!SUPPORTED_DOMAINS.includes(domain)) {
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',
@@ -40,7 +40,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
   const items = params?.items || params?.payload?.items || [];
 
   if (!items || items.length === 0) {
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',
@@ -60,7 +60,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
     result = await engagementSubstrate.execute(accountId, items, governance);
   } catch (err) {
     const errorShape = publishErrorParser.parseError(err, domain);
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',
@@ -73,7 +73,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
   }
 
   if (result && result.success) {
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'completed',
@@ -85,7 +85,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
   }
 
   const errorShape = publishErrorParser.parse(result, domain);
-  governance.dispatch({
+  (governance.dispatchGlobal || governance.dispatch)({
     type: 'WORKER_OUTCOME_REPORTED',
     accountId, intentId, domain,
     status: 'failed',

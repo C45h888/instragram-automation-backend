@@ -152,7 +152,7 @@ run_test() {
   docker-compose -f "$COMPOSE_FILE" exec -T "${env_args[@]}" test-runner \
     npx vitest run "$file" \
     --reporter=verbose \
-    --config /app/tests/vitest.config.js
+    --config /app/tests/phase-7/vitest.config.js
 
   local result=$?
   if [ $result -ne 0 ]; then
@@ -190,7 +190,7 @@ if [ "$RUN_KERNELS" = true ]; then
   echo "│  (per-kernel 7-category runtime validation)              │"
   echo "└──────────────────────────────────────────────────────────┘"
 
-  KERNELS=(acquisition publishing capability reconciliation retry persistence telemetry scheduling dedup)
+  KERNELS=(acquisition publishing capability reconciliation retry persistence telemetry scheduling dedup uat-refresh)
 
   if [ -n "$SINGLE_KERNEL" ]; then
     # Run only the requested kernel

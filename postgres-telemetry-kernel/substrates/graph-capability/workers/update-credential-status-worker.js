@@ -2,9 +2,12 @@
 // Credential status updater: one bounded UPDATE on instagram_credentials.
 //
 // Owns: UPDATE is_active, debug_token_checked_at, updated_at WHERE id = credentialId.
-// Does NOT own: validation (caller concern), signal dispatch, audit logging.
+// Does NOT own: validation (caller concern), signal dispatch, audit logging,
+//               failure classification (persistence-failure-substrate),
+//               retry policy (retry-cadence-kernel).
 
 const { getSupabaseAdmin } = require('../../../../config/supabase');
+const { analyzeFailure } = require('../../../persistence-failure-substrate');
 
 /**
  * @param {{
@@ -12,22 +15,28 @@ const { getSupabaseAdmin } = require('../../../../config/supabase');
  *   isActive?: boolean,
  *   debugTokenChecked?: boolean,
  * }} params
- * @param {object} governance — CK reference (unused, kept for contract)
+ * @param {object} governance — CK reference (used to emit DB_WRITE_FAILED on failure)
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
 async function execute(params, governance) {
   // FSM passes { domain, accountId, intentId, table, rows }.
   // Operation-specific fields are in rows[0].
-  const { rows } = params;
+  const { domain, accountId, intentId, table, rows } = params;
   const row = (rows && rows[0]) || {};
   const { credentialId, isActive, debugTokenChecked } = row;
   if (!credentialId) {
-    return { success: false, error: 'credentialId required' };
+    const err = 'credentialId required';
+    const analysis = analyzeFailure({ message: err }, 'update', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'update-credential-status-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+    return { success: false, error: err };
   }
 
   const supabase = getSupabaseAdmin();
   if (!supabase) {
-    return { success: false, error: 'supabase_unavailable' };
+    const err = 'supabase_unavailable';
+    const analysis = analyzeFailure({ message: err }, 'update', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'update-credential-status-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+    return { success: false, error: err };
   }
 
   const updates = { updated_at: new Date().toISOString() };
@@ -35,7 +44,10 @@ async function execute(params, governance) {
   if (debugTokenChecked) updates.debug_token_checked_at = new Date().toISOString();
 
   if (Object.keys(updates).length <= 1) {
-    return { success: false, error: 'no fields to update' };
+    const err = 'no fields to update';
+    const analysis = analyzeFailure({ message: err }, 'update', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'update-credential-status-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+    return { success: false, error: err };
   }
 
   try {
@@ -44,9 +56,15 @@ async function execute(params, governance) {
       .update(updates)
       .eq('id', credentialId);
 
-    if (error) return { success: false, error: error.message };
+    if (error) {
+      const analysis = analyzeFailure(error, 'update', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'update-credential-status-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
+      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: error.message });
+      return { success: false, error: error.message };
+    }
     return { success: true, error: null };
   } catch (err) {
+    const analysis = analyzeFailure(err, 'update', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'update-credential-status-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err.message });
     return { success: false, error: err.message };
   }
 }

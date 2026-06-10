@@ -39,7 +39,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
     // On success, CK dispatches RECONCILIATION_RESULTS_RECEIVED +
     // RECONCILIATION_CYCLE_COMPLETE which transitions the FSM normally.
     // Report completion.
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'completed',
@@ -52,7 +52,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
   } catch (err) {
     // CK's triggerReconciliationRetry should not throw (it handles
     // failures internally), but defensive catch.
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',

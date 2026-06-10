@@ -877,6 +877,396 @@ const TRANSITION_MAP = {
       return drained;
     },
   },
+
+  // ── DB_PERSIST_FAILURE — postgres-telemetry FSM forwarded a failed write ─
+  // Phase 2: the writer has classified through the full reliability
+  // substrate and emitted a full analysis object. The FSM (acting as the
+  // authority vector per Q1) reads the analysis, evaluates all
+  // recommendations, and authorizes all flagged ones. For each
+  // authorized recommendation, the FSM emits an *_AUTHORIZED action.
+  // The candidate is moved to _decidedDbFailures for audit.
+  DB_PERSIST_FAILURE: {
+    target: () => _localState,
+    guard: (event) => {
+      if (!event || (!event.analysis && !event.errorShape)) {
+        return { allowed: false, reason: 'DB_PERSIST_FAILURE requires analysis or errorShape' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { domain, accountId, intentId, table, analysis, errorShape, error, idempotencyKey, rows } = event;
+      // analysis is canonical; errorShape is fallback
+      const effectiveCategory = analysis?.category || errorShape?.category || 'UNKNOWN';
+      const effectiveSubtype = analysis?.subtype || errorShape?.subtype || 'unknown';
+      const effectiveRetryable = analysis?.retryable ?? errorShape?.retryable ?? false;
+      const effectiveSeverity = analysis?.severity || 'MEDIUM';
+      const effectiveRecommendations = analysis?.recommendations || [];
+      const effectiveBackoff = analysis?.backoff || null;
+      const effectiveSeverityScore = analysis?.severityScore ?? 50;
+      const effectiveIdempotencyKey = idempotencyKey || analysis?.idempotencyKey || null;
+      const candidateIntentId = `db-failure-${table}-${intentId || Date.now()}-${accountId || '*'}`;
+
+      // Move to decided map — full analysis retained for audit
+      _decidedDbFailures.set(candidateIntentId, {
+        domain: domain || 'persist-telemetry',
+        accountId: accountId || '*',
+        intentId: candidateIntentId,
+        table,
+        rows: rows || [],
+        analysis,
+        errorShape,
+        error,
+        queuedAt: Date.now(),
+        decidedAt: Date.now(),
+        source: 'db_persist_failure',
+        authorizedRecommendations: [...effectiveRecommendations],
+        idempotencyKey: effectiveIdempotencyKey,
+      });
+
+      const actionList = [{
+        type: 'LOG_DEGRADED',
+        substate: 'DB_FAILURE_ANALYZED',
+        reason: `DB failure analyzed: ${domain}/${table} category=${effectiveCategory} subtype=${effectiveSubtype} retryable=${effectiveRetryable} severity=${effectiveSeverity} recommendations=[${effectiveRecommendations.join(',')}]`,
+        severity: effectiveSeverity,
+        severityScore: effectiveSeverityScore,
+      }];
+
+      // FSM is the authority vector (Q1): authorize ALL flagged recommendations
+      for (const rec of effectiveRecommendations) {
+        switch (rec) {
+          case 'RETRY_OPERATION':
+            actionList.push({
+              type: 'RETRY_OPERATION_AUTHORIZED',
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+              intentId: candidateIntentId,
+              table,
+              rows: rows || [],
+              backoff: effectiveBackoff,
+              idempotencyKey: effectiveIdempotencyKey,
+              analysis,
+            });
+            break;
+          case 'THROTTLE_WORKLOAD':
+            actionList.push({
+              type: 'THROTTLE_WORKLOAD_AUTHORIZED',
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+              intentId: candidateIntentId,
+              recommendedConcurrencyDelta: analysis?.resourceExhaustion?.recommendedConcurrencyDelta ?? -1,
+              analysis,
+            });
+            break;
+          case 'REFRESH_AUTHENTICATION':
+            actionList.push({
+              type: 'REFRESH_AUTHENTICATION_AUTHORIZED',
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+              intentId: candidateIntentId,
+              analysis,
+            });
+            break;
+          case 'RECONCILE_STATE':
+            actionList.push({
+              type: 'RECONCILE_STATE_AUTHORIZED',
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+              intentId: candidateIntentId,
+              table,
+              analysis,
+            });
+            break;
+          case 'REPAIR_SCHEMA':
+            actionList.push({
+              type: 'REPAIR_SCHEMA_AUTHORIZED',
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+              intentId: candidateIntentId,
+              analysis,
+            });
+            break;
+          case 'REBUILD_CACHE':
+            actionList.push({
+              type: 'REBUILD_CACHE_AUTHORIZED',
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+              intentId: candidateIntentId,
+              analysis,
+            });
+            break;
+          case 'ESCALATE_TO_OPERATOR':
+            actionList.push({
+              type: 'ESCALATE_TO_OPERATOR_AUTHORIZED',
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+              intentId: candidateIntentId,
+              category: effectiveCategory,
+              subtype: effectiveSubtype,
+              severity: effectiveSeverity,
+              table,
+              analysis,
+            });
+            break;
+          case 'DEFER_EXECUTION':
+            actionList.push({
+              type: 'DEFER_EXECUTION_AUTHORIZED',
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+              intentId: candidateIntentId,
+              analysis,
+            });
+            break;
+          default:
+            // Unknown recommendation — log but don't block
+            actionList.push({
+              type: 'RECOMMENDATION_UNKNOWN',
+              recommendation: rec,
+              domain: domain || 'persist-telemetry',
+              accountId: accountId || '*',
+            });
+        }
+      }
+
+      return actionList;
+    },
+  },
+
+  // ── DB_PERSIST_FAILURE_READ — postgres-telemetry FSM forwarded a failed read ─
+  DB_PERSIST_FAILURE_READ: {
+    target: () => _localState,
+    guard: (event) => {
+      if (!event || (!event.analysis && !event.errorShape)) {
+        return { allowed: false, reason: 'DB_PERSIST_FAILURE_READ requires analysis or errorShape' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { readDomain, accountId, readId, analysis, errorShape, error } = event;
+      const effectiveCategory = analysis?.category || errorShape?.category || 'UNKNOWN';
+      const effectiveSubtype = analysis?.subtype || errorShape?.subtype || 'unknown';
+      const effectiveRetryable = analysis?.retryable ?? errorShape?.retryable ?? false;
+      const effectiveSeverity = analysis?.severity || 'MEDIUM';
+      const effectiveRecommendations = analysis?.recommendations || [];
+      const candidateIntentId = `db-read-failure-${readDomain}-${readId}-${accountId || '*'}`;
+
+      _decidedDbReadFailures.set(candidateIntentId, {
+        readDomain,
+        accountId: accountId || '*',
+        intentId: candidateIntentId,
+        readId,
+        analysis,
+        errorShape,
+        error,
+        queuedAt: Date.now(),
+        decidedAt: Date.now(),
+        source: 'db_persist_failure_read',
+        authorizedRecommendations: [...effectiveRecommendations],
+      });
+
+      const actionList = [{
+        type: 'LOG_DEGRADED',
+        substate: 'DB_READ_FAILURE_ANALYZED',
+        reason: `DB read failure analyzed: ${readDomain}/${accountId || '*'} category=${effectiveCategory} subtype=${effectiveSubtype} retryable=${effectiveRetryable} severity=${effectiveSeverity} recommendations=[${effectiveRecommendations.join(',')}]`,
+      }];
+
+      // Authorize all flagged recommendations for reads too
+      for (const rec of effectiveRecommendations) {
+        if (rec === 'RETRY_OPERATION') {
+          actionList.push({
+            type: 'RETRY_OPERATION_AUTHORIZED',
+            readDomain, accountId: accountId || '*',
+            intentId: candidateIntentId,
+            analysis,
+          });
+        } else if (rec === 'RECONCILE_STATE') {
+          actionList.push({
+            type: 'RECONCILE_STATE_AUTHORIZED',
+            readDomain, accountId: accountId || '*',
+            intentId: candidateIntentId,
+            analysis,
+          });
+        } else if (rec === 'ESCALATE_TO_OPERATOR') {
+          actionList.push({
+            type: 'ESCALATE_TO_OPERATOR_AUTHORIZED',
+            readDomain, accountId: accountId || '*',
+            intentId: candidateIntentId,
+            category: effectiveCategory,
+            subtype: effectiveSubtype,
+            severity: effectiveSeverity,
+            analysis,
+          });
+        }
+      }
+
+      return actionList;
+    },
+  },
+
+  // ── RETRY_OPERATION_AUTHORIZED — delegate to retry-execution-substrate ──
+  // Phase 3: the FSM delegates operation logic to the recovery substrate.
+  // The substrate owns the dispatch decision (connection, backoff, timeout).
+  // The FSM only authorizes; the substrate executes.
+  RETRY_OPERATION_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/retry-execution-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'RETRY_OPERATION_AUTHORIZED' }, governance);
+      return [{
+        type: 'RETRY_EXECUTION_DELEGATED',
+        success: result.success,
+        workerName: result.workerName,
+        durationMs: result.durationMs,
+        error: result.error || null,
+      }];
+    },
+  },
+
+  // ── THROTTLE_WORKLOAD_AUTHORIZED — delegate to throttle-substrate ────────
+  THROTTLE_WORKLOAD_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/throttle-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'THROTTLE_WORKLOAD_AUTHORIZED' }, governance);
+      return [{
+        type: 'THROTTLE_DELEGATED',
+        success: result.success,
+        persistent: result.persistent || false,
+        durationMs: result.durationMs,
+      }];
+    },
+  },
+
+  // ── REFRESH_AUTHENTICATION_AUTHORIZED — delegate to auth-recovery-substrate
+  REFRESH_AUTHENTICATION_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/auth-recovery-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'REFRESH_AUTHENTICATION_AUTHORIZED' }, governance);
+      return [{
+        type: 'AUTH_RECOVERY_DELEGATED',
+        success: result.success,
+        durationMs: result.durationMs,
+        error: result.error || null,
+      }];
+    },
+  },
+
+  // ── RECONCILE_STATE_AUTHORIZED — delegate to reconciliation-substrate ─────
+  RECONCILE_STATE_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/reconciliation-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'RECONCILE_STATE_AUTHORIZED' }, governance);
+      return [{
+        type: 'RECONCILIATION_DELEGATED',
+        success: result.success,
+        resolution: result.resolution || null,
+        durationMs: result.durationMs,
+        error: result.error || null,
+      }];
+    },
+  },
+
+  // ── REPAIR_SCHEMA_AUTHORIZED — delegate to maintenance-substrate ──────────
+  REPAIR_SCHEMA_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/maintenance-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'REPAIR_SCHEMA_AUTHORIZED' }, governance);
+      return [{
+        type: 'SCHEMA_REPAIR_DELEGATED',
+        success: result.success,
+        durationMs: result.durationMs,
+        error: result.error || null,
+      }];
+    },
+  },
+
+  // ── REBUILD_CACHE_AUTHORIZED — delegate to maintenance-substrate ──────────
+  REBUILD_CACHE_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/maintenance-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'REBUILD_CACHE_AUTHORIZED' }, governance);
+      return [{
+        type: 'CACHE_REPAIR_DELEGATED',
+        success: result.success,
+        durationMs: result.durationMs,
+        error: result.error || null,
+      }];
+    },
+  },
+
+  // ── ESCALATE_TO_OPERATOR_AUTHORIZED — delegate to escalation-substrate ────
+  ESCALATE_TO_OPERATOR_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/escalation-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'ESCALATE_TO_OPERATOR_AUTHORIZED' }, governance);
+      return [{
+        type: 'ESCALATION_DELEGATED',
+        success: result.success,
+        notified: result.notified || false,
+        quarantined: result.quarantined || false,
+        durationMs: result.durationMs,
+      }];
+    },
+  },
+
+  // ── DEFER_EXECUTION_AUTHORIZED — delegate to deferral-substrate ───────────
+  DEFER_EXECUTION_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/deferral-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'DEFER_EXECUTION_AUTHORIZED' }, governance);
+      return [{
+        type: 'DEFER_DELEGATED',
+        success: result.success,
+        queueSize: result.queueSize || 0,
+        durationMs: result.durationMs,
+      }];
+    },
+  },
+
+  // ── CRITICAL_FAILURE_OBSERVED (retry-cadence domain) ────────────────────
+  // The persist-telemetry FSM emitted CRITICAL_FAILURE_OBSERVED; the
+  // retry-cadence FSM receives it here for tracking.
+  CRITICAL_FAILURE_OBSERVED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => [{
+      type: 'LOG_CRITICAL',
+      substate: 'RETRY_CADENCE_CRITICAL_OBSERVED',
+      reason: `CRITICAL failure routed through retry-cadence: ${event.category}/${event.subtype}`,
+    }],
+  },
+
+  // ── HIGH_FAILURE_OBSERVED (retry-cadence domain) ────────────────────────
+  HIGH_FAILURE_OBSERVED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => [{
+      type: 'LOG_DEGRADED',
+      substate: 'RETRY_CADENCE_HIGH_OBSERVED',
+      reason: `HIGH failure routed through retry-cadence: ${event.category}/${event.subtype}`,
+    }],
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -912,6 +1302,34 @@ const _executionContexts = new Map();
 //   { domain, accountId, intentId, params, lastError, actionTag,
 //     retryAfterMs, ctx, deferredAt, deferralCount, reason }
 const _deferredIntents = new Map();
+
+// ── DB failure candidates (base phase): intentId → CandidateDbFailure ────
+// When a postgres-telemetry write fails, the writer classifies through
+// persistence-failure-substrate, the persist-telemetry FSM forwards via
+// DB_PERSIST_FAILURE, and the candidate lands here. In the base phase
+// we only queue and emit telemetry; the real retry attempt comes in
+// phase 2 when the persist-telemetry retry worker is instantiated.
+//
+// CandidateDbFailure (write):
+//   { domain, accountId, intentId, table, errorShape, error,
+//     queuedAt, source }
+// CandidateDbFailure (read):
+//   { readDomain, accountId, intentId, readId, errorShape, error,
+//     queuedAt, source }
+const _candidateDbFailures = new Map();
+const _candidateDbReadFailures = new Map();
+
+// ── Decided DB failures (phase 2): intentId → DecidedDbFailure ───────────
+// After the FSM (authority vector) authorizes recommendations, the
+// candidate moves from _candidateDbFailures to _decidedDbFailures.
+// Phase 3's real workers consume these to execute the actual retry,
+// throttle, reconcile, or escalate actions.
+//
+// DecidedDbFailure:
+//   { domain, accountId, intentId, table, analysis, errorShape, error,
+//     queuedAt, decidedAt, authorizedRecommendations, idempotencyKey }
+const _decidedDbFailures = new Map();
+const _decidedDbReadFailures = new Map();
 
 // ── Sanity check reference (canonical: ctx.sanityCheck) ────────────────
 // The ctx.sanityCheck is the universal gate. The FSM calls
@@ -1361,7 +1779,7 @@ function _buildExhaustedActions(params) {
  * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
  * @returns {{ allowed: boolean, from?: string, to?: string, lineageId?: string, actions?: Array, reason?: string } | Promise<...>}
  */
-function dispatch(event, ctx) {
+async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
@@ -1425,8 +1843,11 @@ function dispatch(event, ctx) {
     }
   } catch (_) {}
 
-  // 6. Build actions
-  const actions = txn.buildActions ? txn.buildActions(event, ctx) : [];
+  // 6. Build actions — await async handlers (Phase 3 substrates and workers
+  // return Promises; the dispatch must resolve them before returning)
+  const actions = txn.buildActions
+    ? await txn.buildActions(event, ctx)
+    : [];
 
   console.log(`[engagement-fsm] ${from} → ${target}  (${event.type})`);
 
@@ -1587,6 +2008,30 @@ function getExecutionContexts() {
   return new Map(_executionContexts);
 }
 
+function getDeferredIntents() {
+  return new Map(_deferredIntents);
+}
+
+// ── DB failure candidate accessors (base phase observability) ─────────────
+// Phase 2's real retry worker will consume these. Exposed now so the
+// wiring can be inspected without waiting for phase 2.
+function getCandidateDbFailures() {
+  return new Map(_candidateDbFailures);
+}
+
+function getCandidateDbReadFailures() {
+  return new Map(_candidateDbReadFailures);
+}
+
+// ── Decided DB failure accessors (phase 2 audit) ──────────────────────────
+function getDecidedDbFailures() {
+  return new Map(_decidedDbFailures);
+}
+
+function getDecidedDbReadFailures() {
+  return new Map(_decidedDbReadFailures);
+}
+
 /**
  * Returns a structured snapshot of all engagement state for the reconciliation engine.
  *
@@ -1637,4 +2082,9 @@ module.exports = {
   getExecutionContexts,
   getEngagementSnapshot,
   getLastTransitionedAt,
+  getDeferredIntents,
+  getCandidateDbFailures,
+  getCandidateDbReadFailures,
+  getDecidedDbFailures,
+  getDecidedDbReadFailures,
 };

@@ -55,7 +55,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
     parsing.dispatch(domain, result, accountId, intentId, {
       igUserId: result.igUserId, pageId: result.pageId, pageToken: result.pageToken,
     });
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'PARSING_DISPATCHED',
       accountId, intentId, domain,
       rawCount: result.count || 0,
@@ -68,7 +68,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
   // WORKER_OUTCOME_REPORTED, calls the classification-worker,
   // decides the action, and emits the downstream signal.
   // This worker does not classify. It does not decide.
-  governance.dispatch({
+  (governance.dispatchGlobal || governance.dispatch)({
     type: 'WORKER_OUTCOME_REPORTED',
     accountId, intentId, domain,
     status: result.success ? 'completed' : 'failed',

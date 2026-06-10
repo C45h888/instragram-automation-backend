@@ -2,9 +2,11 @@
 // Credential Store Substrate: orchestrates bounded workers for credential persistence.
 //
 // Owns: composing workers, data routing between them, audit logging,
-//       cache invalidation, DB_WRITE_COMPLETE emission.
+//       cache invalidation, DB_WRITE_COMPLETE / DB_WRITE_FAILED emission.
 // Does NOT own: individual Supabase operations (workers own those),
-//               Graph API calls, token exchange, signal dispatch.
+//               Graph API calls, token exchange, signal dispatch,
+//               failure classification (persistence-failure-substrate),
+//               retry policy (retry-cadence-kernel).
 //
 // Workers (each one bounded I/O call):
 //   key-provision-worker      — SELECT + INSERT vault (get or create encryption key)
@@ -12,11 +14,13 @@
 //   business-account-upsert-worker — UPSERT instagram_business_accounts
 //   credential-upsert-worker       — UPSERT instagram_credentials
 //
-// Contract: execute(params, governance) — async, emits DB_WRITE_COMPLETE.
+// Contract: execute(params, governance) — async, emits DB_WRITE_COMPLETE on
+// success or DB_WRITE_FAILED on failure (with errorShape).
 // Called via: CK → persist-telemetry FSM → dispatchWrite(upsert_credential, ...)
 
 const { logAudit } = require('../../../config/supabase');
 const { clearCredentialCache } = require('../../../helpers/credential-cache');
+const { analyzeFailure } = require('../persistence-failure-substrate');
 
 const keyProvisionWorker = require('./workers/key-provision-worker');
 const encryptTokenWorker = require('./workers/encrypt-token-worker');
@@ -31,6 +35,20 @@ const PAT_SCOPE_DEFAULTS = [
 ];
 
 /**
+ * Emit a DB_WRITE_FAILED event with the normalized error shape.
+ * The inner workers return { success: false, error: string } — we
+ * classify the string through the failure substrate to attach the
+ * canonical shape before dispatch.
+ */
+function _emitFailed(governance, { domain, accountId, intentId, table, error, rows, primaryKeyField, primaryKeyValue, workerName, lineageId }) {
+  const analysis = analyzeFailure({ message: error }, 'write', 'supabase', { attemptN: 1, lineageId, workerName, primaryKeyField, primaryKeyValue });
+  governance?.dispatch({
+    type: 'DB_WRITE_FAILED', domain, accountId, intentId,
+    table, count: 0, rows: rows || [], analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error,
+  });
+}
+
+/**
  * @param {object} params — FSM passes { domain, accountId, intentId, table, rows }
  *   rows[0]: { operation, userId, igBusinessAccountId, businessAccountId,
  *              pageAccessToken, userAccessToken, pageId, pageName, scope,
@@ -38,7 +56,7 @@ const PAT_SCOPE_DEFAULTS = [
  * @param {object} governance — CK reference
  */
 async function execute(params, governance) {
-  const { domain, accountId, intentId, table } = params;
+  const { domain, accountId, intentId, table, rows } = params;
   const row = (params.rows && params.rows[0]) || {};
   const {
     operation, userId, igBusinessAccountId, businessAccountId: baId,
@@ -49,9 +67,11 @@ async function execute(params, governance) {
   const token = pageAccessToken || userAccessToken;
 
   if (!token) {
-    governance?.dispatch({
-      type: 'DB_WRITE_COMPLETE', domain, accountId, intentId,
-      table: 'instagram_credentials', count: 0, status: 'failed', error: 'token required',
+    _emitFailed(governance, {
+      domain, accountId, intentId, rows,
+      table: 'instagram_credentials', error: 'token required',
+      primaryKeyField: 'user_id,token_type', primaryKeyValue: `${userId || '*'}|${tokenType || '*'}`,
+      workerName: 'credential-store-substrate', lineageId: intentId,
     });
     return;
   }
@@ -64,9 +84,11 @@ async function execute(params, governance) {
     operation,
   });
   if (!keyResult.success) {
-    governance?.dispatch({
-      type: 'DB_WRITE_COMPLETE', domain, accountId, intentId,
-      table: 'instagram_credentials', count: 0, status: 'failed', error: keyResult.error,
+    _emitFailed(governance, {
+      domain, accountId, intentId, rows,
+      table: 'instagram_credentials', error: keyResult.error,
+      primaryKeyField: 'user_id,token_type', primaryKeyValue: `${userId || '*'}|${tokenType || '*'}`,
+      workerName: 'credential-store-substrate', lineageId: intentId,
     });
     return;
   }
@@ -75,9 +97,11 @@ async function execute(params, governance) {
   // ── Step 2: Encrypt token ───────────────────────────────────────────────
   const encryptResult = await encryptTokenWorker.execute({ token, encryptionKeyId });
   if (!encryptResult.success) {
-    governance?.dispatch({
-      type: 'DB_WRITE_COMPLETE', domain, accountId, intentId,
-      table: 'instagram_credentials', count: 0, status: 'failed', error: encryptResult.error,
+    _emitFailed(governance, {
+      domain, accountId, intentId, rows,
+      table: 'instagram_credentials', error: encryptResult.error,
+      primaryKeyField: 'user_id,token_type', primaryKeyValue: `${userId || '*'}|${tokenType || '*'}`,
+      workerName: 'credential-store-substrate', lineageId: intentId,
     });
     return;
   }
@@ -96,9 +120,11 @@ async function execute(params, governance) {
       operation: 'store_pat',
     });
     if (!baResult.success) {
-      governance?.dispatch({
-        type: 'DB_WRITE_COMPLETE', domain, accountId, intentId,
-        table: 'instagram_business_accounts', count: 0, status: 'failed', error: baResult.error,
+      _emitFailed(governance, {
+        domain, accountId, intentId,
+        table: 'instagram_business_accounts', error: baResult.error,
+        primaryKeyField: 'user_id,instagram_business_id', primaryKeyValue: `${userId || '*'}|${igBusinessAccountId || '*'}`,
+        workerName: 'credential-store-substrate', lineageId: intentId,
       });
       return;
     }
@@ -117,9 +143,11 @@ async function execute(params, governance) {
     pageId,
   });
   if (!credResult.success) {
-    governance?.dispatch({
-      type: 'DB_WRITE_COMPLETE', domain, accountId, intentId,
-      table: 'instagram_credentials', count: 0, status: 'failed', error: credResult.error,
+    _emitFailed(governance, {
+      domain, accountId, intentId, rows,
+      table: 'instagram_credentials', error: credResult.error,
+      primaryKeyField: 'user_id,business_account_id,token_type', primaryKeyValue: `${userId || '*'}|${resolvedBaId || '*'}|${tokenType || '*'}`,
+      workerName: 'credential-store-substrate', lineageId: intentId,
     });
     return;
   }
@@ -144,7 +172,6 @@ async function execute(params, governance) {
     domain, accountId, intentId,
     table: 'instagram_credentials',
     count: 1,
-    status: 'success',
     error: null,
     businessAccountId: resolvedBaId,
   });

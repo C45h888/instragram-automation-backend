@@ -34,7 +34,7 @@ const SUPPORTED_DOMAINS = ['publish:post', 'publish:story'];
  */
 async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {
   if (!SUPPORTED_DOMAINS.includes(domain)) {
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',
@@ -52,7 +52,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
   const items = params?.items || params?.payload?.items || [];
 
   if (!items || items.length === 0) {
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',
@@ -73,7 +73,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
   } catch (err) {
     // Substrate threw — wrap and emit
     const errorShape = publishErrorParser.parseError(err, domain);
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',
@@ -87,7 +87,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
 
   // Substrate returned (may be success or structured failure)
   if (result && result.success) {
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'completed',
@@ -100,7 +100,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
 
   // Substrate returned a structured failure
   const errorShape = publishErrorParser.parse(result, domain);
-  governance.dispatch({
+  (governance.dispatchGlobal || governance.dispatch)({
     type: 'WORKER_OUTCOME_REPORTED',
     accountId, intentId, domain,
     status: 'failed',

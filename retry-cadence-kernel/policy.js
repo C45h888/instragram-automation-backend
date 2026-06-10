@@ -83,6 +83,26 @@ const POLICIES = {
   'telemetry:health':    { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
   'telemetry:systemic':  { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
   'telemetry:capability': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  // ── Persist-telemetry retries — Supabase is an external unstable domain ──
+  // Failure vectors are not predictable (5xx, 429, network, JWT expiry,
+  // schema migrations). 3 attempts with moderate backoff. The substrate
+  // (persistence-failure-substrate) decides retryability per-failure.
+  // This policy is the budget; the substrate is the per-failure gate.
+  'persist-telemetry': {
+    maxRetries:        3,
+    baseDelayMs:       30000,   // 30s
+    maxDelayMs:        300000,  // 5min
+    backoffMultiplier: 2,
+  },
+  // Reads are idempotent and cheap — same policy. The retry worker
+  // (phase 2) will use the substrate's retryAfterMs as an override
+  // for 429 responses.
+  'persist-telemetry-read': {
+    maxRetries:        3,
+    baseDelayMs:       30000,   // 30s
+    maxDelayMs:        300000,  // 5min
+    backoffMultiplier: 2,
+  },
 };
 
 // Domain → substrate mapping
@@ -107,6 +127,9 @@ const DOMAIN_TO_SUBSTRATE = {
   'telemetry:health':    'telemetry:health',
   'telemetry:systemic':  'telemetry:systemic',
   'telemetry:capability': 'telemetry:capability',
+  // Persist-telemetry — writes and reads use the same substrate policy
+  'persist-telemetry':      'persist-telemetry',
+  'persist-telemetry-read': 'persist-telemetry-read',
 };
 
 /**
@@ -152,4 +175,18 @@ function computeRetryDelay(policy, retryCount, actionTag) {
   return policyDelayMs;
 }
 
-module.exports = { getPolicy, computeDelay, computeRetryDelay };
+/**
+ * Cap a substrate-generated delay at the policy's structural maximum.
+ * Per Q4: substrate generates tactical delay, policy caps it.
+ *
+ * @param {number} substrateDelayMs — delay from the substrate's backoff
+ * @param {string} domain — which domain's policy cap to apply
+ * @returns {number} — min(substrateDelayMs, policy.maxDelayMs)
+ */
+function capDelay(substrateDelayMs, domain) {
+  const policy = getPolicy(domain);
+  if (!policy || !policy.maxDelayMs) return substrateDelayMs;
+  return Math.min(substrateDelayMs, policy.maxDelayMs);
+}
+
+module.exports = { getPolicy, computeDelay, computeRetryDelay, capDelay };

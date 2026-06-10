@@ -49,7 +49,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
 
     // Handle substrate-level permanent error
     if (result && result._error) {
-      governance.dispatch({
+      (governance.dispatchGlobal || governance.dispatch)({
         type: 'WORKER_OUTCOME_REPORTED',
         accountId, intentId, domain,
         status: 'failed',
@@ -63,7 +63,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
     }
 
     // Success
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'completed',
@@ -74,7 +74,7 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
     });
   } catch (err) {
     // Redis/network threw
-    governance.dispatch({
+    (governance.dispatchGlobal || governance.dispatch)({
       type: 'WORKER_OUTCOME_REPORTED',
       accountId, intentId, domain,
       status: 'failed',

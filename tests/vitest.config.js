@@ -31,7 +31,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/**/*.test.{js,ts}', 'tests/**/*.spec.{js,ts}'],
-    exclude: ['node_modules/**', 'dist/**', 'coverage/**'],
+    exclude: ['node_modules/**', 'dist/**', 'coverage/**', '**/.worktrees/**'],
 
     // ----------------------------------------
     // Test Timeout

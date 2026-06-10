@@ -3,17 +3,21 @@
 //
 // Owns: UPDATE instagram_dm_messages SET conversation_id = <uuid>
 //        WHERE conversation_id = <threadId> AND business_account_id = <accountId>.
-// Does NOT own: governance, normalization, fetch, orchestration.
+// Does NOT own: governance, normalization, fetch, orchestration,
+//               failure classification (persistence-failure-substrate),
+//               retry policy (retry-cadence-kernel).
 //
 // Phase 5: fixes orphaned message conversation_ids after conversation repair.
 
 const { getSupabaseAdmin } = require('../../config/supabase');
+const { analyzeFailure } = require('../substrates/persistence-failure-substrate');
 
 async function execute(params, governance) {
   const { domain, accountId, intentId, table, rows } = params;
   const supabase = getSupabaseAdmin();
   if (!supabase) {
-    governance?.dispatch({ type: 'DB_WRITE_COMPLETE', domain, accountId, intentId, table, count: 0, error: 'supabase_unavailable' });
+    const analysis = analyzeFailure({ message: 'supabase_unavailable' }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'message-fix-writer', primaryKeyField: 'match_conversation_id', primaryKeyValue: rows?.[0]?.match_conversation_id });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: 'supabase_unavailable' });
     return;
   }
 
@@ -36,7 +40,8 @@ async function execute(params, governance) {
 
     governance?.dispatch({ type: 'DB_WRITE_COMPLETE', domain, accountId, intentId, table, count: totalFixed, error: null });
   } catch (err) {
-    governance?.dispatch({ type: 'DB_WRITE_COMPLETE', domain, accountId, intentId, table, count: 0, error: err.message });
+    const analysis = analyzeFailure(err, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'message-fix-writer', primaryKeyField: 'match_conversation_id', primaryKeyValue: rows?.[0]?.match_conversation_id });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err.message });
   }
 }
 
