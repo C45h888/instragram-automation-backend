@@ -7,7 +7,7 @@
 const axios = require('axios');
 const { GRAPH_API_BASE } = require('../../config/instagram');
 const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
-const { categorizeIgError } = require('./error-classifier');
+const { suspectIgCategory } = require('./error-classifier');
 const { logWithDomain } = require('../telemetry');
 const { parseUsageHeader } = require('../quota');
 
@@ -28,17 +28,27 @@ function clampLimit(value, defaultVal, maxVal) {
 
 /**
  * Build standard error response from axios error.
+ *
+ * Phase 2: this function is a THIN CAPTURE. It records the raw
+ * error + a cheap suspectedCategory hint. It does NOT classify —
+ * the IG reliability substrate (engagement-fsm IG_FAILURE_OBSERVED
+ * handler) is the canonical classifier. The retryable / error_category
+ * fields are preserved for legacy consumers but should NOT be
+ * trusted; emit IG_FAILURE_OBSERVED with the raw error and let the
+ * substrate produce the canonical analysis.
  */
 function buildErrorResponse(error) {
   const errorMessage = error.response?.data?.error?.message || error.message;
-  const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
+  const suspectedCategory = suspectIgCategory(error);
   return {
     success: false,
     error: errorMessage,
     code: error.response?.data?.error?.code || null,
-    retryable,
-    error_category,
-    retry_after_seconds,
+    suspectedCategory,  // cheap hint — substrate is the canonical classifier
+    rawError: error,    // raw axios error — substrate's analyzeFailure consumes this
+    retryable: null,    // legacy field, no longer populated — substrate owns retryability
+    error_category: suspectedCategory,  // legacy alias for the cheap hint
+    retry_after_seconds: null,          // legacy field — substrate owns adaptive cadence
   };
 }
 

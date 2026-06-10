@@ -13,6 +13,11 @@
 
 const { getRedisClient } = require('../config/redis');
 const substrateRegistry = require('./substrate-registry');
+// Phase 1 (base): retry cadence routing goes through the
+// acquisition-kernel stub. The stub translates local
+// actions (EXECUTE_ACQUISITION) to the canonical RETRY_REQUESTED
+// that the retry-cadence-kernel (engagement-fsm) consumes.
+const retryStub = require('./retry-state-transition-stub');
 const syncSubstrate = require('../substrates/sync-substrate');
 const rateLimiter = require('../substrates/rate-limiter');
 
@@ -52,10 +57,13 @@ async function writeAcquisitionResult(accountId, domain, intentId, result) {
  * @param {object} [acquisitionFsm] — acquisition domain FSM (for state queries)
  */
 function wire(gov, acquisitionFsm) {
-  // ── EXECUTE_ACQUISITION → RETRY_REQUESTED (canonical retry path) ──
-  // The orchestrator mechanically forwards to CK. engagement-fsm owns
-  // all execution decisions (circuit breaker, retry counting, auth strikes).
-  // The orchestrator never calls a worker directly.
+  // EXECUTE_ACQUISITION → RETRY_REQUESTED via the
+  // acquisition-kernel retry stub. The stub preserves the
+  // kernel boundary: the orchestrator emits a local action,
+  // the stub translates it to the canonical RETRY_REQUESTED,
+  // and the retry-cadence-kernel (engagement-fsm) owns the
+  // decision. This replaces the prior direct forwarder that
+  // was a constitutional bypass.
   gov.subscribeAction('EXECUTE_ACQUISITION', (action) => {
     _emitTransition({
       domain: 'acquisition', entity: 'acquisition_intent', entityId: action.intentId,
@@ -63,12 +71,10 @@ function wire(gov, acquisitionFsm) {
       authority: 'acquisition-orchestrator',
       raw: { accountId: action.accountId, domain: action.domain },
     });
-    // Forward to canonical retry path — engagement-fsm handles execution
-    gov.dispatch({
-      type: 'RETRY_REQUESTED',
+    retryStub.forwardExecuteAcquisition({
       accountId: action.accountId,
-      domain: action.domain,
       intentId: action.intentId,
+      domain: action.domain,
       params: action.params || {},
     });
   });

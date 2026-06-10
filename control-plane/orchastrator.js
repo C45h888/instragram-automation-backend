@@ -32,6 +32,19 @@ const ingressSubstrate = require('./governance/ingress-consistency/substrate');
 const namespaceProjectionInterpreter = require('./governance/interpreters/namespace-projection-interpreter');
 const parsing = require('../acquisition-kernel/substrates/parsing-substrate');
 const retryCadence = require('../retry-cadence-kernel/index');
+// Phase 1 (base): retry-state-transition stubs. Each kernel uses
+// its stub to route local events to the canonical RETRY_REQUESTED
+// / RETRY_EXHAUSTED / RETRY_IN_PROGRESS consumed by
+// retry-cadence-kernel. Pass-through adapters — no state.
+const graphCapabilityRetryStub = require('../graph-capability-kernel/retry-state-transition-stub');
+const acquisitionRetryStub = require('../acquisition-kernel/retry-state-transition-stub');
+const publishingRetryStub = require('../publishing-kernel/retry-state-transition-stub');
+// Phase 2: Instagram Reliability Substrate. Owns canonical IG
+// failure interpretation (§1-§17). The substrate is the only
+// entity that classifies IG errors. The engagement-fsm routes
+// IG_FAILURE_OBSERVED through it via the CLASSIFICATION_WORKER_MAP.
+// Kernels MUST NOT call this substrate directly.
+const igReliabilitySubstrate = require('../graph-capability-kernel/substrates/ig-reliability-substrate');
 const dbWriters = require('../postgres-telemetry-kernel/writers');
 const dbReaders = require('../postgres-telemetry-kernel/readers');
 const cognitionScanner = require('../postgres-telemetry-kernel/cognition-scanner');
@@ -92,6 +105,93 @@ function _wire() {
   telemetryCoordinationFsm.setGovernance(constitutional);
   persistTelemetryFsm.setGovernance(constitutional);
 
+  // Phase 4 (base): IG recovery substrate façade + workers.
+  // The substrate dispatches IG-specific recovery recommendations
+  // (from ig-reliability-substrate) to the appropriate operationally
+  // bounded worker. The first registered worker is the token
+  // refresh worker; pass 2+ will add the publish retry workers.
+  const igRecoverySubstrate = require('../retry-cadence-kernel/substrates/ig-recovery-substrate');
+  igRecoverySubstrate.registerWorker(
+    'REFRESH_TOKEN',
+    '../retry-cadence-kernel/workers/ig-token-refresh-worker'
+  );
+  // Pass 2: 4 publish retry workers. The ig-recovery-substrate
+  // dispatches REQUEUE_OPERATION to the right per-domain worker
+  // based on event.domain. The transition handler does the
+  // domain-keyed lookup via _resolveWorkerForPublishDomain (a
+  // thin wrapper below).
+  igRecoverySubstrate.registerWorker(
+    'REQUEUE_OPERATION_PUBLISH_POST',
+    '../retry-cadence-kernel/workers/ig-publish-post-retry-worker'
+  );
+  igRecoverySubstrate.registerWorker(
+    'REQUEUE_OPERATION_PUBLISH_STORY',
+    '../retry-cadence-kernel/workers/ig-publish-story-retry-worker'
+  );
+  igRecoverySubstrate.registerWorker(
+    'REQUEUE_OPERATION_PUBLISH_COMMENT',
+    '../retry-cadence-kernel/workers/ig-publish-comment-retry-worker'
+  );
+  igRecoverySubstrate.registerWorker(
+    'REQUEUE_OPERATION_PUBLISH_MESSAGE',
+    '../retry-cadence-kernel/workers/ig-publish-message-retry-worker'
+  );
+  constitutional.registerWorker('engagement', 'ig-token-refresh',
+    require('../retry-cadence-kernel/workers/ig-token-refresh-worker'));
+  constitutional.registerWorker('engagement', 'ig-publish-post-retry',
+    require('../retry-cadence-kernel/workers/ig-publish-post-retry-worker'));
+  constitutional.registerWorker('engagement', 'ig-publish-story-retry',
+    require('../retry-cadence-kernel/workers/ig-publish-story-retry-worker'));
+  constitutional.registerWorker('engagement', 'ig-publish-comment-retry',
+    require('../retry-cadence-kernel/workers/ig-publish-comment-retry-worker'));
+  constitutional.registerWorker('engagement', 'ig-publish-message-retry',
+    require('../retry-cadence-kernel/workers/ig-publish-message-retry-worker'));
+  // Pass 3: media + publication-verify workers
+  igRecoverySubstrate.registerWorker(
+    'VERIFY_PUBLICATION',
+    '../retry-cadence-kernel/workers/ig-publication-verify-worker'
+  );
+  igRecoverySubstrate.registerWorker(
+    'RECOVER_MEDIA_CONTAINER',
+    '../retry-cadence-kernel/workers/ig-media-container-recovery-worker'
+  );
+  constitutional.registerWorker('engagement', 'ig-publication-verify',
+    require('../retry-cadence-kernel/workers/ig-publication-verify-worker'));
+  constitutional.registerWorker('engagement', 'ig-media-container-recovery',
+    require('../retry-cadence-kernel/workers/ig-media-container-recovery-worker'));
+  // Pass 4: webhook + permission + proactive-refresh workers
+  igRecoverySubstrate.registerWorker(
+    'REBUILD_WEBHOOK_STATE',
+    '../retry-cadence-kernel/workers/ig-webhook-rebuild-worker'
+  );
+  igRecoverySubstrate.registerWorker(
+    'VALIDATE_PERMISSIONS',
+    '../retry-cadence-kernel/workers/ig-permission-validation-worker'
+  );
+  igRecoverySubstrate.registerWorker(
+    'PROACTIVE_REFRESH',
+    '../retry-cadence-kernel/workers/ig-proactive-refresh-worker'
+  );
+  constitutional.registerWorker('engagement', 'ig-webhook-rebuild',
+    require('../retry-cadence-kernel/workers/ig-webhook-rebuild-worker'));
+  constitutional.registerWorker('engagement', 'ig-permission-validation',
+    require('../retry-cadence-kernel/workers/ig-permission-validation-worker'));
+  constitutional.registerWorker('engagement', 'ig-proactive-refresh',
+    require('../retry-cadence-kernel/workers/ig-proactive-refresh-worker'));
+  graphCapabilityRetryStub.setGovernance(constitutional);
+  acquisitionRetryStub.setGovernance(constitutional);
+  publishingRetryStub.setGovernance(constitutional);
+
+  // Phase 2: wire the Instagram Reliability Substrate's
+  // token-resolution integration. The substrate is read-only
+  // with respect to token storage (per spec §4) — it asks the
+  // graph-capability-kernel credential resolver for token
+  // metadata when a caller does not supply it via context.
+  // The resolver is required lazily to avoid a require-cycle
+  // (graph-capability-kernel is the substrate's home directory).
+  const credentialResolver = require('../graph-capability-kernel/substrates/credential-resolver');
+  igReliabilitySubstrate.setTokenResolver(credentialResolver);
+
   // ── Worker registration — canonical FSM→worker bindings ──────────────
   // Each worker is registered with CK so the CTX gate (ctx.invokeWorker)
   // can validate ownership, contract, and sanity before invocation.
@@ -104,10 +204,9 @@ function _wire() {
     require('../retry-cadence-kernel/workers/ugc-retry-worker'));
   constitutional.registerWorker('engagement', 'insights-retry',
     require('../retry-cadence-kernel/workers/insights-retry-worker'));
-  constitutional.registerWorker('engagement', 'publish-content-retry',
-    require('../retry-cadence-kernel/workers/publish-content-retry-worker'));
-  constitutional.registerWorker('engagement', 'publish-engagement-retry',
-    require('../retry-cadence-kernel/workers/publish-engagement-retry-worker'));
+  // Publish retry workers — REMOVED. Publishing FSM owns publish
+  // failure handling via the publish substrate's classified
+  // errorShape. No retry-cadence worker registration for publish:*.
   constitutional.registerWorker('engagement', 'classification',
     require('../retry-cadence-kernel/workers/classification-worker'));
   constitutional.registerWorker('engagement', 'dedup-redis-retry',

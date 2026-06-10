@@ -22,6 +22,12 @@ const ContentWorker = require('./worker');
 const rateLimiter = require('./rate-limiter');
 const { resolveAccountCredentials } =
   require('../../../graph-capability-kernel/substrates/credential-resolver');
+// Phase 1 (base): retry cadence routing goes through the
+// publishing-kernel stub. The stub maps workerName → publish:*
+// domain and emits the canonical RETRY_REQUESTED. The previous
+// inline dispatch (domain: 'content') routed publish failures
+// through the read-side retry workers; the stub fixes that.
+const retryStub = require('../../retry-state-transition-stub');
 
 /**
  * Execute a batch of content publishing items.
@@ -117,15 +123,18 @@ async function _executeItem(accountId, item, governance, credentials) {
   }
 
   // Transient → escalate to engagement-fsm for retry sovereignty
+  // via the publishing-kernel retry stub. The stub maps
+  // workerName ('posts' | 'stories') → publish:* domain so the
+  // retry-cadence kernel routes through the publish worker
+  // bindings.
   if (retryable) {
-    governance.dispatch({
-      type: 'RETRY_REQUESTED',
+    retryStub.requestRetry({
       accountId,
-      domain: 'content',
       intentId: record.id || null,
+      workerName,
       params: { actionType, worker: workerName, record },
       error,
-      error_category: error_category || 'transient',
+      errorCategory: error_category || 'transient',
       retryAfterMs: (retry_after_seconds || 0) * 1000,
     });
     return;
@@ -158,7 +167,7 @@ function _buildPayload(record) {
 // ── Direct execute methods (for non-batched, non-governed calls) ──────────
 
 const transport = require('./transport');
-const { categorizeIgError } = require('../../../substrates/transport/error-classifier');
+const { suspectIgCategory } = require('../../../substrates/transport/error-classifier');
 
 async function executePost(accountId, credentials, payload) {
   const { igUserId, pageToken } = credentials;
@@ -167,8 +176,11 @@ async function executePost(accountId, credentials, payload) {
     return { success: true, instagram_id: result.mediaId, creationId: result.creationId };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-    return { success: false, error: msg, retryable, error_category, retry_after_seconds };
+    // Phase 2: thin capture. The substrate is the canonical classifier.
+    return {
+      success: false, error: msg, code: error.response?.data?.error?.code || null,
+      suspectedCategory: suspectIgCategory(error), rawError: error,
+    };
   }
 }
 
@@ -179,8 +191,10 @@ async function executeStory(accountId, credentials, payload) {
     return { success: true, instagram_id: result.mediaId, creationId: result.creationId };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-    return { success: false, error: msg, retryable, error_category, retry_after_seconds };
+    return {
+      success: false, error: msg, code: error.response?.data?.error?.code || null,
+      suspectedCategory: suspectIgCategory(error), rawError: error,
+    };
   }
 }
 
@@ -191,8 +205,10 @@ async function executeRepostUgc(accountId, credentials, payload) {
     return { success: true, instagram_id: result.mediaId, creationId: result.creationId };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-    return { success: false, error: msg, retryable, error_category, retry_after_seconds };
+    return {
+      success: false, error: msg, code: error.response?.data?.error?.code || null,
+      suspectedCategory: suspectIgCategory(error), rawError: error,
+    };
   }
 }
 

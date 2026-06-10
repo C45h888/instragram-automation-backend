@@ -16,7 +16,6 @@
 //   NOT retry. It only classifies and reports.
 
 const { getSupabaseAdmin } = require('../../../../config/supabase');
-const { analyzeFailure } = require('../../../persistence-failure-substrate');
 
 /**
  * @param {{ domain: string, accountId: string, intentId?: string, table: string, rows: Array }} params
@@ -29,18 +28,16 @@ async function execute(params, governance) {
 
    if (!alert_type || !business_account_id || !message) {
      const err = 'alert_type, business_account_id, and message are required';
-     const analysis = analyzeFailure({ message: err }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-alert-worker', primaryKeyField: 'business_account_id', primaryKeyValue: business_account_id });
      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-       table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+       table, count: 0, rows, error: err, rawError: { message: err }, workerName: 'write-alert-worker', lineageId: intentId, primaryKeyField: 'business_account_id', primaryKeyValue: business_account_id, attemptN: 1, operation: 'write', source: 'supabase' });
      return { success: false, error: err };
    }
 
    const supabase = getSupabaseAdmin();
    if (!supabase) {
      const err = 'supabase_unavailable';
-     const analysis = analyzeFailure({ message: err }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-alert-worker', primaryKeyField: 'business_account_id', primaryKeyValue: business_account_id });
      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-       table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+       table, count: 0, rows, error: err, rawError: { message: err }, workerName: 'write-alert-worker', lineageId: intentId, primaryKeyField: 'business_account_id', primaryKeyValue: business_account_id, attemptN: 1, operation: 'write', source: 'supabase' });
      return { success: false, error: err };
    }
 
@@ -57,9 +54,8 @@ async function execute(params, governance) {
 
      if (error) {
        console.warn('[write-alert-worker] Insert failed:', error.message);
-       const analysis = analyzeFailure(error, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-alert-worker', primaryKeyField: 'business_account_id', primaryKeyValue: business_account_id });
        governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-         table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: error.message });
+         table, count: 0, rows, error: error.message, rawError: error, workerName: 'write-alert-worker', lineageId: intentId, primaryKeyField: 'business_account_id', primaryKeyValue: business_account_id, attemptN: 1, operation: 'write', source: 'supabase' });
        return { success: false, error: error.message };
      }
 
@@ -68,9 +64,8 @@ async function execute(params, governance) {
      return { success: true, error: null };
    } catch (err) {
      console.warn('[write-alert-worker] Insert failed:', err.message);
-     const analysis = analyzeFailure(err, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-alert-worker', primaryKeyField: 'business_account_id', primaryKeyValue: business_account_id });
      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-       table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err.message });
+       table, count: 0, rows, error: err.message, rawError: err, workerName: 'write-alert-worker', lineageId: intentId, primaryKeyField: 'business_account_id', primaryKeyValue: business_account_id, attemptN: 1, operation: 'write', source: 'supabase' });
      return { success: false, error: err.message };
    }
  }

@@ -494,8 +494,11 @@ const TRANSITION_MAP = {
           status: 'malformed',
           error: 'missing_result',
         });
+        // Retry-exhaustion logic REMOVED. Acquisition FSM no longer
+        // emits RETRY_EXHAUSTED on parsing failure. The terminal
+        // failure is recorded on the intent record itself.
         return [{
-          type: 'RETRY_EXHAUSTED',
+          type: 'PARSING_FAILED',
           accountId,
           domain,
           intentId,
@@ -509,32 +512,15 @@ const TRANSITION_MAP = {
       });
 
       if (result.status === 'failed') {
-        const gate = await _resolveSanityCheckWithTelemetry(ctx, {
-          operation: 'parsing_failed_retry_exhausted',
-          accountId, domain, intentId,
-        }, intentId);
-
-        if (!gate.allowed) {
-          if (rec) {
-            _ringPush(rec.gateVetoes, {
-              op: 'parsing_failed_retry_exhausted',
-              reason: gate.reason || 'gate_rejected',
-              at: Date.now(),
-            });
-          }
-          return [{
-            type: 'GATE_REJECTED',
-            operation: 'parsing_failed_retry_exhausted',
-            accountId, domain, intentId,
-            reason: gate.reason || 'gate_rejected',
-          }];
-        }
-
+        // Retry-exhaustion logic REMOVED. No more sanity-gate check
+        // for parsing_failed_retry_exhausted. The terminal failure
+        // is recorded on the intent record itself; downstream
+        // consumers (the new system) decide what to do with it.
         if (rec) {
           rec.failureReason = { code: 'parsing_failed', source: 'parsing_worker', message: result.error || 'parsing_failed' };
         }
         return [{
-          type: 'RETRY_EXHAUSTED',
+          type: 'PARSING_FAILED',
           accountId, domain, intentId,
           error: result.error || 'parsing_failed',
         }];

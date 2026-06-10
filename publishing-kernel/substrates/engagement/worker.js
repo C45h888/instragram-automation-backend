@@ -8,7 +8,7 @@
 // Stateless. Created by engagement substrate (factory), destroyed after result.
 
 const transport = require('./transport');
-const { categorizeIgError } = require('../../../substrates/transport/error-classifier');
+const { suspectIgCategory } = require('../../../substrates/transport/error-classifier');
 
 module.exports = class EngagementWorker {
   /**
@@ -53,13 +53,21 @@ module.exports = class EngagementWorker {
       return { success: true, instagram_id: result.instagram_id };
     } catch (error) {
       const msg = error.response?.data?.error?.message || error.message;
-      const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
+      // Phase 2: emit raw error + cheap hint. The substrate is the
+      // canonical classifier — see IG_FAILURE_OBSERVED in
+      // retry-cadence-kernel/fsm.js for the constitutional path.
+      const suspectedCategory = suspectIgCategory(error);
       return {
         success: false,
         error: msg,
-        error_category,
-        retryable,
-        retry_after_seconds,
+        code: error.response?.data?.error?.code || null,
+        suspectedCategory,  // cheap hint, not a classification
+        rawError: error,    // raw axios error — substrate's analyzeFailure consumes this
+        // legacy fields preserved for back-compat; the substrate
+        // is the canonical authority.
+        error_category: suspectedCategory,
+        retryable: null,
+        retry_after_seconds: null,
       };
     }
   }

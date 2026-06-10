@@ -21,6 +21,12 @@ const EngagementWorker = require('./worker');
 const rateLimiter = require('./rate-limiter');
 const { resolveAccountCredentials } =
   require('../../../graph-capability-kernel/substrates/credential-resolver');
+// Phase 1 (base): retry cadence routing goes through the
+// publishing-kernel stub. The stub maps workerName → publish:*
+// domain and emits the canonical RETRY_REQUESTED. The previous
+// inline dispatch (domain: 'engagement') routed publish failures
+// through the read-side retry workers; the stub fixes that.
+const retryStub = require('../../retry-state-transition-stub');
 
 /**
  * Execute a batch of engagement publishing items.
@@ -113,15 +119,18 @@ async function _executeItem(accountId, item, governance, credentials) {
   }
 
   // Transient → escalate to engagement-fsm for retry sovereignty
+  // via the publishing-kernel retry stub. The stub maps
+  // workerName ('comments' | 'messages') → publish:* domain so
+  // the retry-cadence kernel routes through the publish worker
+  // bindings.
   if (retryable) {
-    governance.dispatch({
-      type: 'RETRY_REQUESTED',
+    retryStub.requestRetry({
       accountId,
-      domain: 'engagement',
       intentId: record.id || null,
+      workerName,
       params: { actionType, worker: workerName, record },
       error,
-      error_category: error_category || 'transient',
+      errorCategory: error_category || 'transient',
       retryAfterMs: (retry_after_seconds || 0) * 1000,
     });
     return;
@@ -151,7 +160,7 @@ function _buildPayload(record) {
 // ── Direct execute methods (for non-batched, non-governed calls) ──────────
 
 const transport = require('./transport');
-const { categorizeIgError } = require('../../../substrates/transport/error-classifier');
+const { suspectIgCategory } = require('../../../substrates/transport/error-classifier');
 
 async function executeCommentReply(accountId, credentials, payload) {
   const { pageToken } = credentials;
@@ -160,8 +169,10 @@ async function executeCommentReply(accountId, credentials, payload) {
     return { success: true, instagram_id: result.id };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-    return { success: false, error: msg, retryable, error_category, retry_after_seconds };
+    return {
+      success: false, error: msg, code: error.response?.data?.error?.code || null,
+      suspectedCategory: suspectIgCategory(error), rawError: error,
+    };
   }
 }
 
@@ -172,8 +183,10 @@ async function executeDmReply(accountId, credentials, payload) {
     return { success: true, instagram_id: result.id };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-    return { success: false, error: msg, retryable, error_category, retry_after_seconds };
+    return {
+      success: false, error: msg, code: error.response?.data?.error?.code || null,
+      suspectedCategory: suspectIgCategory(error), rawError: error,
+    };
   }
 }
 
@@ -184,8 +197,10 @@ async function executeDmSend(accountId, credentials, payload) {
     return { success: true, instagram_id: result.messageId };
   } catch (error) {
     const msg = error.response?.data?.error?.message || error.message;
-    const { retryable, error_category, retry_after_seconds } = categorizeIgError(error);
-    return { success: false, error: msg, retryable, error_category, retry_after_seconds };
+    return {
+      success: false, error: msg, code: error.response?.data?.error?.code || null,
+      suspectedCategory: suspectIgCategory(error), rawError: error,
+    };
   }
 }
 

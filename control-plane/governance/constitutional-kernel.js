@@ -133,6 +133,10 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   'PROJECTION_SIGNAL_CONTRACT_VIOLATED','PROJECTION_SIGNAL_CONTRACT_HELD',
   'CROSS_DOMAIN_CONTAMINATION_DETECTED','CROSS_DOMAIN_CONTAMINATION_CLEARED',
   'AUTHORITY_OSCILLATION_AMPLIFIED','AUTHORITY_OSCILLATION_DAMPENED',
+  // IG_FAILURE_OBSERVED is an internal routing event — bypasses
+  // lineageId checks (no specific lineage at observation time;
+  // the substrate attaches one in the canonical analysis).
+  'IG_FAILURE_OBSERVED',
   'PROJECTION_EMIT','PROJECTION_EMIT_ACK','PROJECTION_TIMEOUT','PROJECTION_STALENESS',
   'PROJECTION_STALENESS_CLEARED','PROJECTION_INVALIDATED_BY_LINEAGE',
   'PROJECTION_REBUILD_SIGNALED','PROJECTION_FLUSH_SIGNALED','PROJECTION_COORDINATION_COMPLETE',
@@ -546,6 +550,14 @@ const DOMAIN_EVENT_MAP = {
   AUTH_STRIKES_RESET: 'engagement',
   AUTH_SUCCESS: 'engagement',
   RETRY_REQUESTED: 'engagement',
+  // IG_FAILURE_OBSERVED: emitted by IG workers (or transport
+  // boundary) carrying the raw error + a cheap suspected_category
+  // hint. Routed to engagement domain where the FSM is the
+  // routing membrane — the FSM calls the IG reliability substrate
+  // to produce the canonical analysis, then emits *_AUTHORIZED
+  // actions per analysis.recommendations. Kernels MUST NOT call
+  // the substrate directly. The FSM is the only consumer.
+  IG_FAILURE_OBSERVED: 'engagement',
   SANITY_CHECK_REJECTED: 'engagement',
 
   // Publishing domain

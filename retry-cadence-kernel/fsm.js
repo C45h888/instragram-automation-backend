@@ -617,21 +617,10 @@ const TRANSITION_MAP = {
               }];
             }
 
-            // Scheduled successfully. For publish:* domains, emit
-            // RETRY_IN_PROGRESS. For dedup domain, emit
-            // DEDUP_RETRY_IN_PROGRESS. The domain FSM holds its
-            // state while the retry chain is in flight
-            // (observability fidelity).
-            if (domain && domain.startsWith('publish:')) {
-              return [{
-                type: 'RETRY_IN_PROGRESS',
-                accountId,
-                domain,
-                intentId,
-                retryCount: result.newCount,
-                delayMs: result.delayMs,
-              }];
-            }
+            // Publish retries no longer flow through the retry-cadence
+            // path. The publishing FSM emits RETRY_IN_PROGRESS (or
+            // its own publish-specific signal) directly. The retry-
+            // cadence FSM has no publish:* branch here.
             if (domain && domain.startsWith('dedup:')) {
               return [{
                 type: 'DEDUP_RETRY_IN_PROGRESS',
@@ -1041,7 +1030,7 @@ const TRANSITION_MAP = {
       return { allowed: true };
     },
     buildActions: (event) => {
-      const { readDomain, accountId, readId, analysis, errorShape, error } = event;
+      const { readDomain, accountId, readId, analysis, errorShape, error, readParams } = event;
       const effectiveCategory = analysis?.category || errorShape?.category || 'UNKNOWN';
       const effectiveSubtype = analysis?.subtype || errorShape?.subtype || 'unknown';
       const effectiveRetryable = analysis?.retryable ?? errorShape?.retryable ?? false;
@@ -1076,6 +1065,8 @@ const TRANSITION_MAP = {
             type: 'RETRY_OPERATION_AUTHORIZED',
             readDomain, accountId: accountId || '*',
             intentId: candidateIntentId,
+            readId,
+            readParams: readParams || null,
             analysis,
           });
         } else if (rec === 'RECONCILE_STATE') {
@@ -1106,19 +1097,30 @@ const TRANSITION_MAP = {
   // Phase 3: the FSM delegates operation logic to the recovery substrate.
   // The substrate owns the dispatch decision (connection, backoff, timeout).
   // The FSM only authorizes; the substrate executes.
+  //
+  // Phase 4: domain-aware dispatch. For publish:* domains, the IG
+  // recovery substrate is consulted first; for non-IG domains, the
+  // persistence retry-execution-substrate handles it. This is the
+  // pattern that lets one transition serve both substrates.
   RETRY_OPERATION_AUTHORIZED: {
     target: () => _localState,
     guard: () => ({ allowed: true }),
     buildActions: async (event, ctx) => {
-      const substrate = require('./substrates/retry-execution-substrate');
       const governance = ctx || event._governance || null;
+      const domain = event?.domain || event?.params?.domain || null;
+      // Route IG domains to the IG recovery substrate (Phase 4)
+      const isIgDomain = typeof domain === 'string' && domain.startsWith('publish:');
+      const substrate = isIgDomain
+        ? require('./substrates/ig-recovery-substrate')
+        : require('./substrates/retry-execution-substrate');
       const result = await substrate.execute({ ...event, type: 'RETRY_OPERATION_AUTHORIZED' }, governance);
       return [{
-        type: 'RETRY_EXECUTION_DELEGATED',
+        type: isIgDomain ? 'IG_RECOVERY_DELEGATED' : 'RETRY_EXECUTION_DELEGATED',
         success: result.success,
         workerName: result.workerName,
         durationMs: result.durationMs,
         error: result.error || null,
+        recommendation: 'REQUEUE_OPERATION',
       }];
     },
   },
@@ -1220,9 +1222,123 @@ const TRANSITION_MAP = {
       return [{
         type: 'ESCALATION_DELEGATED',
         success: result.success,
-        notified: result.notified || false,
-        quarantined: result.quarantined || false,
         durationMs: result.durationMs,
+        error: result.error || null,
+      }];
+    },
+  },
+
+  // ── IG-specific *_AUTHORIZED transitions ──────────────────────────────────
+  // The IG reliability substrate emits 12 IG-specific recommendations
+  // (REFRESH_TOKEN, VALIDATE_PERMISSIONS, REBUILD_WEBHOOK_STATE,
+  // VERIFY_PUBLICATION, RECOVER_MEDIA_CONTAINER, etc.). These
+  // transition handlers delegate to the ig-recovery-substrate façade,
+  // which dispatches to the appropriate operationally bounded worker.
+
+  REFRESH_TOKEN_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/ig-recovery-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'REFRESH_TOKEN_AUTHORIZED' }, governance);
+      return [{
+        type: 'IG_RECOVERY_DELEGATED',
+        success: result.success,
+        workerName: result.workerName,
+        durationMs: result.durationMs,
+        error: result.error || null,
+        recommendation: 'REFRESH_TOKEN',
+      }];
+    },
+  },
+
+  VERIFY_PUBLICATION_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/ig-recovery-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'VERIFY_PUBLICATION_AUTHORIZED' }, governance);
+      return [{
+        type: 'IG_RECOVERY_DELEGATED',
+        success: result.success,
+        workerName: result.workerName,
+        durationMs: result.durationMs,
+        error: result.error || null,
+        recommendation: 'VERIFY_PUBLICATION',
+      }];
+    },
+  },
+
+  RECOVER_MEDIA_CONTAINER_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/ig-recovery-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'RECOVER_MEDIA_CONTAINER_AUTHORIZED' }, governance);
+      return [{
+        type: 'IG_RECOVERY_DELEGATED',
+        success: result.success,
+        workerName: result.workerName,
+        durationMs: result.durationMs,
+        error: result.error || null,
+        recommendation: 'RECOVER_MEDIA_CONTAINER',
+      }];
+    },
+  },
+
+  REBUILD_WEBHOOK_STATE_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/ig-recovery-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'REBUILD_WEBHOOK_STATE_AUTHORIZED' }, governance);
+      return [{
+        type: 'IG_RECOVERY_DELEGATED',
+        success: result.success,
+        workerName: result.workerName,
+        durationMs: result.durationMs,
+        error: result.error || null,
+        recommendation: 'REBUILD_WEBHOOK_STATE',
+      }];
+    },
+  },
+
+  VALIDATE_PERMISSIONS_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/ig-recovery-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'VALIDATE_PERMISSIONS_AUTHORIZED' }, governance);
+      return [{
+        type: 'IG_RECOVERY_DELEGATED',
+        success: result.success,
+        workerName: result.workerName,
+        durationMs: result.durationMs,
+        error: result.error || null,
+        recommendation: 'VALIDATE_PERMISSIONS',
+      }];
+    },
+  },
+
+  PROACTIVE_REFRESH_AUTHORIZED: {
+    target: () => _localState,
+    guard: () => ({ allowed: true }),
+    buildActions: async (event, ctx) => {
+      const substrate = require('./substrates/ig-recovery-substrate');
+      const governance = ctx || event._governance || null;
+      const result = await substrate.execute({ ...event, type: 'PROACTIVE_REFRESH_AUTHORIZED' }, governance);
+      return [{
+        type: 'IG_RECOVERY_DELEGATED',
+        success: result.success,
+        workerName: result.workerName,
+        durationMs: result.durationMs,
+        error: result.error || null,
+        recommendation: 'PROACTIVE_REFRESH',
       }];
     },
   },
@@ -1266,6 +1382,143 @@ const TRANSITION_MAP = {
       substate: 'RETRY_CADENCE_HIGH_OBSERVED',
       reason: `HIGH failure routed through retry-cadence: ${event.category}/${event.subtype}`,
     }],
+  },
+
+  // ── IG_FAILURE_OBSERVED — constitutional IG failure intake ────────────
+  // Emitted by IG workers (publishing-kernel substrates, transport
+  // boundary) carrying the raw error and a CHEAP suspected_category
+  // hint. The FSM is the routing membrane — it does NOT classify.
+  // The FSM calls the IG reliability substrate via the registered
+  // classification worker (CLASSIFICATION_WORKER_MAP maps publish:*
+  // domains to ig-reliability-substrate). The substrate returns
+  // the canonical analysis (§1-§17). The FSM emits *_AUTHORIZED
+  // actions per analysis.recommendations.
+  //
+  // For publish:* domains, the FSM ALSO emits PUBLISH_RETRY_EXHAUSTED
+  // when the retry budget is exhausted, so the publishing FSM's
+  // EXECUTING → IDLE transition fires. This re-arms the terminal
+  // path that was removed in the publish-retry-worker purge.
+  //
+  // Kernels MUST NOT call the substrate directly. This transition
+  // is the canonical seam.
+  IG_FAILURE_OBSERVED: {
+    target: () => _localState,
+    guard: (event) => {
+      if (!event || (!event.rawError && !event.error)) {
+        return { allowed: false, reason: 'IG_FAILURE_OBSERVED requires rawError or error' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { accountId, intentId, domain, rawError, error, suspectedCategory,
+              endpoint, workerName, tokenMetadata, publicationState,
+              containerId, publicationId, webhookState, dependencyHealth,
+              correlationIds, attemptN = 1, lineageId = null } = event || {};
+
+      // Resolve the canonical IG classification worker (the substrate)
+      const substrateRegistry = require('../acquisition-kernel/substrate-registry');
+      const igSubstrate = substrateRegistry.getClassificationWorker(domain);
+
+      if (!igSubstrate || typeof igSubstrate.analyzeFailure !== 'function') {
+        // No substrate registered for this domain — fall through to
+        // log and skip. The worker should be registered in the
+        // CLASSIFICATION_WORKER_MAP; if it's missing, that's a
+        // registration bug.
+        return [{
+          type: 'LOG_DEGRADED',
+          substate: 'IG_SUBSTRATE_MISSING',
+          reason: `No IG reliability substrate registered for domain: ${domain}`,
+          domain, accountId, intentId,
+        }];
+      }
+
+      // §1-§17: canonical analysis. The substrate is the only
+      // entity that classifies the raw error.
+      const analysis = igSubstrate.analyzeFailure(
+        rawError || error,
+        domain,
+        'ig-graph',
+        {
+          accountId, intentId, attemptN, lineageId,
+          lineageDomain: 'ig-domain', workerName,
+          endpoint, tokenMetadata, publicationState,
+          containerId, publicationId, webhookState,
+          dependencyHealth, correlationIds,
+          // The worker's cheap hint is passed through context
+          // for the substrate's priority/severity heuristics.
+          suspectedCategory: suspectedCategory || null,
+        }
+      );
+
+      // Queue the decided failure (mirrors _decidedDbFailures).
+      // Phase 2 will add real workers; for now the queue is
+      // observable but does not trigger execution.
+      const decided = {
+        domain, accountId, intentId, rawError: rawError || error,
+        analysis, error: error || null, queuedAt: Date.now(),
+        decidedAt: Date.now(),
+        authorizedRecommendations: analysis.recommendations.slice(),
+        idempotencyKey: analysis.idempotencyKey,
+      };
+      _decidedIgFailures.set(intentId || `${accountId}:${Date.now()}`, decided);
+
+      // Emit *_AUTHORIZED actions per the substrate's recommendations.
+      // The FSM authorizes ALL flagged ones (per spec — the substrate
+      // does NOT pick one). The *_AUTHORIZED handlers then delegate
+      // to the appropriate recovery substrate (mirrors the persistence
+      // path's REFRESH_AUTHENTICATION_AUTHORIZED etc.).
+      const actions = [];
+      const recs = analysis.recommendations || [];
+      for (const rec of recs) {
+        const actionType = `${rec}_AUTHORIZED`;
+        actions.push({
+          type: actionType,
+          accountId, intentId, domain,
+          analysis,  // full canonical analysis for the recovery substrate
+          retryCount: attemptN,
+        });
+      }
+
+      // Severity-graded observability
+      if (analysis.severity === 'CRITICAL') {
+        actions.push({
+          type: 'CRITICAL_FAILURE_OBSERVED',
+          category: analysis.category,
+          subtype: analysis.subtype,
+          domain, accountId, intentId,
+          severityScore: analysis.severityScore,
+        });
+      } else if (analysis.severity === 'HIGH') {
+        actions.push({
+          type: 'HIGH_FAILURE_OBSERVED',
+          category: analysis.category,
+          subtype: analysis.subtype,
+          domain, accountId, intentId,
+          severityScore: analysis.severityScore,
+        });
+      }
+
+      // Re-arm PUBLISH_RETRY_EXHAUSTED for publish domains on
+      // retry-budget exhaustion. This closes the publishing FSM's
+      // EXECUTING → IDLE transition that was orphaned in the
+      // publish-retry-worker purge.
+      const isPublishDomain = typeof domain === 'string' && domain.startsWith('publish:');
+      const budgetExhausted = attemptN >= (analysis.retryabilityReason?.includes('non_retryable') ? 1 : 3);
+      const wantsRequeue = recs.includes('REQUEUE_OPERATION');
+      if (isPublishDomain && budgetExhausted && !wantsRequeue) {
+        actions.push({
+          type: 'PUBLISH_RETRY_EXHAUSTED',
+          accountId, intentId, domain,
+          error: rawError?.message || error?.message || 'publish_retry_exhausted',
+          igCode: analysis.subtype,
+          retryCount: attemptN,
+          operation: domain,
+          analysis,
+        });
+      }
+
+      return actions;
+    },
   },
 };
 
@@ -1330,6 +1583,18 @@ const _candidateDbReadFailures = new Map();
 //     queuedAt, decidedAt, authorizedRecommendations, idempotencyKey }
 const _decidedDbFailures = new Map();
 const _decidedDbReadFailures = new Map();
+
+// ── Decided IG failures (parallel to _decidedDbFailures) ───────────
+// The constitutional IG failure path: workers emit IG_FAILURE_OBSERVED
+// with raw error + cheap hint. The engagement-fsm (this FSM) calls
+// ig-reliability-substrate.analyzeFailure() and queues the result here.
+// Phase 2 will instantiate the actual recovery workers that consume
+// from this map.
+//
+// DecidedIgFailure:
+//   { domain, accountId, intentId, rawError, analysis, error,
+//     queuedAt, decidedAt, authorizedRecommendations, idempotencyKey }
+const _decidedIgFailures = new Map();
 
 // ── Sanity check reference (canonical: ctx.sanityCheck) ────────────────
 // The ctx.sanityCheck is the universal gate. The FSM calls
@@ -1626,10 +1891,9 @@ function _resolveWorkerName(domain, context) {
     ugc: 'ugc-retry',
     insights: 'insights-retry',
     media: 'content-retry',
-    'publish:post': 'publish-content-retry',
-    'publish:story': 'publish-content-retry',
-    'publish:comment': 'publish-engagement-retry',
-    'publish:message': 'publish-engagement-retry',
+    // Publish retry workers — REMOVED. Publishing FSM owns publish
+    // failure handling via the publish substrate's classified
+    // errorShape. No retry-cadence worker lookup for publish:*.
     'dedup:redis':     'dedup-redis-retry',
     'dedup:repair':    'dedup-repair-retry',
     reconciliation:    'reconciliation-retry',
@@ -1718,18 +1982,8 @@ function _buildExhaustedActions(params) {
     type: 'RETRY_EXHAUSTED',
     ...params,
   }];
-  if (params.domain && params.domain.startsWith('publish:')) {
-    actions.push({
-      type: 'PUBLISH_RETRY_EXHAUSTED',
-      accountId: params.accountId,
-      domain: params.domain,
-      intentId: params.intentId,
-      error: params.error,
-      igCode: params.igCode,
-      retryCount: params.retryCount,
-      operation: params.operation,
-    });
-  }
+  // Publish retries no longer flow through the retry-cadence path.
+  // The publishing FSM owns its own terminal failure signal.
   if (params.domain && params.domain.startsWith('dedup:')) {
     actions.push({
       type: 'DEDUP_RETRY_EXHAUSTED',

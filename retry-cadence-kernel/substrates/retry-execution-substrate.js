@@ -101,7 +101,10 @@ async function execute(event, governance) {
 
   // 4. Execute the connection recovery (re-run the Supabase operation)
   const connectionResult = await connectionRecoveryWorker.execute({
-    domain, accountId, intentId, table, rows: event.rows || [], idempotencyKey, analysis, backoff,
+    domain, accountId, intentId, table, rows: event.rows || [],
+    readDomain: event.readDomain || null, readId: event.readId || null,
+    readParams: event.readParams || null,
+    idempotencyKey, analysis, backoff,
   }, governance);
 
   (governance?.dispatchGlobal || governance?.dispatch)({

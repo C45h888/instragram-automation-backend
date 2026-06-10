@@ -56,10 +56,14 @@ const RETRY_WORKER_MAP = {
   // Two workers, bound to the two publish substrates. The
   // dual-binding pattern: each publish:* domain has a dedicated
   // retry worker that imports its substrate directly.
-  'publish:post':     '../retry-cadence-kernel/workers/publish-content-retry-worker',
-  'publish:story':    '../retry-cadence-kernel/workers/publish-content-retry-worker',
-  'publish:comment':  '../retry-cadence-kernel/workers/publish-engagement-retry-worker',
-  'publish:message':  '../retry-cadence-kernel/workers/publish-engagement-retry-worker',
+  // ── Publish retry workers — REMOVED ─────────────────────────────────
+  // The publish retry workers were a static re-classification layer
+  // that duplicated work the publish substrate already does via
+  // substrates/transport/error-classifier.categorizeIgError.
+  // The publishing-kernel/orchestrator now emits WORKER_OUTCOME_REPORTED
+  // directly with the substrate's already-classified errorShape.
+  // Publish failures are no longer routed through the retry-cadence
+  // path; the publishing FSM owns the publish failure surface.
   'dedup:redis':      '../retry-cadence-kernel/workers/dedup-redis-retry-worker',
   'dedup:repair':     '../retry-cadence-kernel/workers/dedup-repair-retry-worker',
   reconciliation:     '../retry-cadence-kernel/workers/reconciliation-retry-worker',
@@ -94,10 +98,18 @@ const CLASSIFICATION_WORKER_MAP = {
   ugc:                '../retry-cadence-kernel/workers/classification-worker',
   insights:           '../retry-cadence-kernel/workers/classification-worker',
   media:              '../retry-cadence-kernel/workers/classification-worker',
-  'publish:post':     '../retry-cadence-kernel/workers/classification-worker',
-  'publish:story':    '../retry-cadence-kernel/workers/classification-worker',
-  'publish:comment':  '../retry-cadence-kernel/workers/classification-worker',
-  'publish:message':  '../retry-cadence-kernel/workers/classification-worker',
+  // Publish classification — owned by the Instagram Reliability
+  // Substrate (graph-capability-kernel/substrates/ig-reliability-substrate.js).
+  // The 4 publish:* domains flow through IG_FAILURE_OBSERVED →
+  // engagement-fsm → substrate.analyzeFailure(). The substrate
+  // returns the canonical analysis; the FSM emits *_AUTHORIZED
+  // actions per analysis.recommendations. Kernels MUST NOT
+  // classify errors directly — that is semantic contamination.
+  // The substrate is the canonical IG failure interpreter.
+  'publish:post':     '../graph-capability-kernel/substrates/ig-reliability-substrate',
+  'publish:story':    '../graph-capability-kernel/substrates/ig-reliability-substrate',
+  'publish:comment':  '../graph-capability-kernel/substrates/ig-reliability-substrate',
+  'publish:message':  '../graph-capability-kernel/substrates/ig-reliability-substrate',
   'dedup:redis':      '../retry-cadence-kernel/workers/classification-worker',
   'dedup:repair':     '../retry-cadence-kernel/workers/classification-worker',
   reconciliation:     '../retry-cadence-kernel/workers/classification-worker',

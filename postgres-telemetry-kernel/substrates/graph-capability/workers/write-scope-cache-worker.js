@@ -7,7 +7,6 @@
 //               retry policy (retry-cadence-kernel).
 
 const { getSupabaseAdmin } = require('../../../../config/supabase');
-const { analyzeFailure } = require('../../../persistence-failure-substrate');
 
 /**
  * @param {{ credentialId: string, scopes: string[] }} params
@@ -22,22 +21,19 @@ async function execute(params, governance) {
   const { credentialId, scopes } = row;
   if (!credentialId) {
     const err = 'credentialId required';
-    const analysis = analyzeFailure({ message: err }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-scope-cache-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: err, rawError: { message: err }, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
     return { success: false, error: err };
   }
   if (!Array.isArray(scopes) || scopes.length === 0) {
     const err = 'scopes required';
-    const analysis = analyzeFailure({ message: err }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-scope-cache-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: err, rawError: { message: err }, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
     return { success: false, error: err };
   }
 
   const supabase = getSupabaseAdmin();
   if (!supabase) {
     const err = 'supabase_unavailable';
-    const analysis = analyzeFailure({ message: err }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-scope-cache-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: err, rawError: { message: err }, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
     return { success: false, error: err };
   }
 
@@ -51,14 +47,12 @@ async function execute(params, governance) {
       .eq('id', credentialId);
 
     if (error) {
-      const analysis = analyzeFailure(error, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-scope-cache-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
-      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: error.message });
+      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: error.message, rawError: error, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
       return { success: false, error: error.message };
     }
     return { success: true, error: null };
   } catch (err) {
-    const analysis = analyzeFailure(err, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-scope-cache-worker', primaryKeyField: 'id', primaryKeyValue: credentialId });
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err.message });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: err.message, rawError: err, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
     return { success: false, error: err.message };
   }
 }

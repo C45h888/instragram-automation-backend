@@ -29,7 +29,11 @@ const publishingPolicy = require('../control-plane/policies/publishing');
 const mutationSubstrate = require('../control-plane/mutation-substrate');
 const contentSubstrate = require('./substrates/content');
 const engagementSubstrate = require('./substrates/engagement');
-const publishErrorParser = require('../retry-cadence-kernel/workers/publish-error-parser');
+// Publish error parsing — REMOVED. The publish substrate already
+// classifies failures via substrates/transport/error-classifier.
+// We use categorizeIgError directly to normalise any error that
+// bubbles out of the substrate into the shared errorShape contract.
+const { suspectIgCategory } = require('../../substrates/transport/error-classifier');
 // NOTE (Step 7): The emission-orchestrator no longer imports the
 // credential-resolver. The publish substrates resolve their own
 // credentials internally.
@@ -238,6 +242,49 @@ function _emitTransition(accountId, previousState, nextState) {
   }
 }
 
+// ── Publish error normaliser ───────────────────────────────────────
+// Maps a substrate-return failure or a thrown error into the shared
+// errorShape contract. The publish substrate already classifies via
+// categorizeIgError, so the substrate-return path is a thin mapping.
+// The thrown-error path routes the raw error through categorizeIgError
+// to produce the same envelope shape.
+//
+// This replaces the deleted retry-cadence-kernel/workers/publish-error-parser.
+// It is a local helper, not a worker. The retry-cadence-kernel owns
+// classification; the orchestrator just emits a normalised outcome.
+function _normaliseSubstrateFailure(result, domain) {
+  const code = result?.code ?? null;
+  const retryAfterSeconds = result?.retry_after_seconds ?? null;
+  return {
+    category: result?.error_category || 'transient',
+    code,
+    retryable: result?.retryable ?? null,
+    retryAfterSeconds,
+    retryAfterMs: retryAfterSeconds != null ? retryAfterSeconds * 1000 : null,
+    domain,
+    source: 'substrate_normalised',
+  };
+}
+
+function _normaliseThrownError(err, domain) {
+  // Phase 2: thin capture. The substrate is the canonical classifier.
+  // We only derive a CHEAP suspectedCategory hint here for back-compat;
+  // the canonical analysis lives in the substrate (called via
+  // IG_FAILURE_OBSERVED from the engagement-fsm).
+  const suspectedCategory = suspectIgCategory(err);
+  const retryAfterSeconds = null;  // substrate owns adaptive cadence
+  const code = err?.response?.data?.error?.code ?? err?.code ?? null;
+  return {
+    category: suspectedCategory,
+    code,
+    retryable: null,  // substrate owns retryability
+    retryAfterSeconds,
+    retryAfterMs: null,
+    domain,
+    source: 'thrown_error_captured',
+  };
+}
+
 /**
  * Wire this orchestrator to the governance kernel.
  * Registers per-action-type subscribers for emission actions.
@@ -309,7 +356,7 @@ function wire(governance) {
     try {
       const result = await contentSubstrate.execute(accountId, dedupedItems, governance);
       if (result && !result.success) {
-        const errorShape = publishErrorParser.parse(result, publishDomain);
+        const errorShape = _normaliseSubstrateFailure(result, publishDomain);
         governance.dispatch({
           type: 'WORKER_OUTCOME_REPORTED',
           accountId,
@@ -328,7 +375,7 @@ function wire(governance) {
         });
       }
     } catch (err) {
-      const errorShape = publishErrorParser.parseError(err, publishDomain);
+      const errorShape = _normaliseThrownError(err, publishDomain);
       governance.dispatch({
         type: 'WORKER_OUTCOME_REPORTED',
         accountId,
@@ -394,7 +441,7 @@ function wire(governance) {
     try {
       const result = await engagementSubstrate.execute(accountId, dedupedItems, governance);
       if (result && !result.success) {
-        const errorShape = publishErrorParser.parse(result, publishDomain);
+        const errorShape = _normaliseSubstrateFailure(result, publishDomain);
         governance.dispatch({
           type: 'WORKER_OUTCOME_REPORTED',
           accountId,
@@ -413,7 +460,7 @@ function wire(governance) {
         });
       }
     } catch (err) {
-      const errorShape = publishErrorParser.parseError(err, publishDomain);
+      const errorShape = _normaliseThrownError(err, publishDomain);
       governance.dispatch({
         type: 'WORKER_OUTCOME_REPORTED',
         accountId,

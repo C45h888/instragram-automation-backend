@@ -20,7 +20,6 @@
 
 const { logAudit } = require('../../../config/supabase');
 const { clearCredentialCache } = require('../../../helpers/credential-cache');
-const { analyzeFailure } = require('../persistence-failure-substrate');
 
 const keyProvisionWorker = require('./workers/key-provision-worker');
 const encryptTokenWorker = require('./workers/encrypt-token-worker');
@@ -35,16 +34,17 @@ const PAT_SCOPE_DEFAULTS = [
 ];
 
 /**
- * Emit a DB_WRITE_FAILED event with the normalized error shape.
+ * Emit a DB_WRITE_FAILED event with the raw error shape.
  * The inner workers return { success: false, error: string } — we
- * classify the string through the failure substrate to attach the
- * canonical shape before dispatch.
+ * forward the raw string for the FSM to classify through the substrate.
  */
 function _emitFailed(governance, { domain, accountId, intentId, table, error, rows, primaryKeyField, primaryKeyValue, workerName, lineageId }) {
-  const analysis = analyzeFailure({ message: error }, 'write', 'supabase', { attemptN: 1, lineageId, workerName, primaryKeyField, primaryKeyValue });
   governance?.dispatch({
     type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-    table, count: 0, rows: rows || [], analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error,
+    table, count: 0, rows: rows || [], error,
+    rawError: { message: error },
+    workerName, lineageId, primaryKeyField, primaryKeyValue,
+    attemptN: 1, operation: 'write', source: 'supabase',
   });
 }
 

@@ -29,8 +29,10 @@ function _obs() {
 }
 
 const db = require('./writers');
-const { reportFailure } = require('./substrates/persistence-failure-substrate');
 const crypto = require('crypto');
+// analyzeFailure is called by the FSM itself (constitutional pattern)
+// when workers emit raw errors. Workers no longer import the substrate.
+const { analyzeFailure } = require('./substrates/persistence-failure-substrate');
 
 // Lazy reading-substrate reference — set by CK after instantiation
 let _readingSubstrate = null;
@@ -173,6 +175,9 @@ const TRANSITION_MAP = {
       // Track in-flight
       _readsInFlight++;
 
+      // Store params for retry path (read cadence loop)
+      _pendingReads.set(readId, { readDomain, accountId, params });
+
       // Delegate to reading-substrate — async, non-blocking
       // _readingSubstrate is injected by CK via setReadingSubstrate() at boot
       if (_readingSubstrate) {
@@ -254,14 +259,13 @@ const TRANSITION_MAP = {
       _readsInFlight = Math.max(0, _readsInFlight - 1);
 
       if (error) {
-        // Phase 6 / base-phase: emit a DB_READ_FAILED event carrying
-        // the normalized errorShape so the constitutional flow can
-        // route the read failure to the retry-cadence-kernel.
-        // The substrate (persistence-failure-substrate) is the
-        // canonical boundary; the FSM normalizes here at the dispatch
-        // boundary because readers return plain { success, error }
-        // rather than calling the substrate directly.
-        const errorShape = reportFailure({ message: error }, 'read');
+        // Look up original read params from _pendingReads so the retry
+        // worker can reconstruct the read query.
+        const pending = _pendingReads.get(readId);
+        _pendingReads.delete(readId);
+        const readParams = pending?.params || null;
+
+        const errorShape = analyzeFailure({ message: error }, 'read', 'supabase', { attemptN: 1 });
         const actions = [{
           type: 'LOG_DEGRADED',
           substate: 'READ_FAILURE',
@@ -270,17 +274,18 @@ const TRANSITION_MAP = {
           type: 'DB_READ_FAILED',
           readDomain, accountId, readId,
           errorShape, error, latencyMs,
+          readParams,  // original query params for retry
         }];
         if (ctx && ctx.dispatchGlobal) {
           ctx.dispatchGlobal({
             type: 'DB_PERSIST_FAILURE_READ',
             readDomain, accountId, readId,
             errorShape, error, latencyMs,
+            readParams,  // forward to retry-cadence FSM
           });
         }
         return actions;
       }
-
       // Forward read result to calling domain. Attach lineageId+lineageDomain
       // to satisfy the canonical-source gate. The lineageDomain names
       // persist-telemetry as the issuer (the executor of the read);
@@ -446,13 +451,16 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── DB_WRITE_FAILED — worker emitted a structured failure ──────────────
-  // Phase 2: the writer now emits the FULL analysis from the substrate
-  // (12-responsibility reliability engine). The guard accepts either
-  // analysis (canonical) or errorShape (legacy backwards compat).
-  // The FSM extracts severity and forwards the analysis to DB_PERSIST_FAILURE.
+  // ── DB_WRITE_FAILED — worker emitted a raw failure ───────────────────
+  // Constitutional path: the FSM is the sole caller of the persistence-
+  // failure substrate. Workers emit raw errors only (no pre-classification).
+  // The FSM calls analyzeFailure to produce the canonical analysis, then
+  // evaluates severity and forwards to DB_PERSIST_FAILURE.
   // For CRITICAL severity, a CRITICAL_FAILURE_OBSERVED action is emitted
   // immediately (bypasses normal flow per spec §9).
+  //
+  // Legacy modes (analysis/errorShape) are accepted for backwards compat
+  // with any unmigrated callers.
   DB_WRITE_FAILED: {
     target: () => {
       if (_inFlight === 0) return 'IDLE';
@@ -460,9 +468,9 @@ const TRANSITION_MAP = {
       return _localState;
     },
     guard: (event) => {
-      // Accept either the full analysis (canonical) or legacy errorShape
-      if (!event || (!event.analysis && !event.errorShape)) {
-        return { allowed: false, reason: 'DB_WRITE_FAILED requires analysis or errorShape' };
+      // Accept rawError (constitutional), analysis (canonical), or errorShape (legacy)
+      if (!event || (!event.rawError && !event.analysis && !event.errorShape)) {
+        return { allowed: false, reason: 'DB_WRITE_FAILED requires rawError, analysis, or errorShape' };
       }
       if (_inFlight <= 0) {
         return { allowed: false, reason: 'No writes in flight — cannot fail write' };
@@ -470,14 +478,27 @@ const TRANSITION_MAP = {
       return { allowed: true };
     },
     buildActions: async (event, ctx) => {
-      const { domain, accountId, intentId, table, count, analysis, errorShape, error } = event;
+      const { domain, accountId, intentId, table, count, analysis, errorShape, error, rawError } = event;
+      let canonical = analysis || null;
+
+      // CONSTITUTIONAL PATH: FSM calls substrate when worker emits raw error
+      if (!canonical && rawError) {
+        const { workerName, lineageId, primaryKeyField, primaryKeyValue, attemptN, operation, source } = event;
+        canonical = analyzeFailure(
+          rawError,
+          operation || 'write',
+          source || 'supabase',
+          { attemptN: attemptN || 1, lineageId, workerName, primaryKeyField, primaryKeyValue }
+        );
+      }
+
       // analysis is the canonical shape; errorShape is the slim legacy wrapper.
       // If only errorShape is present (backwards compat), use its fields.
-      const effectiveCategory = analysis?.category || errorShape?.category || 'UNKNOWN';
-      const effectiveSubtype = analysis?.subtype || errorShape?.subtype || 'unknown';
-      const effectiveRetryable = analysis?.retryable ?? errorShape?.retryable ?? false;
-      const effectiveSeverity = analysis?.severity || 'MEDIUM';
-      const effectiveIdempotencyKey = analysis?.idempotencyKey || null;
+      const effectiveCategory = canonical?.category || errorShape?.category || 'UNKNOWN';
+      const effectiveSubtype = canonical?.subtype || errorShape?.subtype || 'unknown';
+      const effectiveRetryable = canonical?.retryable ?? errorShape?.retryable ?? false;
+      const effectiveSeverity = canonical?.severity || 'MEDIUM';
+      const effectiveIdempotencyKey = canonical?.idempotencyKey || null;
       _inFlight = Math.max(0, _inFlight - 1);
 
       const actions = [{
@@ -492,7 +513,7 @@ const TRANSITION_MAP = {
           type: 'CRITICAL_FAILURE_OBSERVED',
           domain, accountId, intentId, table,
           category: effectiveCategory, subtype: effectiveSubtype,
-          severity: 'CRITICAL', analysis,
+          severity: 'CRITICAL', analysis: canonical,
         });
       }
       // HIGH severity fires observer but continues normal flow
@@ -501,7 +522,7 @@ const TRANSITION_MAP = {
           type: 'HIGH_FAILURE_OBSERVED',
           domain, accountId, intentId, table,
           category: effectiveCategory, subtype: effectiveSubtype,
-          severity: 'HIGH', analysis,
+          severity: 'HIGH', analysis: canonical,
         });
       }
 
@@ -512,7 +533,7 @@ const TRANSITION_MAP = {
           domain, accountId, intentId, table,
           operation: event.operation || null,
           rows: event.rows || null,
-          analysis: analysis || null,
+          analysis: canonical || null,
           // backwards compat — keep errorShape so the retry-cadence FSM
           // can fall back if analysis is null
           errorShape: errorShape || { category: effectiveCategory, subtype: effectiveSubtype, retryable: effectiveRetryable },
@@ -633,6 +654,11 @@ let _localState = 'IDLE';
 let _lastTransitionedAt = null;
 let _inFlight = 0;        // writes in flight
 let _readsInFlight = 0;   // reads in flight
+
+// ── Pending read params: readId → { readDomain, accountId, params } ──────
+// Stored at DB_READ_REQUESTED so the retry path can reconstruct the
+// original read query when a read fails and needs retrying.
+const _pendingReads = new Map();
 
 // ── Default fail-open sanity check (universal gate pattern) ─────────────
 // The ctx.sanityCheck is the universal gate. The FSM calls it

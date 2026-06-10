@@ -11,7 +11,6 @@
 // Called via: CK → persist-telemetry FSM → dispatchWrite(log_api_request, ...)
 
 const { getSupabaseAdmin } = require('../../config/supabase');
-const { analyzeFailure } = require('../substrates/persistence-failure-substrate');
 
 /**
  * @param {object} params — { domain, accountId, table, rows }
@@ -27,11 +26,10 @@ async function execute(params, governance) {
 
   const supabase = getSupabaseAdmin();
   if (!supabase) {
-    const analysis = analyzeFailure({ message: 'supabase_unavailable' }, 'write', 'supabase', { attemptN: 1, lineageId: `${userId}-${hourBucket}`, workerName: 'api-usage-writer', primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue });
     governance?.dispatch({
       type: 'DB_WRITE_FAILED',
       domain, accountId, table,
-      count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: 'supabase_unavailable',
+      count: 0, rows, error: 'supabase_unavailable', rawError: { message: 'supabase_unavailable' }, workerName: 'api-usage-writer', lineageId: `${userId}-${hourBucket}`, primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue, attemptN: 1, operation: 'write', source: 'supabase',
     });
     return;
   }
@@ -55,11 +53,10 @@ async function execute(params, governance) {
       });
 
     if (error) {
-      const analysis = analyzeFailure(error, 'write', 'supabase', { attemptN: 1, lineageId: `${userId}-${hourBucket}`, workerName: 'api-usage-writer', primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue });
       governance?.dispatch({
         type: 'DB_WRITE_FAILED',
         domain, accountId, table,
-        count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: error.message,
+        count: 0, rows, error: error.message, rawError: error, workerName: 'api-usage-writer', lineageId: `${userId}-${hourBucket}`, primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue, attemptN: 1, operation: 'write', source: 'supabase',
       });
       return;
     }
@@ -70,11 +67,10 @@ async function execute(params, governance) {
       count: 1, status: 'success', error: null,
     });
   } catch (err) {
-    const analysis = analyzeFailure(err, 'write', 'supabase', { attemptN: 1, lineageId: `${userId}-${hourBucket}`, workerName: 'api-usage-writer', primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue });
     governance?.dispatch({
       type: 'DB_WRITE_FAILED',
       domain, accountId, table,
-      count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err.message,
+      count: 0, rows, error: err.message, rawError: err, workerName: 'api-usage-writer', lineageId: `${userId}-${hourBucket}`, primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue, attemptN: 1, operation: 'write', source: 'supabase',
     });
   }
 }

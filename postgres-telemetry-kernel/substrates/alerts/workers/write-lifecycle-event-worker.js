@@ -14,7 +14,6 @@
 //   retry cadence is owned by retry-cadence-kernel.
 
 const { getSupabaseAdmin } = require('../../../../config/supabase');
-const { analyzeFailure } = require('../../../persistence-failure-substrate');
 
 /**
  * @param {{ domain: string, accountId: string, intentId?: string, table: string, rows: Array }} params
@@ -27,18 +26,16 @@ async function execute(params, governance) {
 
    if (!credential_id || !event_type) {
      const err = 'credential_id and event_type are required';
-     const analysis = analyzeFailure({ message: err }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-lifecycle-event-worker', primaryKeyField: 'credential_id', primaryKeyValue: credential_id });
      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-       table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+       table, count: 0, rows, error: err, rawError: { message: err }, workerName: 'write-lifecycle-event-worker', lineageId: intentId, primaryKeyField: 'credential_id', primaryKeyValue: credential_id, attemptN: 1, operation: 'write', source: 'supabase' });
      return { success: false, error: err };
    }
 
    const supabase = getSupabaseAdmin();
    if (!supabase) {
      const err = 'supabase_unavailable';
-     const analysis = analyzeFailure({ message: err }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-lifecycle-event-worker', primaryKeyField: 'credential_id', primaryKeyValue: credential_id });
      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-       table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err });
+       table, count: 0, rows, error: err, rawError: { message: err }, workerName: 'write-lifecycle-event-worker', lineageId: intentId, primaryKeyField: 'credential_id', primaryKeyValue: credential_id, attemptN: 1, operation: 'write', source: 'supabase' });
      return { success: false, error: err };
    }
 
@@ -55,9 +52,8 @@ async function execute(params, governance) {
 
      if (error) {
        console.warn('[write-lifecycle-event-worker] Insert failed:', error.message);
-       const analysis = analyzeFailure(error, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-lifecycle-event-worker', primaryKeyField: 'credential_id', primaryKeyValue: credential_id });
        governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-         table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: error.message });
+         table, count: 0, rows, error: error.message, rawError: error, workerName: 'write-lifecycle-event-worker', lineageId: intentId, primaryKeyField: 'credential_id', primaryKeyValue: credential_id, attemptN: 1, operation: 'write', source: 'supabase' });
        return { success: false, error: error.message };
      }
 
@@ -66,9 +62,8 @@ async function execute(params, governance) {
      return { success: true, error: null };
    } catch (err) {
      console.warn('[write-lifecycle-event-worker] Insert failed:', err.message);
-     const analysis = analyzeFailure(err, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'write-lifecycle-event-worker', primaryKeyField: 'credential_id', primaryKeyValue: credential_id });
      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId,
-       table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err.message });
+       table, count: 0, rows, error: err.message, rawError: err, workerName: 'write-lifecycle-event-worker', lineageId: intentId, primaryKeyField: 'credential_id', primaryKeyValue: credential_id, attemptN: 1, operation: 'write', source: 'supabase' });
      return { success: false, error: err.message };
    }
  }

@@ -10,14 +10,12 @@
 // Phase 5: fixes orphaned message conversation_ids after conversation repair.
 
 const { getSupabaseAdmin } = require('../../config/supabase');
-const { analyzeFailure } = require('../substrates/persistence-failure-substrate');
 
 async function execute(params, governance) {
   const { domain, accountId, intentId, table, rows } = params;
   const supabase = getSupabaseAdmin();
   if (!supabase) {
-    const analysis = analyzeFailure({ message: 'supabase_unavailable' }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'message-fix-writer', primaryKeyField: 'match_conversation_id', primaryKeyValue: rows?.[0]?.match_conversation_id });
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: 'supabase_unavailable' });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows: rows || [], error: 'supabase_unavailable', rawError: { message: 'supabase_unavailable' }, workerName: 'message-fix-writer', lineageId: intentId, primaryKeyField: 'match_conversation_id', primaryKeyValue: rows?.[0]?.match_conversation_id, attemptN: 1, operation: 'write', source: 'supabase' });
     return;
   }
 
@@ -40,8 +38,7 @@ async function execute(params, governance) {
 
     governance?.dispatch({ type: 'DB_WRITE_COMPLETE', domain, accountId, intentId, table, count: totalFixed, error: null });
   } catch (err) {
-    const analysis = analyzeFailure(err, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'message-fix-writer', primaryKeyField: 'match_conversation_id', primaryKeyValue: rows?.[0]?.match_conversation_id });
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err.message });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows: rows || [], error: err.message, rawError: err, workerName: 'message-fix-writer', lineageId: intentId, primaryKeyField: 'match_conversation_id', primaryKeyValue: rows?.[0]?.match_conversation_id, attemptN: 1, operation: 'write', source: 'supabase' });
   }
 }
 

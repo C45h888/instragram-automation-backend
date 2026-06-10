@@ -8,14 +8,12 @@
 //               retry policy (retry-cadence-kernel).
 
 const { getSupabaseAdmin } = require('../../config/supabase');
-const { analyzeFailure } = require('../substrates/persistence-failure-substrate');
 
 async function execute(params, governance) {
   const { domain, accountId, intentId, table, rows } = params;
   const supabase = getSupabaseAdmin();
   if (!supabase) {
-    const analysis = analyzeFailure({ message: 'supabase_unavailable' }, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'conversations-writer', primaryKeyField: 'instagram_thread_id', primaryKeyValue: rows?.[0]?.instagram_thread_id });
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: 'supabase_unavailable' });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows: rows || [], error: 'supabase_unavailable', rawError: { message: 'supabase_unavailable' }, workerName: 'conversations-writer', lineageId: intentId, primaryKeyField: 'instagram_thread_id', primaryKeyValue: rows?.[0]?.instagram_thread_id, attemptN: 1, operation: 'write', source: 'supabase' });
     return;
   }
 
@@ -28,8 +26,7 @@ async function execute(params, governance) {
 
     governance?.dispatch({ type: 'DB_WRITE_COMPLETE', domain, accountId, intentId, table, count: rows.length, error: null });
   } catch (err) {
-    const analysis = analyzeFailure(err, 'write', 'supabase', { attemptN: 1, lineageId: intentId, workerName: 'conversations-writer', primaryKeyField: 'instagram_thread_id', primaryKeyValue: rows?.[0]?.instagram_thread_id });
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows, analysis, errorShape: { category: analysis.category, subtype: analysis.subtype, retryable: analysis.retryable, retryAfterMs: analysis.rateLimit.retryAfterMs }, error: err.message });
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table, count: 0, rows: rows || [], error: err.message, rawError: err, workerName: 'conversations-writer', lineageId: intentId, primaryKeyField: 'instagram_thread_id', primaryKeyValue: rows?.[0]?.instagram_thread_id, attemptN: 1, operation: 'write', source: 'supabase' });
   }
 }
 

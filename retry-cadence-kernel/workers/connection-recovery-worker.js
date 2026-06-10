@@ -24,17 +24,30 @@ const db = require('../../postgres-telemetry-kernel/writers');
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
 async function execute(params, governance) {
-  const { domain, accountId, intentId, table, rows, idempotencyKey, analysis } = params;
+  const { domain, accountId, intentId, table, rows, idempotencyKey, analysis, readDomain, readId, readParams } = params;
 
   if (!governance || (typeof governance.dispatchGlobal !== 'function' && typeof governance.dispatch !== 'function')) {
     return { success: false, error: 'governance required for connection recovery' };
   }
 
-  // Use the real rows from the original write failure event (C4 data preservation).
-  // The rows flow: writer → DB_WRITE_FAILED → DB_PERSIST_FAILURE → RETRY_OPERATION_AUTHORIZED → here.
-  const actualRows = rows || [];
+  // ── Read path: re-dispatch the original DB_READ_REQUESTED ─────────────
+  if (readDomain && readParams) {
+    (governance?.dispatchGlobal || governance?.dispatch)({
+      type: 'DB_READ_REQUESTED',
+      readDomain,
+      accountId,
+      readId: readId || `${intentId}-retry-${Date.now()}`,
+      params: readParams,
+      isRetry: true,
+      retrySource: 'connection-recovery-worker',
+      originalError: analysis?.normalized?.message || null,
+    });
+    return { success: true, error: null };
+  }
 
-  (governance.dispatchGlobal || governance.dispatch)({
+  // ── Write path: re-dispatch the original DB_WRITE_REQUESTED ───────────
+  const actualRows = rows || [];
+  (governance?.dispatchGlobal || governance?.dispatch)({
     type: 'DB_WRITE_REQUESTED',
     domain, accountId, intentId,
     table,
