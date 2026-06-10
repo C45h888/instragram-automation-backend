@@ -127,7 +127,6 @@ const supabaseStub = {
             },
             then: (resolve) => {
               const out = applyFilters(_creds, filters);
-              console.log(`[supabaseStub] instagram_credentials scan filters=${JSON.stringify(filters)} total=${_creds.length} out=${out.length}`);
               return resolve({ data: out, error: null });
             },
           };
@@ -328,7 +327,16 @@ function _routeEvent(event) {
       },
       getGlobalState: () => 'HEALTHY',
     };
-    return target.dispatch(event, ctx);
+    if (event.type === 'READ_RESULT_AVAILABLE' || event.type === 'DB_READ_COMPLETE') {
+      console.log(`[stubCk._routeEvent] ${event.type} readId=${event.readId} subscribers=${(_actionSubscribers.get(event.type) || []).length}`);
+    }
+    const result = target.dispatch(event, ctx);
+    if (_actionSubscribers.has(event.type)) {
+      for (const sub of _actionSubscribers.get(event.type)) {
+        sub(event);
+      }
+    }
+    return result;
   }
   // Action type (e.g. RUN_*) — fan out to subscribers
   if (_actionSubscribers.has(event.type)) {
@@ -365,7 +373,10 @@ Object.assign(_stubCk, {
     _actionSubscribers.get(actionType).push(handler);
   },
 
-  // governedRead — full implementation matching the real CK's contract
+  // governedRead — full implementation matching the real CK's contract.
+  // The CK's dispatch is async (FSM dispatch is async); governedRead must
+  // await the result. Also subscribes a one-shot result handler that
+  // self-removes on match so multiple concurrent reads do not cross-fire.
   governedRead: (readDomain, params = {}, timeoutMs = 15000) => {
     const readId = require('crypto').randomUUID();
     return new Promise((resolve, reject) => {
@@ -373,8 +384,6 @@ Object.assign(_stubCk, {
         cleanup();
         reject(new Error(`Governed read timed out after ${timeoutMs}ms: ${readDomain}`));
       }, timeoutMs);
-
-      const cleanup = () => clearTimeout(timer);
 
       const resultHandler = (action) => {
         if (action.readId !== readId) return;
@@ -388,17 +397,29 @@ Object.assign(_stubCk, {
       };
       _stubCk.subscribeAction('READ_RESULT_AVAILABLE', resultHandler);
 
-      const dispatchResult = _routeEvent({
+      const cleanup = () => {
+        clearTimeout(timer);
+        const subs = _actionSubscribers.get('READ_RESULT_AVAILABLE') || [];
+        const idx = subs.indexOf(resultHandler);
+        if (idx >= 0) subs.splice(idx, 1);
+      };
+
+      const dispatchPromise = _routeEvent({
         type: 'DB_READ_REQUESTED',
         readDomain,
         accountId: params.accountId,
         readId,
         params,
       });
-      if (dispatchResult && !dispatchResult.allowed) {
+      Promise.resolve(dispatchPromise).then((dispatched) => {
+        if (dispatched && !dispatched.allowed) {
+          cleanup();
+          resolve({ success: false, data: null, error: dispatched.reason || 'rejected', latencyMs: 0 });
+        }
+      }).catch((err) => {
         cleanup();
-        resolve({ success: false, data: null, error: dispatchResult.reason || 'rejected', latencyMs: 0 });
-      }
+        resolve({ success: false, data: null, error: err.message, latencyMs: 0 });
+      });
     });
   },
 });
@@ -445,7 +466,19 @@ beforeEach(() => {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 async function driveUATRefreshViaSubstrate() {
-  return healthSubstrate.runUATRefreshCheck({ interCallDelayMs: 1 });
+  const result = await healthSubstrate.runUATRefreshCheck({ interCallDelayMs: 1 });
+  // Drain the fire-and-forget write queue. The substrate dispatches
+  // DB_WRITE_REQUESTED via fsm.requestDBWrite which calls
+  // db.dispatchWrite() — that schedules writer.execute() on setImmediate.
+  // The writer awaits supabase.from('system_alerts').insert(...), which
+  // mutates the stub's _alerts array. Without draining, the assertion
+  // reads _alerts before the setImmediate tick fires and sees zero
+  // writes. Multiple setImmediate rounds are needed because writer.execute
+  // is async and may schedule further microtasks.
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+  return result;
 }
 
 function captureCredHashes() {

@@ -10,7 +10,7 @@ const WORKER_MAP = {
   batch_upsert_ugc:                   './ugc-writer',
   batch_upsert_media_stubs:           './content-writer',
   batch_fix_message_conversation_ids: './message-fix-writer',
-  upsert_credential:                  './credential-store-writer',
+  upsert_credential:                  '../substrates/credential-store',
   insert_alert:                       '../substrates/alerts/workers/write-alert-worker',
   insert_lifecycle_event:             '../substrates/alerts/workers/write-lifecycle-event-worker',
   write_scope_cache:                  '../substrates/graph-capability/workers/write-scope-cache-worker',
