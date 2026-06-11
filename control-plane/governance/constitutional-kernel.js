@@ -436,6 +436,11 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   // DB coordination events — CK-issued or FSM-coordinated, no lineageId required
   'DB_READ_REQUESTED','DB_READ_COMPLETE','DB_WRITE_REQUESTED','DB_WRITE_COMPLETE',
   'READ_RESULT_AVAILABLE','CAPABILITY_DATA_REQUEST',
+  // Webhook acquisition substrate (Phase 1+2) — substrate-issued, no
+  // lineageId required (the substrate IS the canonical source for
+  // inbound Meta webhook payloads, parallel to IG_FAILURE_OBSERVED).
+  'WEBHOOK_EVENT_RECEIVED','WEBHOOK_EVENT_DISCARDED',
+  'PERSIST_STAGED_EVENT','WEBHOOK_EVENT_PERSISTED','WEBHOOK_EVENT_PERSIST_FAILED',
 ]);
 
 function _extractForeignAuthorityDomain(authority) {
@@ -536,6 +541,14 @@ const DOMAIN_EVENT_MAP = {
   WORKER_OUTCOME_REPORTED: 'engagement',
   PARSING_DISPATCHED: 'acquisition',
   PARSING_COMPLETE: 'acquisition',
+
+  // Webhook acquisition substrate (Phase 1+2) — routes to acquisition-fsm.
+  // The FSM owns the staged event lifecycle; CK only knows the routing.
+  WEBHOOK_EVENT_RECEIVED: 'acquisition',
+  WEBHOOK_EVENT_DISCARDED: 'acquisition',
+  PERSIST_STAGED_EVENT: 'acquisition',
+  WEBHOOK_EVENT_PERSISTED: 'acquisition',
+  WEBHOOK_EVENT_PERSIST_FAILED: 'acquisition',
 
   // Engagement domain — circuit breaker, auth strikes, retry counting
   AUTH_FAILURE_STRIKE: 'engagement',
@@ -1095,6 +1108,9 @@ function _emitGovernanceTransition(from, to, details = {}) {
 
 function _emitActions(actions) {
   if (!actions || actions.length === 0) return;
+  if (process.env.WEBHOOK_DEBUG) {
+    console.log('[CK _emitActions] count:', actions.length, 'types:', actions.map(a => a.type));
+  }
   for (const action of actions) {
     // ── Kernel-internal actions ──────────────────────────────────────────
     if (action.type === 'UPDATE_ACCOUNTS') {
@@ -1363,6 +1379,13 @@ function dispatch(event) {
       // Domain FSMs will query constitutional policy context via getGlobalState()
       // when POLICY_BROADCAST is implemented and ctx.getPolicy() is added.
       getGlobalState: () => _currentState,
+      // ctx.governedRead — constitutional read interface. Domain FSMs
+      // call ctx.governedRead(readDomain, params) to fetch data through
+      // the persist-telemetry-fsm reading substrate. The read is
+      // gated (whitelist) and observable. (Phase 1+2 — used by
+      // acquisition-fsm to hydrate webhook event context before
+      // dispatching DB_WRITE_REQUESTED to the persist-telemetry-fsm.)
+      governedRead: (readDomain, params) => governedRead(readDomain, params),
       // ctx.sanityCheck — the universal gate for every FSM.
       // (Item a — this turn.) The ctx is the canonical interface.
       // FSMs that need a sanity check call ctx.sanityCheck(action)

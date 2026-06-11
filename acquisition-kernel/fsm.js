@@ -626,18 +626,61 @@ const TRANSITION_MAP = {
 
       // Intent must exist in PARSING phase
       const rec = _intents.get(event.intentId);
-      if (!rec) {
-        return { allowed: false, reason: `stale_complete:intent=${event.intentId}` };
-      }
-      if (rec.currentPhase !== 'PARSING') {
-        return { allowed: false, reason: `intent_phase_mismatch:expected=PARSING,actual=${rec.currentPhase}` };
+      if (rec) {
+        if (rec.currentPhase !== 'PARSING') {
+          return { allowed: false, reason: `intent_phase_mismatch:expected=PARSING,actual=${rec.currentPhase}` };
+        }
+        return { allowed: true };
       }
 
-      return { allowed: true };
+      // Phase 2: webhook event cross-kernel return path. The
+      // persist-telemetry-fsm emits PARSING_COMPLETE in response to
+      // the DB_WRITE_REQUESTED we dispatched. The intentId is the
+      // webhook event's intentId. If a staged webhook event with
+      // this intentId exists, accept the completion.
+      const accountId = event.accountId;
+      const staged = _findStagedEventById(accountId, event.intentId)
+                  || _getStagedEvent(accountId, event.intentId);
+      if (staged) {
+        return { allowed: true };
+      }
+
+      return { allowed: false, reason: `stale_complete:intent=${event.intentId}` };
     },
     buildActions: async (event, ctx) => {
       const { accountId, domain, intentId, result } = event;
       const rec = _intents.get(intentId);
+      const staged = !rec ? _getStagedEvent(accountId, intentId) : null;
+
+      // ── Phase 2 path: webhook cross-kernel write completed ──────────
+      if (staged) {
+        const count = (result && typeof result.count === 'number') ? result.count : 1;
+        const table = (result && result.table) || (domain === 'messages' ? 'instagram_dm_messages' : 'instagram_comments');
+        const error = result && result.status === 'failed' ? (result.error || 'unknown') : null;
+        const removed = _removeStagedEvent(accountId, intentId);
+
+        _emitSpan('WEBHOOK_EVENT_PERSISTED', intentId, accountId, staged.domain, {
+          eventId: staged.eventId,
+          eventType: staged.eventType,
+          table,
+          count,
+          removed,
+        });
+
+        if (error) {
+          return [{
+            type: 'WEBHOOK_EVENT_PERSIST_FAILED',
+            accountId, intentId, eventId: staged.eventId,
+            error,
+            phase: 'write',
+          }];
+        }
+        return [{
+          type: 'WEBHOOK_EVENT_PERSISTED',
+          accountId, intentId, eventId: staged.eventId, table, count,
+          removedFromStaging: removed,
+        }];
+      }
 
       // Defensive: malformed/missing result
       if (!result || typeof result !== 'object') {

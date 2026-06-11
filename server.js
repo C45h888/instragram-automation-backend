@@ -388,7 +388,7 @@ try {
 
 // Import routes with error handling
 try {
-  const webhookRoutes = require('./routes/webhook');
+  const webhookRoutes = require('./acquisition-kernel/routes/webhook');
   app.use('/webhook', webhookRoutes);
   console.log('✅ Webhook routes loaded');
 } catch (error) {

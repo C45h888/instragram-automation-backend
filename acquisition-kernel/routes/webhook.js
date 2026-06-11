@@ -1,5 +1,5 @@
-// routes/webhook.js
-// Meta Instagram webhook endpoint — Phase 1.
+// acquisition-kernel/routes/webhook.js
+// Meta Instagram webhook endpoint — Phase 1+2.
 //
 // Phase 1: signature verification + entry.id extraction + delegation to
 //          the webhook-acquisition-substrate. The substrate routes the
@@ -8,8 +8,15 @@
 //          objects and dispatch them into the acquisition-fsm, which
 //          holds them in _stagedEvents (in-memory).
 //
-// Phase 2: substrate's worker will resolve staged events into
-//          DB_WRITE_REQUESTED → postgres-telemetry-kernel.
+// Phase 2: substrate's PERSIST_STAGED_EVENT flows through CK →
+//          acquisition-fsm → hydration → resolver → DB_WRITE_REQUESTED
+//          → persist-telemetry-fsm → writers → Supabase. Cross-kernel
+//          return via PARSING_COMPLETE removes staged events.
+//
+// This file lives inside the acquisition kernel (was previously in
+// /routes/webhook.js) because the entire webhook acquisition pipeline
+// is owned by the acquisition kernel: substrate, workers, resolvers,
+// FSM, and now the route handler.
 //
 // All routes return 200 fast (Meta's webhook timeouts are ~10s). Substrate
 // does fire-and-forget async work per entry via setImmediate.
@@ -19,7 +26,7 @@ const crypto = require('crypto');
 const router = express.Router();
 
 const webhookAcquisition =
-  require('../acquisition-kernel/substrates/webhook-acquisition-substrate');
+  require('../substrates/webhook-acquisition-substrate');
 
 // ── Meta signature verification (constant-time HMAC-SHA1) ──────────────────
 // Meta signs the raw request body with HMAC-SHA1 using META_APP_SECRET.
@@ -139,7 +146,7 @@ router.post('/instagram', (req, res) => {
 // Useful for debugging without grepping logs.
 router.get('/staged-events', (req, res) => {
   try {
-    const acquisitionFsm = require('../acquisition-kernel/fsm');
+    const acquisitionFsm = require('../fsm');
     const accountId = req.query.accountId || null;
     if (accountId) {
       return res.status(200).json({

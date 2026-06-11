@@ -260,6 +260,11 @@ function _wire() {
   constitutional.registerWorker('acquisition', 'webhook-story-mentions',
     require('../acquisition-kernel/substrates/webhook-acquisition-substrate/workers/story-mentions-worker'));
   webhookAcquisitionSubstrate.setGovernance(constitutional);
+  // Wire the constitutional bridge: routes DB_WRITE_REQUESTED actions
+  // emitted by the acquisition-fsm through CK so they reach the
+  // persist-telemetry-fsm via DOMAIN_EVENT_MAP. This closes the
+  // cross-kernel write loop without kernels importing each other.
+  webhookAcquisitionSubstrate.wireConstitutionalBridge(constitutional);
 
   // ── dedup-fsm — dedup workers (bound to substrates/dedup/index.js) ─
   constitutional.registerWorker('dedup', 'check-dedup',
