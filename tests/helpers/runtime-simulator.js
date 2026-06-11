@@ -46,7 +46,7 @@ const phase2DumbWriter = null; // REMOVED — transition-writers are sole write 
 const namespaceProjectionInterpreter = require('../../control-plane/governance/interpreters/namespace-projection-interpreter.js');
 const lineageLedger = require('../../control-plane/governance/lineage-ledger.js');
 const reconciliationEngine = require('../../reconciliation-kernel/engine.js');
-const metricsSubstrate = require('../../substrates/metrics-substrate.js');
+const metricsSubstrate = require('../../scheduling-kernel/substrates/metrics/metrics-substrate.js');
 const lifecycle = require('../../scheduling-kernel/substrates/cadence/lifecycle.js');
 const engagementTelemetryAdapter = require('../../control-plane/governance/interpreters/engagement-telemetry-adapter.js');
 const ingressSubstrate = require('../../control-plane/governance/ingress-consistency/substrate.js');
@@ -363,7 +363,7 @@ class RuntimeSimulator {
         }
       },
       metricsSignals: () => {
-        const metricsSub = require('../../substrates/metrics-substrate');
+        const metricsSub = require('../../scheduling-kernel/substrates/metrics/metrics-substrate');
         return metricsSub.getHealthSignals ? metricsSub.getHealthSignals() : {};
       },
       cadenceLastTick: () => {

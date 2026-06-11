@@ -29,11 +29,13 @@ const publishingPolicy = require('../control-plane/policies/publishing');
 const mutationSubstrate = require('../control-plane/mutation-substrate');
 const contentSubstrate = require('./substrates/content');
 const engagementSubstrate = require('./substrates/engagement');
-// Publish error parsing — REMOVED. The publish substrate already
-// classifies failures via substrates/transport/error-classifier.
-// We use categorizeIgError directly to normalise any error that
-// bubbles out of the substrate into the shared errorShape contract.
-const { suspectIgCategory } = require('../../substrates/transport/error-classifier');
+// Publish error normalisation — SUBSTRATES/IG-RELIABILITY-SUBSTRATE owns the
+// canonical classification. The orchestrator is a coordination membrane only.
+// It calls bedrock.analyzeFailure() to produce the canonical analysis shape
+// for WORKER_OUTCOME_REPORTED. The FSM (PUBLISHING_OBSERVATION transition)
+// owns the routing decision (PUBLISH_FAILURE emission). The orchestrator
+// does NOT emit PUBLISH_FAILURE — that is the authority leak fix.
+const igReliability = require('../substrates/ig-reliability-substrate');
 // NOTE (Step 7): The emission-orchestrator no longer imports the
 // credential-resolver. The publish substrates resolve their own
 // credentials internally.
@@ -242,46 +244,38 @@ function _emitTransition(accountId, previousState, nextState) {
   }
 }
 
-// ── Publish error normaliser ───────────────────────────────────────
+// ── Publish error normaliser — calls bedrock, returns canonical analysis ───────
 // Maps a substrate-return failure or a thrown error into the shared
-// errorShape contract. The publish substrate already classifies via
-// categorizeIgError, so the substrate-return path is a thin mapping.
-// The thrown-error path routes the raw error through categorizeIgError
-// to produce the same envelope shape.
-//
-// This replaces the deleted retry-cadence-kernel/workers/publish-error-parser.
-// It is a local helper, not a worker. The retry-cadence-kernel owns
+// errorShape contract via bedrock.analyzeFailure(). The substrate owns
 // classification; the orchestrator just emits a normalised outcome.
 function _normaliseSubstrateFailure(result, domain) {
-  const code = result?.code ?? null;
-  const retryAfterSeconds = result?.retry_after_seconds ?? null;
-  return {
-    category: result?.error_category || 'transient',
-    code,
-    retryable: result?.retryable ?? null,
-    retryAfterSeconds,
-    retryAfterMs: retryAfterSeconds != null ? retryAfterSeconds * 1000 : null,
-    domain,
-    source: 'substrate_normalised',
-  };
+  // The substrate facade has already classified via bedrock.
+  // Re-analyze the raw error for canonical shape emission.
+  if (result?.rawError) {
+    const analysis = igReliability.analyzeFailure(result.rawError, domain, 'ig-graph', { accountId: result.accountId });
+    return {
+      category: analysis.category,
+      code: analysis.normalized?.graphCode ?? null,
+      retryable: analysis.retryable,
+      retryAfterMs: analysis.rateLimit?.retryAfterMs ?? null,
+      retryAfterSeconds: analysis.rateLimit?.retryAfterMs != null ? Math.ceil(analysis.rateLimit.retryAfterMs / 1000) : null,
+      domain,
+      source: 'bedrock_substrate',
+    };
+  }
+  return { category: 'unknown', code: null, retryable: null, retryAfterMs: null, retryAfterSeconds: null, domain, source: 'no_raw_error' };
 }
 
 function _normaliseThrownError(err, domain) {
-  // Phase 2: thin capture. The substrate is the canonical classifier.
-  // We only derive a CHEAP suspectedCategory hint here for back-compat;
-  // the canonical analysis lives in the substrate (called via
-  // IG_FAILURE_OBSERVED from the engagement-fsm).
-  const suspectedCategory = suspectIgCategory(err);
-  const retryAfterSeconds = null;  // substrate owns adaptive cadence
-  const code = err?.response?.data?.error?.code ?? err?.code ?? null;
+  const analysis = igReliability.analyzeFailure(err, domain, 'ig-graph', {});
   return {
-    category: suspectedCategory,
-    code,
-    retryable: null,  // substrate owns retryability
-    retryAfterSeconds,
-    retryAfterMs: null,
+    category: analysis.category,
+    code: analysis.normalized?.graphCode ?? null,
+    retryable: analysis.retryable,
+    retryAfterMs: analysis.rateLimit?.retryAfterMs ?? null,
+    retryAfterSeconds: analysis.rateLimit?.retryAfterMs != null ? Math.ceil(analysis.rateLimit.retryAfterMs / 1000) : null,
     domain,
-    source: 'thrown_error_captured',
+    source: 'bedrock_thrown',
   };
 }
 
@@ -366,13 +360,6 @@ function wire(governance) {
           errorShape,
           error: result.error,
         });
-        governance.dispatch({
-          type: 'PUBLISH_FAILURE',
-          accountId,
-          domain: publishDomain,
-          intentId: batchIntentId || null,
-          reason: result.error,
-        });
       }
     } catch (err) {
       const errorShape = _normaliseThrownError(err, publishDomain);
@@ -384,13 +371,6 @@ function wire(governance) {
         status: 'failed',
         errorShape,
         error: err.message,
-      });
-      governance.dispatch({
-        type: 'PUBLISH_FAILURE',
-        accountId,
-        domain: publishDomain,
-        intentId: batchIntentId || null,
-        reason: err.message,
       });
     }
   });
@@ -451,13 +431,6 @@ function wire(governance) {
           errorShape,
           error: result.error,
         });
-        governance.dispatch({
-          type: 'PUBLISH_FAILURE',
-          accountId,
-          domain: publishDomain,
-          intentId: batchIntentId || null,
-          reason: result.error,
-        });
       }
     } catch (err) {
       const errorShape = _normaliseThrownError(err, publishDomain);
@@ -470,14 +443,21 @@ function wire(governance) {
         errorShape,
         error: err.message,
       });
-      governance.dispatch({
-        type: 'PUBLISH_FAILURE',
-        accountId,
-        domain: publishDomain,
-        intentId: batchIntentId || null,
-        reason: err.message,
-      });
     }
+  });
+
+  // ── RETRY_PUBLICATION (2026-06-11): FSM re-triggers after capability check ──
+  // Emitted by Publishing FSM's CAPABILITY_CHECK_RESULT when token is healthy.
+  // Re-dispatches PUBLISHING_DATA_AVAILABLE to restart the FETCHING → EVALUATING
+  // → EXECUTING chain. The worker resumes from its last checkpoint.
+  governance.subscribeAction('RETRY_PUBLICATION', async (action) => {
+    const { accountId, correlationId, metadata } = action;
+    console.log(`[emission-orchestrator] RETRY_PUBLICATION for ${accountId} — re-triggering after capability check`);
+    governance.dispatch({
+      type: 'PUBLISHING_DATA_AVAILABLE',
+      accountId,
+      metadata: { retryAfterCapabilityCheck: true, correlationId },
+    });
   });
 
   // ── APPLY_MUTATION: DB scan emitted → mutation substrate ──────────────────

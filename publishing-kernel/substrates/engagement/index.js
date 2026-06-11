@@ -1,45 +1,39 @@
 // publishing-kernel/substrates/engagement/index.js
-// Engagement bounded substrate: owns worker factory, rate limiter, execution loop.
+// Engagement bounded substrate: owns worker factory, bedrock routing, execution loop.
 //
 // Owns: factory-creating engagement workers, pre-flight checks, per-item iteration,
-//        outcome→CK signal classification, credential resolution. Zero internal
-//        retry.
+//       outcome routing via ig-reliability-substrate.analyzeFailure(). Zero
+//       internal retry.
 // Does NOT own: IG API calls (delegates to worker), retry policy (engagement-fsm
-//               domain), state.
+//               domain), error classification (bedrock owns §2, §12, §15),
+//               rate limiting (bedrock §5 owns).
 //
-// Contract (Step 7 — credential resolution normalisation):
-//   execute(accountId, items, governance) → void
-//   Credentials are resolved INTERNALLY by the substrate from
-//   graph-capability-kernel. The orchastrator does NOT pass
-//   credentials.
+// All error classification routes through substrates/ig-reliability-substrate.
+// No suspectIgCategory. No error_category strings. No rate-limiter.js.
+//
+// Routing decisions based on bedrock §15 recommendations:
+//   THROTTLE_ACCOUNT / DEFER_NONCRITICAL_WORK → RATE_LIMIT_DETECTED
+//   REFRESH_TOKEN / REAUTHORIZE_USER → AUTH_FAILURE_STRIKE
+//   REQUEUE_OPERATION + retryable → retryStub.requestRetry()
+//   otherwise → PUBLISH_FAILURE
 //
 // Workers:
 //   'comments' → EngagementWorker('reply_comment')
 //   'messages' → EngagementWorker('reply_dm') or EngagementWorker('send_dm')
 
 const EngagementWorker = require('./worker');
-const rateLimiter = require('./rate-limiter');
 const { resolveAccountCredentials } =
   require('../../../graph-capability-kernel/substrates/credential-resolver');
-// Phase 1 (base): retry cadence routing goes through the
-// publishing-kernel stub. The stub maps workerName → publish:*
-// domain and emits the canonical RETRY_REQUESTED. The previous
-// inline dispatch (domain: 'engagement') routed publish failures
-// through the read-side retry workers; the stub fixes that.
 const retryStub = require('../../retry-state-transition-stub');
+const igReliability = require('../../../substrates/ig-reliability-substrate');
 
 /**
  * Execute a batch of engagement publishing items.
  * Iterates items sequentially — each item gets pre-flight checks, worker
  * factory creation, credential resolution, one bounded IG API call, and
- * outcome signal dispatch.
- *
- * @param {string} accountId
- * @param {Array<{worker: string, actionType: string, record: object}>} items
- * @param {object} governance — CK module (for dispatch + subscribeAction)
+ * outcome routing via bedrock recommendations.
  */
 async function execute(accountId, items, governance) {
-  // Resolve credentials ONCE per batch
   const credentials = await resolveAccountCredentials(accountId);
   for (const item of items) {
     await _executeItem(accountId, item, governance, credentials);
@@ -51,27 +45,12 @@ async function execute(accountId, items, governance) {
 async function _executeItem(accountId, item, governance, credentials) {
   const { actionType, worker: workerName, record } = item;
 
-  // ── Pre-flight: substrate rate-limit check ─────────────────────────────
-  const rl = rateLimiter.isRateLimited(accountId);
-  if (rl.limited) {
-    governance.dispatch({
-      type: 'RATE_LIMIT_DETECTED',
-      accountId,
-      domain: 'engagement',
-      cooldownMs: rl.until ? rl.until - Date.now() : 3600000,
-    });
-    return; // stop batch
-  }
-
-  // ── Pre-flight: circuit breaker check ──────────────────────────────────
+  // ── Pre-flight: circuit breaker check (preserved — ordering, not classification) ─
   governance.dispatch({
     type: 'CIRCUIT_BREAKER_CHECK',
     accountId,
     domain: 'engagement',
   });
-
-  // ── Record rate-limit call ──────────────────────────────────────────────
-  rateLimiter.recordCall(accountId);
 
   // ── Build payload from record ───────────────────────────────────────────
   const payload = _buildPayload(record);
@@ -80,7 +59,7 @@ async function _executeItem(accountId, item, governance, credentials) {
   const worker = new EngagementWorker(actionType);
   const result = await worker.execute(accountId, credentials, payload);
 
-  // ── Outcome → signal upward. ZERO internal retry. ───────────────────────
+  // ── Outcome → bedrock routing. ZERO internal retry. ─────────────────────
   if (result.success) {
     governance.dispatch({
       type: 'PUBLISHING_OBSERVATION',
@@ -90,62 +69,69 @@ async function _executeItem(accountId, item, governance, credentials) {
         instagram_id: result.instagram_id || null,
         actionType,
         worker: workerName,
+        domain: _resolveDomain(actionType),
       },
     });
     return;
   }
 
-  const { error_category, retryable, error, retry_after_seconds } = result;
+  // ── FAILURE PATH — canonical analysis via bedrock ───────────────────────
+  const operation = _resolveOperation(actionType);
+  const analysis = igReliability.analyzeFailure(result.rawError, operation, 'ig-graph', {
+    accountId,
+    attemptN: 1,
+    businessAccountId: accountId,
+    headers: { retryAfter: result.retryAfterHeader },
+  });
 
-  // Rate limit → escalate immediately
-  if (error_category === 'rate_limit') {
+  // Route on bedrock §15 recommendations
+  if (analysis.recommendations.includes('THROTTLE_ACCOUNT') || analysis.recommendations.includes('DEFER_NONCRITICAL_WORK')) {
     governance.dispatch({
       type: 'RATE_LIMIT_DETECTED',
       accountId,
       domain: 'engagement',
-      cooldownMs: (retry_after_seconds || 3600) * 1000,
+      cooldownMs: analysis.rateLimit?.retryAfterMs ?? 3600000,
+      analysis: { category: analysis.category, severity: analysis.severity },
     });
     return;
   }
 
-  // Auth failure → escalate immediately
-  if (error_category === 'auth_failure' || error_category === 'permission') {
+  if (analysis.recommendations.includes('REFRESH_TOKEN') || analysis.recommendations.includes('REAUTHORIZE_USER')) {
     governance.dispatch({
       type: 'AUTH_FAILURE_STRIKE',
       accountId,
-      error,
+      error: result.rawError?.message || 'Authentication failure',
+      analysis: { category: analysis.category, severity: analysis.severity, recommendations: analysis.recommendations },
     });
     return;
   }
 
-  // Transient → escalate to engagement-fsm for retry sovereignty
-  // via the publishing-kernel retry stub. The stub maps
-  // workerName ('comments' | 'messages') → publish:* domain so
-  // the retry-cadence kernel routes through the publish worker
-  // bindings.
-  if (retryable) {
+  if (analysis.retryable && analysis.recommendations.includes('REQUEUE_OPERATION')) {
     retryStub.requestRetry({
       accountId,
       intentId: record.id || null,
       workerName,
       params: { actionType, worker: workerName, record },
-      error,
-      errorCategory: error_category || 'transient',
-      retryAfterMs: (retry_after_seconds || 0) * 1000,
+      error: result.rawError?.message || 'Transient engagement failure',
+      errorCategory: analysis.category,
+      retryAfterMs: analysis.backoff?.computedMs || 0,
+      analysis: { severity: analysis.severity, confidence: analysis.confidence },
     });
     return;
   }
 
-  // Permanent failure — no retry path
+  // Terminal failure — no retry path
   governance.dispatch({
     type: 'PUBLISH_FAILURE',
     accountId,
-    reason: error || 'Permanent publish failure',
-    metadata: { actionType, worker: workerName },
+    domain: operation,
+    intentId: record.id || null,
+    reason: result.rawError?.message || 'Permanent engagement failure',
+    metadata: { actionType, worker: workerName, severity: analysis.severity, recommendations: analysis.recommendations },
   });
 }
 
-// ── Payload builder ────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function _buildPayload(record) {
   return {
@@ -157,10 +143,22 @@ function _buildPayload(record) {
   };
 }
 
+function _resolveOperation(actionType) {
+  if (actionType === 'reply_comment') return 'publish:comment';
+  if (actionType === 'reply_dm' || actionType === 'send_dm') return 'publish:message';
+  return 'publish:comment';
+}
+
+function _resolveDomain(actionType) {
+  if (actionType === 'reply_dm' || actionType === 'send_dm') return 'engagement';
+  return 'engagement';
+}
+
 // ── Direct execute methods (for non-batched, non-governed calls) ──────────
 
 const transport = require('./transport');
-const { suspectIgCategory } = require('../../../substrates/transport/error-classifier');
+const { resolveAccountCredentials: resolveCreds } =
+  require('../../../graph-capability-kernel/substrates/credential-resolver');
 
 async function executeCommentReply(accountId, credentials, payload) {
   const { pageToken } = credentials;
@@ -168,11 +166,7 @@ async function executeCommentReply(accountId, credentials, payload) {
     const result = await transport.replyComment(payload.comment_id, pageToken, payload.reply_text);
     return { success: true, instagram_id: result.id };
   } catch (error) {
-    const msg = error.response?.data?.error?.message || error.message;
-    return {
-      success: false, error: msg, code: error.response?.data?.error?.code || null,
-      suspectedCategory: suspectIgCategory(error), rawError: error,
-    };
+    return { success: false, rawError: error, code: error?.response?.data?.error?.code ?? null };
   }
 }
 
@@ -182,11 +176,7 @@ async function executeDmReply(accountId, credentials, payload) {
     const result = await transport.replyDm(payload.conversation_id, pageToken, payload.message_text);
     return { success: true, instagram_id: result.id };
   } catch (error) {
-    const msg = error.response?.data?.error?.message || error.message;
-    return {
-      success: false, error: msg, code: error.response?.data?.error?.code || null,
-      suspectedCategory: suspectIgCategory(error), rawError: error,
-    };
+    return { success: false, rawError: error, code: error?.response?.data?.error?.code ?? null };
   }
 }
 
@@ -196,11 +186,7 @@ async function executeDmSend(accountId, credentials, payload) {
     const result = await transport.sendDm(pageId, igUserId, pageToken, payload.recipient_id, payload.message_text);
     return { success: true, instagram_id: result.messageId };
   } catch (error) {
-    const msg = error.response?.data?.error?.message || error.message;
-    return {
-      success: false, error: msg, code: error.response?.data?.error?.code || null,
-      suspectedCategory: suspectIgCategory(error), rawError: error,
-    };
+    return { success: false, rawError: error, code: error?.response?.data?.error?.code ?? null };
   }
 }
 

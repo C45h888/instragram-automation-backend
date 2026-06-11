@@ -569,6 +569,14 @@ const DOMAIN_EVENT_MAP = {
   RETRY_PUBLISH: 'publishing',
   PUBLISH_FAILURE: 'publishing',
   PUBLISH_RETRY_EXHAUSTED: 'publishing',
+  // Publishing timeout/stall/recovery (2026-06-11) — cross-kernel capability flow
+  PUBLICATION_TIMEOUT: 'publishing',
+  PUBLICATION_STALLED: 'publishing',
+  CAPABILITY_CHECK_RESULT: 'publishing',
+  RETRY_PUBLICATION: 'publishing',
+  // Worker report events (2026-06-11) — FSM owns decision logic
+  PUBLICATION_POLL_RESULT: 'publishing',
+  PUBLICATION_VERIFY_RESULT: 'publishing',
 
   // Scheduling domain
   CADENCE_TICK: 'scheduling',
@@ -619,7 +627,8 @@ const DOMAIN_EVENT_MAP = {
   CAPABILITY_DATA_REQUEST: 'graph-capability',
   CAPABILITY_BOOTSTRAP: 'graph-capability',
   CAPABILITY_CADENCE_TICK: 'graph-capability',
-  API_RATE_LIMIT_CHECK: 'graph-capability',  // Phase C: routed to graph-capability FSM by constitutional-kernel's cadence loop
+  API_RATE_LIMIT_CHECK: 'graph-capability',
+  CAPABILITY_CHECK: 'graph-capability',  // Publishing FSM → GC kernel capability check (2026-06-11)  // Phase C: routed to graph-capability FSM by constitutional-kernel's cadence loop
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',

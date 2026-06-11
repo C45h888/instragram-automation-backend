@@ -276,14 +276,230 @@ const TRANSITION_MAP = {
       return { allowed: true };
     },
     buildActions: async (event) => {
+      const actions = [];
       if (event.status === 'error') {
-        return [{
+        actions.push({
           type: 'LOG_DEGRADED',
           substate: 'PUBLISH_FAILURE',
-          reason: event.metadata?.reason || 'Publishing failed',
-        }];
+          reason: event.metadata?.reason || event.error || 'Publishing failed',
+        });
+        // FSM owns the failure emission — orchestrator no longer emits PUBLISH_FAILURE
+        // (authority leak fix, 2026-06-11). The FSM reads the analysis from the
+        // observation event and decides the routing.
+        actions.push({
+          type: 'PUBLISH_FAILURE',
+          accountId: event.accountId,
+          domain: event.metadata?.domain || event.domain || 'publish:post',
+          intentId: event.metadata?.intentId || null,
+          reason: event.metadata?.reason || event.error || 'Publishing failed',
+          severity: event.metadata?.severity || null,
+          recommendations: event.metadata?.recommendations || null,
+        });
       }
-      return [];
+      return actions;
+    },
+  },
+
+  // ── PUBLICATION_TIMEOUT (2026-06-11): worker detected media polling timeout.
+  //     FSM stays in EXECUTING, dispatches CAPABILITY_CHECK to GC kernel via
+  //     ctx.dispatchGlobal → CK. GC kernel returns CAPABILITY_CHECK_RESULT.
+  //     TIMEOUT means processing exceeded max attempts — capability check
+  //     is required before retry (token may have expired during the wait).
+  PUBLICATION_TIMEOUT: {
+    target: 'EXECUTING',
+    guard: (event) => {
+      if (_localState !== 'EXECUTING') {
+        return { allowed: false, reason: `PUBLICATION_TIMEOUT from ${_localState}` };
+      }
+      if (!event.accountId) {
+        return { allowed: false, reason: 'PUBLICATION_TIMEOUT requires accountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { accountId, publicationId, creationId, elapsedMs, lastKnownState } = event;
+      const actions = [{
+        type: 'LOG_DEGRADED',
+        substate: 'PUBLICATION_TIMEOUT',
+        reason: `Publication timed out after ${elapsedMs}ms in state ${lastKnownState}`,
+        accountId,
+        metadata: { publicationId, creationId, elapsedMs, lastKnownState },
+      }];
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'CAPABILITY_CHECK',
+          sourceDomain: 'publishing',
+          businessAccountId: accountId,
+          correlationId: publicationId || `timeout:${accountId}`,
+          reason: 'publication_timeout',
+        });
+      }
+      return actions;
+    },
+  },
+
+  // ── PUBLICATION_STALLED (2026-06-11): worker detected no progress for N seconds.
+  //     Passive observation — no capability check. Worker continues polling.
+  //     If stall persists, worker will escalate to PUBLICATION_TIMEOUT internally.
+  PUBLICATION_STALLED: {
+    target: 'EXECUTING',
+    guard: (event) => {
+      if (_localState !== 'EXECUTING') {
+        return { allowed: false, reason: `PUBLICATION_STALLED from ${_localState}` };
+      }
+      if (!event.accountId) {
+        return { allowed: false, reason: 'PUBLICATION_STALLED requires accountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      return [{
+        type: 'LOG_DEGRADED',
+        substate: 'PUBLICATION_STALLED',
+        reason: event.reason || 'Publication processing stalled',
+        accountId: event.accountId,
+        metadata: { publicationId: event.publicationId, elapsedMs: event.elapsedMs, lastKnownState: event.lastKnownState },
+      }];
+    },
+  },
+
+  // ── CAPABILITY_CHECK_RESULT (2026-06-11): GC kernel returns capability
+  //     analysis after a PUBLICATION_TIMEOUT. FSM decides: retry or escalate.
+  //     Target is IDLE (terminal) if token is UNAUTHORIZED/UNKNOWN.
+  //     Target is EXECUTING (stay) if retryable or quota-exhausted.
+  CAPABILITY_CHECK_RESULT: {
+    target: (event) => {
+      if (event.capabilityState === 'UNAUTHORIZED' || event.capabilityState === 'UNKNOWN') return 'IDLE';
+      return 'EXECUTING';
+    },
+    guard: (event) => {
+      if (_localState !== 'EXECUTING') {
+        return { allowed: false, reason: `CAPABILITY_CHECK_RESULT from ${_localState}` };
+      }
+      if (!event.businessAccountId) {
+        return { allowed: false, reason: 'CAPABILITY_CHECK_RESULT requires businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { businessAccountId, capabilityState, quotaState, freshnessMs, correlationId } = event;
+      const actions = [];
+
+      if (capabilityState === 'UNAUTHORIZED' || capabilityState === 'UNKNOWN') {
+        actions.push({ type: 'AUTH_FAILURE_STRIKE', accountId: businessAccountId, error: 'Token invalid — capability check failed', metadata: { capabilityState, freshnessMs } });
+        actions.push({ type: 'PUBLISH_FAILURE', accountId: businessAccountId, domain: 'publish:post', reason: 'Token invalid during publication', metadata: { capabilityState, freshnessMs } });
+        return actions;
+      }
+
+      if (capabilityState === 'DEGRADED') {
+        actions.push({ type: 'LOG_DEGRADED', substate: 'CAPABILITY_DEGRADED', reason: 'Token degraded — attempting retry', accountId: businessAccountId, metadata: { capabilityState, freshnessMs } });
+      }
+
+      if (quotaState === 'CRITICAL' || quotaState === 'LOCKED_OUT') {
+        actions.push({ type: 'PUBLICATION_STALLED', accountId: businessAccountId, reason: 'Quota exhausted — deferring publication', metadata: { quotaState } });
+        return actions;
+      }
+
+      actions.push({
+        type: 'RETRY_PUBLICATION',
+        accountId: businessAccountId,
+        correlationId,
+        reason: 'Capability confirmed — retry publication',
+        metadata: { capabilityState, quotaState, freshnessMs },
+      });
+      return actions;
+    },
+  },
+
+  // ── PUBLICATION_POLL_RESULT (2026-06-11): worker reports each container poll.
+  //     FSM owns stall counting and timeout detection. Worker just reports facts.
+  //     Event shape: { accountId, statusCode, attempt, publicationId, creationId }
+  PUBLICATION_POLL_RESULT: {
+    target: 'EXECUTING',
+    guard: (event) => {
+      if (_localState !== 'EXECUTING') return { allowed: false, reason: `POLL_RESULT from ${_localState}` };
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const { accountId, statusCode, attempt, publicationId, creationId } = event;
+      const pollState = _getPollState(accountId);
+      const actions = [];
+
+      // Track stall: same status as last poll?
+      if (statusCode === pollState.lastStatus) {
+        pollState.sameStatusCount++;
+      } else {
+        pollState.sameStatusCount = 1;
+        pollState.lastStatus = statusCode;
+      }
+      pollState.totalAttempts = attempt;
+
+      // STALL threshold hit
+      if (pollState.sameStatusCount >= PUBLICATION_POLICY.processingStallThreshold) {
+        actions.push({
+          type: 'PUBLICATION_STALLED',
+          accountId,
+          publicationId,
+          elapsedMs: attempt * PUBLICATION_POLICY.processingPollIntervalMs,
+          lastKnownState: statusCode,
+          reason: `No progress for ${pollState.sameStatusCount} consecutive polls`,
+        });
+      }
+
+      // TIMEOUT: max attempts reached
+      if (attempt >= PUBLICATION_POLICY.processingMaxAttempts) {
+        actions.push({
+          type: 'PUBLICATION_TIMEOUT',
+          accountId,
+          publicationId,
+          creationId,
+          elapsedMs: attempt * PUBLICATION_POLICY.processingPollIntervalMs,
+          lastKnownState: statusCode,
+        });
+        // Dispatch capability check via CK
+        if (ctx && ctx.dispatchGlobal) {
+          ctx.dispatchGlobal({
+            type: 'CAPABILITY_CHECK',
+            sourceDomain: 'publishing',
+            businessAccountId: accountId,
+            correlationId: publicationId || `poll_timeout:${accountId}`,
+            reason: 'polling_exhausted',
+          });
+        }
+      }
+
+      return actions;
+    },
+  },
+
+  // ── PUBLICATION_VERIFY_RESULT (2026-06-11): worker reports verification.
+  //     FSM owns retry counting. Worker reports check results.
+  PUBLICATION_VERIFY_RESULT: {
+    target: 'EXECUTING',
+    guard: (event) => {
+      if (_localState !== 'EXECUTING') return { allowed: false, reason: `VERIFY_RESULT from ${_localState}` };
+      return { allowed: true };
+    },
+    buildActions: async (event) => {
+      const { accountId, checksPassed, attempt, publicationId, missingChecks } = event;
+      const verifyState = _getVerifyState(accountId);
+      verifyState.attempts = attempt;
+      const actions = [];
+
+      if (checksPassed) {
+        verifyState.failedAttempts = 0;
+        return actions; // nothing to emit — worker proceeds to COMPLETED
+      }
+
+      verifyState.failedAttempts++;
+
+      if (verifyState.failedAttempts >= PUBLICATION_POLICY.verificationAttempts) {
+        actions.push({ type: 'PUBLISH_FAILURE', accountId, domain: 'publish:post',
+          reason: `Verification failed after ${verifyState.failedAttempts} attempts. Missing: ${missingChecks?.join(', ')}`,
+          metadata: { publicationId, failedAttempts: verifyState.failedAttempts } });
+      }
+
+      return actions;
     },
   },
 
@@ -371,6 +587,34 @@ const TRANSITION_MAP = {
 
 let _localState = 'IDLE';
 let _lastTransitionedAt = null;
+
+// ── Per-account poll state tracking (governance membrane — 2026-06-11) ──
+// FSM owns stall counting, not the worker.
+const _pollState = new Map(); // accountId → { lastStatus, sameStatusCount, totalAttempts }
+function _getPollState(accountId) {
+  if (!_pollState.has(accountId)) _pollState.set(accountId, { lastStatus: null, sameStatusCount: 0, totalAttempts: 0 });
+  return _pollState.get(accountId);
+}
+
+// ── Per-account verification state tracking (governance membrane) ──────
+const _verifyState = new Map(); // accountId → { attempts, failedAttempts }
+function _getVerifyState(accountId) {
+  if (!_verifyState.has(accountId)) _verifyState.set(accountId, { attempts: 0, failedAttempts: 0 });
+  return _verifyState.get(accountId);
+}
+
+// ── Publication operational policy (owned by governance membrane) ─────────
+const PUBLICATION_POLICY = {
+  processingPollIntervalMs: 10000,
+  processingMaxAttempts: 12,
+  processingStallThreshold: 5,
+  verificationAttempts: 3,
+  verificationIntervalMs: 5000,
+  verificationTimeoutMs: 10000,
+  publishTimeoutMs: 15000,
+  containerCreateTimeoutMs: 15000,
+  recoveryAttempts: 3,
+};
 
 // ── Default fail-open sanity check (universal gate pattern) ─────────────
 // The ctx.sanityCheck is the universal gate. The FSM calls it

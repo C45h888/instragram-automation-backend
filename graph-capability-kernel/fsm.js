@@ -421,6 +421,50 @@ const TRANSITION_MAP = {
     },
   },
 
+  // ── CAPABILITY_CHECK (2026-06-11): Publishing FSM requests capability
+  //     analysis after a publication timeout. GC FSM reads its own per-cred
+  //     state (canonical capability truth) and QuotaIntelligenceWorker state.
+  //     Returns CAPABILITY_CHECK_RESULT via ctx.dispatchGlobal → CK.
+  CAPABILITY_CHECK: {
+    target: null,
+    guard: (event) => {
+      if (!event.businessAccountId) {
+        return { allowed: false, reason: 'CAPABILITY_CHECK requires businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const baId = event.businessAccountId;
+      const cred = _byCred.get(baId);
+      const capabilityState = cred ? cred.state : 'UNKNOWN';
+      const lastObservedAt = cred ? cred.lastObservedAt : null;
+      const freshnessMs = lastObservedAt ? (Date.now() - lastObservedAt) : null;
+      const consecutiveFailures = cred ? cred.consecutiveFailures : 0;
+
+      let quotaState = 'NONE';
+      const qEntry = _membranes.get('quota-intelligence');
+      if (qEntry && qEntry.wired && qEntry.substrate) {
+        quotaState = qEntry.substrate._state || 'NONE';
+      }
+
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'CAPABILITY_CHECK_RESULT',
+          sourceDomain: 'graph-capability',
+          targetDomain: 'publishing',
+          businessAccountId: baId,
+          correlationId: event.correlationId,
+          capabilityState,
+          quotaState,
+          freshnessMs,
+          consecutiveFailures,
+        });
+      }
+
+      return [];
+    },
+  },
+
   // ── Aggregate worker observation arrives ────────────────────────────────
   // This is the SOLE event that mutates per-cred evidence. The aggregator
   // merges the new envelope into the existing per-cred record, then

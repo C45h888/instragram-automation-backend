@@ -11,7 +11,6 @@
 
 const axios = require('axios');
 const { GRAPH_API_BASE } = require('../../../config/instagram');
-const { suspectIgCategory } = require('../../../substrates/transport/error-classifier');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MEDIA CONTAINER (shared)
