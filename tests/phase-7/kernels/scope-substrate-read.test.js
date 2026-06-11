@@ -8,7 +8,7 @@
  *     - detectDynamic() pre-flight cache lookup → fallback to worker
  *
  * Strategy:
- *   - Mock signal-dispatch.getCk() so detectDynamic sees a stub CK
+ *   - Mock signal-dispatch.getFsm()/getCtx() so detectDynamic sees a stub FSM
  *   - Mock the DetectDynamicWorker module so /debug_token is not hit
  *   - Drive _governedRead with a mock CK that wraps the real FSM
  *     (scenario 8) and a mock CK that rejects (scenario 9)
@@ -23,19 +23,34 @@ import { createRequire } from 'node:module';
 const require_ = createRequire(import.meta.url);
 
 // The scope-substrate façade requires '../signal-dispatch' (used in
-// production via signalDispatch.getCk()) and the DetectDynamicWorker
+// production via signalDispatch.getFsm()/getCtx()) and the DetectDynamicWorker
 // class (which transitively requires api-surface → axios). Both are
 // mocked here so the real production code loads and runs unmodified.
 import Module from 'node:module';
 const realFsm = require_('../../../graph-capability-kernel/fsm.js');
 const { createStubCk } = require_('../runtime/stub-ck.js');
 
-// Mock signal-dispatch BEFORE importing scope-substrate
+// Mock signal-dispatch BEFORE importing scope-substrate.
+// The scope-substrate façade uses signalDispatch.getFsm() and
+// signalDispatch.getCtx() (the new contract from the Phase D rewire).
+// bindCk/emitEvaluate/emitEnvelope are kept on the mock so tests
+// that spy on emission still work.
+// getCtx defaults to a permissive stub so detectDynamic's
+// _governedRead() can dispatch without per-test setup; tests that
+// need a richer ctx override getCtx.mockReturnValue(...) themselves.
+const permissiveCtx = {
+  dispatchGlobal: () => ({ allowed: true }),
+  validate: () => ({ allowed: true }),
+  getGlobalState: () => null,
+  sanityCheck: () => ({ allowed: true }),
+};
 const mockSignalDispatch = {
-  getCk: vi.fn(),
+  getFsm: vi.fn(),
+  getCtx: vi.fn(() => permissiveCtx),
   emitEvaluate: vi.fn(),
   emitEnvelope: vi.fn(),
-  bindCk: vi.fn(),
+  bindFsm: vi.fn(),
+  bindCk: vi.fn(), // legacy shim — kept so any import-compat call is a no-op
 };
 require_.cache[require_.resolve('../../../graph-capability-kernel/substrates/vault/signal-dispatch.js')] = {
   exports: mockSignalDispatch,
@@ -117,7 +132,7 @@ describe('Scope Substrate — _governedRead helper (driven via detectDynamic cac
         return { allowed: true };
       }),
     };
-    mockSignalDispatch.getCk.mockReturnValue(mockCk);
+    mockSignalDispatch.getFsm.mockReturnValue(mockCk);
 
     const scopes = await scopeSubstrate.detectDynamic({
       businessAccountId: 'ba-1',
@@ -154,7 +169,7 @@ describe('Scope Substrate — _governedRead helper (driven via detectDynamic cac
         return { allowed: true };
       }),
     };
-    mockSignalDispatch.getCk.mockReturnValue(mockCk);
+    mockSignalDispatch.getFsm.mockReturnValue(mockCk);
     mockDetectDynamicWorkerInstance.execute.mockResolvedValue(['scope-fallback']);
 
     const scopes = await scopeSubstrate.detectDynamic({
@@ -182,7 +197,7 @@ describe('Scope Substrate — detectDynamic()', () => {
   });
 
   it('SCENARIO 10 — cache hit returns scopes from governed read, no /debug_token call', async () => {
-    // Make signalDispatch.getCk() return a mock CK that resolves
+    // Make signalDispatch.getFsm() return a mock CK that resolves
     // _governedRead's underlying CAPABILITY_DATA_REQUEST with a cache hit
     const freshTimestamp = new Date().toISOString();
     const mockCk = {
@@ -208,7 +223,7 @@ describe('Scope Substrate — detectDynamic()', () => {
         });
       }),
     };
-    mockSignalDispatch.getCk.mockReturnValue(mockCk);
+    mockSignalDispatch.getFsm.mockReturnValue(mockCk);
 
     const scopes = await scopeSubstrate.detectDynamic({
       businessAccountId: 'ba-1',
@@ -229,7 +244,7 @@ describe('Scope Substrate — detectDynamic()', () => {
   it('SCENARIO 11 — cache miss falls through to /debug_token worker and dispatches DB_WRITE_REQUESTED', async () => {
     // Use stub-ck so DB_WRITE_REQUESTED is routed to persist-telemetry (F2b fix)
     const { stubCk, teardown } = createStubCk({ realFsm });
-    mockSignalDispatch.getCk.mockReturnValue(stubCk);
+    mockSignalDispatch.getFsm.mockReturnValue(stubCk);
 
     // Worker returns scopes
     mockDetectDynamicWorkerInstance.execute.mockResolvedValue(['scope2']);
@@ -275,7 +290,7 @@ describe('Scope Substrate — detectDynamic()', () => {
         return { allowed: true };
       }),
     };
-    mockSignalDispatch.getCk.mockReturnValue(mockCk);
+    mockSignalDispatch.getFsm.mockReturnValue(mockCk);
 
     // Worker returns scopes
     mockDetectDynamicWorkerInstance.execute.mockResolvedValue(['scope3']);

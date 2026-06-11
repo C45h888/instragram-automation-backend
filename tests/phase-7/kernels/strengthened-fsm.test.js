@@ -259,13 +259,13 @@ describe('verdict-gate reads per-cred FSM', () => {
     expect(v.state).toBe('LIMITED');
     expect(v.missingScopes).toContain('instagram_content_publish');
   });
-  test('UAT_PENDING → denied with reason naming the missing slot', () => {
+  test('PAT_PENDING → denied with reason naming the missing slot', () => {
     // partialEnvelope(BA_A, 'uat') sets only uat, so pat is first missing → PAT_PENDING
     fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: partialEnvelope(BA_A, 'uat') }, fakeCk);
     const v = fsm.requireCapability(BA_A, ['instagram_basic']);
     expect(v.allowed).toBe(false);
     expect(v.state).toBe('PAT_PENDING');
-    expect(v.reason).toContain('pat');
+    expect(v.reason).toContain('PAT_PENDING');
   });
   test('UNAUTHORIZED → denied', () => {
     const env = freshFullEnvelope(BA_A);

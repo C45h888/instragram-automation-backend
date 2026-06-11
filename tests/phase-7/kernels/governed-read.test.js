@@ -64,14 +64,18 @@ describe('Governed Read — graph-capability FSM transitions', () => {
     expect(result.actions).toEqual([]);
 
     // ctx.dispatchGlobal was called with the routed DB_READ_REQUESTED
+    // (the FSM now attaches lineageId/lineageDomain per the
+    // canonical-source gate; assertions must accept these extra fields)
     expect(ctx.dispatchGlobal).toHaveBeenCalledTimes(1);
-    expect(ctx.dispatchGlobal).toHaveBeenCalledWith({
-      type: 'DB_READ_REQUESTED',
-      readDomain: 'db.scope-cache',
-      accountId: 'ba-1',
-      readId: 'r1',
-      params: { credentialId: 'c1' },
-    });
+    expect(ctx.dispatchGlobal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'DB_READ_REQUESTED',
+        readDomain: 'db.scope-cache',
+        accountId: 'ba-1',
+        readId: 'r1',
+        params: { credentialId: 'c1' },
+      })
+    );
 
     // Proof the read was tracked: dispatch READ_RESULT_AVAILABLE and
     // assert the Promise controller is invoked. If the FSM had not

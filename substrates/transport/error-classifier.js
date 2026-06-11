@@ -2,7 +2,7 @@
 // Cheap IG error category HINT. NOT a classifier.
 //
 // This module is intentionally MINIMAL. The Instagram Reliability
-// Substrate (graph-capability-kernel/substrates/ig-reliability-substrate.js)
+// Substrate (substrates/ig-reliability-substrate.js)
 // is the canonical IG failure interpreter — it implements the 17-section
 // spec (normalization, classification, token lifecycle, quota, rate-limit
 // recovery, prioritization, media, publishing state, webhook, dependency

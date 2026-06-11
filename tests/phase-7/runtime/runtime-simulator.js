@@ -37,6 +37,67 @@ const graphCapabilityFsm = require('../../../graph-capability-kernel/fsm.js');
 
 class Phase7RuntimeSimulator {
   /**
+   * Per-process counter for graph-simulator port allocation. Kept for
+   * diagnostics; the port is actually chosen by _findFreePortPair()
+   * so we never collide with leftover bindings from prior test files.
+   */
+  static _instanceCount = 0;
+
+  /**
+   * Process-wide set of ports we know are in use. Stored on globalThis
+   * so it survives vitest's per-file module isolation when possible
+   * (singleFork + shared globalThis). When globalThis is isolated,
+   * the set resets per file and the OS-probe handles the rest.
+   */
+  static get _allocatedPorts() {
+    if (!globalThis.__phase7AllocatedPorts) {
+      globalThis.__phase7AllocatedPorts = new Set();
+    }
+    return globalThis.__phase7AllocatedPorts;
+  }
+
+  /**
+   * Find an unused (worker, worker+1) port pair. Strategy:
+   *   1. Listen on port 0 to get an OS-assigned free port.
+   *   2. Verify controlPort (= workerPort + 1) is also bindable.
+   *   3. If either fails, retry up to 16 times with jittered backoff.
+   * The OS-assigned port is the one we hand to the graph-simulator,
+   * so collisions with leftover bindings from prior test files are
+   * caught at listen() time (the graph-simulator would fail to bind
+   * and the caller can retry the whole boot).
+   */
+  static async _findFreePortPair(maxAttempts = 16) {
+    const net = require('net');
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const port = await new Promise((resolve, reject) => {
+        const probe = net.createServer();
+        probe.listen(0, '0.0.0.0', () => {
+          const p = probe.address().port;
+          probe.close(() => resolve(p));
+        });
+        probe.on('error', reject);
+      });
+      const controlPort = port + 1;
+      // Verify control port is bindable. If not, retry.
+      const controlFree = await new Promise((resolve) => {
+        const cp = net.createServer();
+        cp.listen(controlPort, '0.0.0.0', () => {
+          cp.close(() => resolve(true));
+        });
+        cp.on('error', () => resolve(false));
+      });
+      if (!controlFree) {
+        await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 25)));
+        continue;
+      }
+      return { workerPort: port, controlPort };
+    }
+    throw new Error(
+      `Phase7RuntimeSimulator._findFreePortPair: could not find a free (worker, control) port pair in ${maxAttempts} attempts`
+    );
+  }
+
+  /**
    * @param {object} [opts]
    * @param {string} [opts.runId] — defaults to timestamp
    * @param {object} [opts.bootOpts] — passed to underlying RuntimeSimulator
@@ -59,6 +120,11 @@ class Phase7RuntimeSimulator {
 
     this._runtime = new RuntimeSimulator(bootOpts);
 
+    // Cache constructor flag for lazy graph-simulator construction
+    // in boot(). The flag controls whether a graph-simulator instance
+    // is allocated at all — it is NOT a port-allocation detail.
+    this._startGraphSimulator = startGraphSimulator;
+
     this._eventRecorder = new EventRecorder();
     this._stateInspector = new StateInspector({
       ck: CK,
@@ -69,7 +135,10 @@ class Phase7RuntimeSimulator {
     this._workerTracer = new WorkerTracer();
     this._governanceObserver = new GovernanceObserver();
 
-    this._graphSimulator = startGraphSimulator ? new GraphSimulator() : null;
+    // Graph-simulator is created lazily in boot() so we can find a
+    // free (worker, control) port pair before binding. See boot()
+    // and _findFreePortPair() below.
+    this._graphSimulator = startGraphSimulator ? null : null;
 
     this._assertionsRun = 0;
     this._assertionsFailed = 0;
@@ -84,8 +153,25 @@ class Phase7RuntimeSimulator {
     if (this._booted) return;
     this._bootStartTime = Date.now();
 
-    // Start graph simulator first so workers have a target
+    // Start graph simulator first so workers have a target. The
+    // port pair is allocated here (not in the constructor) because
+    // _findFreePortPair() is async — it has to ask the OS for a
+    // free port via a net.createServer probe.
+    if (this._startGraphSimulator && !this._graphSimulator) {
+      const { workerPort, controlPort } = await Phase7RuntimeSimulator._findFreePortPair();
+      this._graphSimulator = new GraphSimulator({
+        workerPort,
+        controlPort,
+      });
+    }
     if (this._graphSimulator) {
+      // Wait briefly for the OS to fully release any prior
+      // graph-simulator's port. Without this, the kernel can
+      // reassign a port that's still in TIME_WAIT to a new
+      // listener, and the new listener's bind fails with
+      // EADDRINUSE even though the OS reported the port as free
+      // during the probe. 200ms is empirically enough on macOS.
+      await new Promise((r) => setTimeout(r, 200));
       await this._graphSimulator.start();
     }
 
@@ -98,12 +184,27 @@ class Phase7RuntimeSimulator {
     this._booted = true;
   }
 
+  /**
+   * Two-phase shutdown: (1) close the graph-simulator's HTTP
+   * servers — this MUST complete (or the port stays bound and the
+   * next test file's boot hits EADDRINUSE); (2) drain the runtime
+   * projection workers, bounded by a 20s ceiling because the
+   * underlying RuntimeSimulator.shutdown() can hang on the 30s
+   * snapshot timer. Anything still alive after 20s gets reaped
+   * when the vitest fork exits.
+   */
   async shutdown() {
     if (!this._booted) return;
-    await this._runtime.shutdown();
+    // Phase 1: graph-simulator servers (port release)
     if (this._graphSimulator) {
-      await this._graphSimulator.stop();
+      try {
+        await this._graphSimulator.stop();
+      } catch (_) { /* swallow — best-effort */ }
     }
+    // Phase 2: runtime drain (projection workers, snapshot timers)
+    const runtimeShutdown = this._runtime.shutdown();
+    const hardTimeout = new Promise((resolve) => setTimeout(resolve, 20000));
+    await Promise.race([runtimeShutdown, hardTimeout]);
     this._booted = false;
   }
 

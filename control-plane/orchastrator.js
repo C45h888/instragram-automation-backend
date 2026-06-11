@@ -44,7 +44,7 @@ const publishingRetryStub = require('../publishing-kernel/retry-state-transition
 // entity that classifies IG errors. The engagement-fsm routes
 // IG_FAILURE_OBSERVED through it via the CLASSIFICATION_WORKER_MAP.
 // Kernels MUST NOT call this substrate directly.
-const igReliabilitySubstrate = require('../graph-capability-kernel/substrates/ig-reliability-substrate');
+const igReliabilitySubstrate = require('../substrates/ig-reliability-substrate');
 const dbWriters = require('../postgres-telemetry-kernel/writers');
 const dbReaders = require('../postgres-telemetry-kernel/readers');
 const cognitionScanner = require('../postgres-telemetry-kernel/cognition-scanner');

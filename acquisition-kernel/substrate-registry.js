@@ -99,17 +99,17 @@ const CLASSIFICATION_WORKER_MAP = {
   insights:           '../retry-cadence-kernel/workers/classification-worker',
   media:              '../retry-cadence-kernel/workers/classification-worker',
   // Publish classification — owned by the Instagram Reliability
-  // Substrate (graph-capability-kernel/substrates/ig-reliability-substrate.js).
+  // Substrate (substrates/ig-reliability-substrate.js).
   // The 4 publish:* domains flow through IG_FAILURE_OBSERVED →
   // engagement-fsm → substrate.analyzeFailure(). The substrate
   // returns the canonical analysis; the FSM emits *_AUTHORIZED
   // actions per analysis.recommendations. Kernels MUST NOT
   // classify errors directly — that is semantic contamination.
   // The substrate is the canonical IG failure interpreter.
-  'publish:post':     '../graph-capability-kernel/substrates/ig-reliability-substrate',
-  'publish:story':    '../graph-capability-kernel/substrates/ig-reliability-substrate',
-  'publish:comment':  '../graph-capability-kernel/substrates/ig-reliability-substrate',
-  'publish:message':  '../graph-capability-kernel/substrates/ig-reliability-substrate',
+  'publish:post':     '../substrates/ig-reliability-substrate',
+  'publish:story':    '../substrates/ig-reliability-substrate',
+  'publish:comment':  '../substrates/ig-reliability-substrate',
+  'publish:message':  '../substrates/ig-reliability-substrate',
   'dedup:redis':      '../retry-cadence-kernel/workers/classification-worker',
   'dedup:repair':     '../retry-cadence-kernel/workers/classification-worker',
   reconciliation:     '../retry-cadence-kernel/workers/classification-worker',

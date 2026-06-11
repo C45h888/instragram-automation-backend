@@ -789,6 +789,95 @@ const TRANSITION_MAP = {
       }];
     },
   },
+
+  // ── Worker membrane actions (Pass 2, 2026-06-11) ──────────────────────────
+  // Passthrough events: routed to membrane subscribers, no FSM state change.
+
+  RUN_QUOTA_CHECK: {
+    target: null,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => [{
+      type: 'RUN_QUOTA_CHECK',
+      businessAccountId: event.businessAccountId || null,
+    }],
+  },
+
+  WEBHOOK_EVENT_RECEIVED: {
+    target: null,
+    guard: (event) => {
+      if (!event.eventId) return { allowed: false, reason: 'WEBHOOK_EVENT_RECEIVED requires eventId' };
+      return { allowed: true };
+    },
+    buildActions: (event) => [{
+      type: 'WEBHOOK_EVENT_RECEIVED',
+      eventId: event.eventId,
+      objectId: event.objectId,
+      objectType: event.objectType,
+      timestamp: event.timestamp,
+      payload: event.payload,
+      businessAccountId: event.businessAccountId,
+    }],
+  },
+
+  DEPENDENCY_HEALTH_CHECK: {
+    target: null,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => [{
+      type: 'DEPENDENCY_HEALTH_CHECK',
+      businessAccountId: event.businessAccountId || '__system__',
+    }],
+  },
+
+  PERMISSION_CHECK: {
+    target: null,
+    guard: (event) => {
+      if (!event.businessAccountId) return { allowed: false, reason: 'PERMISSION_CHECK requires businessAccountId' };
+      return { allowed: true };
+    },
+    buildActions: (event) => [{
+      type: 'PERMISSION_CHECK',
+      businessAccountId: event.businessAccountId,
+      userId: event.userId,
+      token: event.token,
+      currentScopes: event.currentScopes,
+    }],
+  },
+
+  ACCOUNT_SYNC_CHECK: {
+    target: null,
+    guard: (event) => {
+      if (!event.businessAccountId) return { allowed: false, reason: 'ACCOUNT_SYNC_CHECK requires businessAccountId' };
+      return { allowed: true };
+    },
+    buildActions: (event) => [{
+      type: 'ACCOUNT_SYNC_CHECK',
+      businessAccountId: event.businessAccountId,
+      userId: event.userId,
+    }],
+  },
+
+  ESCALATION_RECEIVED: {
+    target: null,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => [{
+      type: 'ESCALATION_RECEIVED',
+      businessAccountId: event.businessAccountId,
+      userId: event.userId,
+      escalationType: event.escalationType,
+      reason: event.reason,
+      details: event.details,
+    }],
+  },
+
+  ESCALATION_ACKNOWLEDGED: {
+    target: null,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => [{
+      type: 'ESCALATION_ACKNOWLEDGED',
+      businessAccountId: event.businessAccountId,
+      escalationType: event.escalationType,
+    }],
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

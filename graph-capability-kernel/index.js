@@ -1,11 +1,10 @@
 // graph-capability-kernel/index.js
 // Kernel root façade. Wires FSM to constitutional kernel, exposes public surface.
-// Migrated from substrates/graph-capability/wiring.js pattern.
 //
-// Architecture (Phase D — constitutional contract, no wiring.js):
+// Architecture (Phase D — constitutional contract):
 //   server.js → gck.install({ck}) → builds dispatch ctx → fsm.setDispatchCtx(ctx)
-//     → fsm.setGovernance(ck) → registers membranes (health-substrate, etc.)
-//     → fsm.setMembrane('health', {substrate}) → starts the graph-capability
+//     → fsm.setGovernance(ck) → registers membranes
+//     → fsm.setMembrane('<name>', {substrate}) → starts the graph-capability
 //     substrate → binds signal-dispatch to fsm + ctx
 //
 //   The FSM is the constitutional ingress for substrate emissions.
@@ -14,16 +13,27 @@
 //   executor orchestrated by the FSM — it never talks to the CK directly
 //   for emissions, and the CK never calls the substrate directly.
 //
-// Pattern:
-//   const gck = require('./graph-capability-kernel');
-//   gck.install({ ck });
-//   gck.vault.pat.exchange({ ... });
-//   gck.fsm.requireCapability(...);
+// Membranes (Pass 2, 2026-06-11):
+//   health              → TokenHealthWorker (token validation, UAT refresh, recovery)
+//   quota-intelligence  → QuotaIntelligenceWorker (usage monitoring, pressure detection)
+//   webhook-sync        → WebhookSyncWorker (event dedup, health, drift detection)
+//   dependency-recovery → DependencyRecoveryWorker (circuit breaker, endpoint health)
+//   permission-recovery → PermissionRecoveryWorker (scope drift, role changes)
+//   account-sync        → AccountSyncWorker (cross-domain reconciliation)
+//   escalation          → EscalationWorker (unrecoverable condition handling)
 
 const wiring = require('./substrates/graph-capability/wiring');
 const fsm = require('./fsm');
 const signalDispatch = require('./substrates/vault/signal-dispatch');
 const healthSubstrate = require('./substrates/health-substrate');
+
+// Worker imports (Pass 2)
+const QuotaIntelligenceWorker = require('./substrates/workers/quota-intelligence-worker');
+const WebhookSyncWorker = require('./substrates/workers/webhook-sync-worker');
+const DependencyRecoveryWorker = require('./substrates/workers/dependency-recovery-worker');
+const PermissionRecoveryWorker = require('./substrates/workers/permission-recovery-worker');
+const AccountSyncWorker = require('./substrates/workers/account-sync-worker');
+const EscalationWorker = require('./substrates/workers/escalation-worker');
 
 // Re-export the public surface from the kernel substrates
 const vault = require('./substrates/vault');
@@ -33,18 +43,17 @@ let _installed = false;
 let _started = false;
 let _lastBoundCk = null;
 
+// ── Worker instances (singleton per kernel boot) ───────────────────────────
+
+let _quotaWorker = null;
+let _webhookWorker = null;
+let _dependencyWorker = null;
+let _permissionWorker = null;
+let _accountSyncWorker = null;
+let _escalationWorker = null;
+
 // ── Dispatch ctx — shared with the FSM and the signal-dispatch module ──────
-// The ctx is the same shape the CK passes to fsm.dispatch today:
-//   { validate, dispatchGlobal, getGlobalState, sanityCheck }.
-//
-//   validate        → asks CK to validate a domain transition
-//   dispatchGlobal  → forwards an event to the CK for cross-domain routing
-//   getGlobalState  → reads CK's global state
-//   sanityCheck     → universal gate (fail-open by default)
-//
-// Built once at install time. The signal-dispatch module captures it at
-// bindFsm(fsm, ctx) so substrate emissions route to the FSM with the
-// correct ctx (so the FSM can ctx.dispatchGlobal back to the CK).
+
 function _buildCtx(ck) {
   return {
     validate: (from, to, event) => {
@@ -71,71 +80,80 @@ function _buildCtx(ck) {
 
 /**
  * Install the graph-capability kernel into the runtime.
- * Wires FSM to constitutional kernel, registers membranes (delegated
- * executors) with the FSM, starts the graph-capability substrate, and
- * binds signal-dispatch to the FSM.
- *
- * Idempotent. If a different CK is passed while already installed, the
- * binding is updated.
- *
- * @param {{ ck: object }} params
- * @returns {{ fsm: object, started: boolean, healthStarted: boolean }}
+ * Wires FSM to CK, registers all 7 membranes, starts the substrate.
  */
 function install({ ck } = {}) {
   if (_installed) {
-    // Re-install with the same CK — no-op
     if (ck === _lastBoundCk) {
-      return { fsm, started: _started, healthStarted: health.isStarted ? health.isStarted() : false };
+      return {
+        fsm,
+        started: _started,
+        healthStarted: health.isStarted ? health.isStarted() : false,
+      };
     }
-    // CK changed — rebuild ctx and rebind signal-dispatch to the new FSM-binding
     const ctx = _buildCtx(ck);
     fsm.setDispatchCtx(ctx);
     fsm.setGovernance(ck);
     signalDispatch.bindFsm(fsm, ctx);
     _lastBoundCk = ck;
-    return { fsm, started: _started, healthStarted: health.isStarted ? health.isStarted() : false };
+    return {
+      fsm,
+      started: _started,
+      healthStarted: health.isStarted ? health.isStarted() : false,
+    };
   }
 
-  // 1. Build the dispatch ctx — passed to fsm.dispatch for substrate emissions
+  // 1. Build the dispatch ctx
   const ctx = _buildCtx(ck);
 
   // 2. Wire the FSM to the constitutional kernel and ctx
   fsm.setDispatchCtx(ctx);
   fsm.setGovernance(ck);
 
-  // 3. Bind signal-dispatch to FSM + ctx (FSM is the constitutional ingress)
+  // 3. Bind signal-dispatch to FSM + ctx
   signalDispatch.bindFsm(fsm, ctx);
 
-  // 4. Register delegated executor membranes with the FSM. The FSM is the
-  //    orchestrator — it will call substrate.start(ck) on the first
-  //    CAPABILITY_BOOTSTRAP transition. The CK never calls substrates directly.
+  // 4. Register all 7 delegated executor membranes with the FSM.
   fsm.setMembrane('health', { substrate: healthSubstrate });
 
-  // 5. Start the graph-capability substrate (binding only, no workers of its own)
+  // Pass 2: new worker membranes (each implements start/stop/isStarted)
+  _quotaWorker = new QuotaIntelligenceWorker();
+  _webhookWorker = new WebhookSyncWorker();
+  _dependencyWorker = new DependencyRecoveryWorker();
+  _permissionWorker = new PermissionRecoveryWorker();
+  _accountSyncWorker = new AccountSyncWorker();
+  _escalationWorker = new EscalationWorker();
+
+  fsm.setMembrane('quota-intelligence', { substrate: _quotaWorker });
+  fsm.setMembrane('webhook-sync', { substrate: _webhookWorker });
+  fsm.setMembrane('dependency-recovery', { substrate: _dependencyWorker });
+  fsm.setMembrane('permission-recovery', { substrate: _permissionWorker });
+  fsm.setMembrane('account-sync', { substrate: _accountSyncWorker });
+  fsm.setMembrane('escalation', { substrate: _escalationWorker });
+
+  // 5. Start the graph-capability substrate (binding only)
   const result = wiring.install({ ck });
   _started = result.started;
   _installed = true;
   _lastBoundCk = ck;
 
-  // 6. (Removed) health-substrate is not "started" until the FSM wires it
-  //    during the first CAPABILITY_BOOTSTRAP transition. The membrane's
-  //    isStarted() returns false until that happens. This is constitutional
-  //    correctness: the substrate does not exist as a first-class citizen
-  //    until the FSM orchestrates it. The CK (via gck.install) does not
-  //    start substrates.
+  console.log('[graph-capability-kernel] 7 membranes registered: health, quota-intelligence, webhook-sync, dependency-recovery, permission-recovery, account-sync, escalation');
 
   return { fsm, started: _started, healthStarted: health.isStarted ? health.isStarted() : false };
 }
 
 function uninstall() {
-  // Stop the graph-capability substrate first
   wiring.uninstall();
-  // Release the FSM binding
   signalDispatch.bindFsm(null, null);
   fsm.setDispatchCtx(null);
   fsm.setGovernance(null);
-  // Reset all membrane wire state so the next install re-wires them
   fsm.resetMembrane();
+  _quotaWorker = null;
+  _webhookWorker = null;
+  _dependencyWorker = null;
+  _permissionWorker = null;
+  _accountSyncWorker = null;
+  _escalationWorker = null;
   _installed = false;
   _started = false;
   _lastBoundCk = null;
@@ -149,10 +167,7 @@ module.exports = {
   install,
   uninstall,
   isInstalled,
-  // Public surface: vault (pat/uat/scope operations)
   vault,
-  // Public surface: health substrate
   health,
-  // Direct FSM access for CK registration
   fsm,
 };

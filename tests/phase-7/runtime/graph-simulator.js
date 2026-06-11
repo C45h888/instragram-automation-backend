@@ -124,8 +124,28 @@ class GraphSimulator {
   async stop() {
     if (!this._started) return;
     this._started = false;
-    if (this._workerServer) await new Promise((r) => this._workerServer.close(r));
-    if (this._controlServer) await new Promise((r) => this._controlServer.close(r));
+    // Force-destroy any keep-alive connections. Without this, an
+    // idle client (or a worker in a half-shut-down state) keeps
+    // the server's listening socket bound and the next test file's
+    // boot hits EADDRINUSE on the same port.
+    const closeWithTimeout = (server) => {
+      if (!server) return Promise.resolve();
+      // closeAllStops the server from accepting new connections and
+      // closes existing idle connections. close() then waits for
+      // active connections to drain. We don't care about draining
+      // for tests — we just need the port released.
+      try {
+        if (typeof server.closeAllConnections === 'function') {
+          server.closeAllConnections();
+        }
+      } catch (_) { /* best-effort */ }
+      return Promise.race([
+        new Promise((r) => server.close(r)),
+        new Promise((r) => setTimeout(r, 5000)),
+      ]);
+    };
+    await closeWithTimeout(this._workerServer);
+    await closeWithTimeout(this._controlServer);
     this._workerServer = null;
     this._controlServer = null;
   }
@@ -198,11 +218,75 @@ class GraphSimulator {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _startWorkerServer() {
-    return new Promise((resolve, reject) => {
-      this._workerServer = http.createServer((req, res) => this._handleWorkerRequest(req, res));
-      this._workerServer.on('error', reject);
-      this._workerServer.listen(this._workerPort, this._bindAddress, () => resolve());
-    });
+    return this._startServerOnFreePort('worker');
+  }
+
+  async _startControlServer() {
+    return this._startServerOnFreePort('control');
+  }
+
+  /**
+   * Bind an HTTP server to a free port, retrying on EADDRINUSE up to
+   * `maxAttempts` times. We pick a new OS-assigned port each attempt
+   * (port 0) so collisions with leftovers from prior test files
+   * resolve themselves within the same boot, rather than failing
+   * the whole test file.
+   */
+  async _startServerOnFreePort(kind, maxAttempts = 8) {
+    const net = require('net');
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const port = await new Promise((resolve, reject) => {
+        const probe = net.createServer();
+        probe.listen(0, '0.0.0.0', () => {
+          const p = probe.address().port;
+          probe.close(() => resolve(p));
+        });
+        probe.on('error', reject);
+      });
+      // Verify the port is actually bindable for a real listener.
+      // The OS can hand us a port in TIME_WAIT; this probe forces
+      // the kernel to either claim the port or move on.
+      const bindable = await new Promise((resolve) => {
+        const probe = net.createServer();
+        probe.unref();
+        probe.on('error', () => resolve(false));
+        probe.listen(port, '0.0.0.0', () => {
+          probe.close(() => resolve(true));
+        });
+      });
+      if (!bindable) {
+        await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 50)));
+        continue;
+      }
+      // Now actually start the real server on this port. If the
+      // port got snatched between the probe and the real bind
+      // (rare but possible), retry.
+      const serverKind = kind;
+      const targetProp = serverKind === 'worker' ? '_workerServer' : '_controlServer';
+      const handler = serverKind === 'worker' ? this._handleWorkerRequest : this._handleControlRequest;
+      const server = http.createServer((req, res) => handler.call(this, req, res));
+      try {
+        await new Promise((resolve, reject) => {
+          server.on('error', reject);
+          server.listen({ port, host: this._bindAddress, exclusive: false }, resolve);
+        });
+        this[targetProp] = server;
+        if (serverKind === 'worker') this._workerPort = port;
+        if (serverKind === 'control') this._controlPort = port;
+        return;
+      } catch (err) {
+        if (err && err.code === 'EADDRINUSE') {
+          // Race: the port got taken between our probe and our
+          // bind. Try again with a fresh port.
+          await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 50)));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error(
+      `GraphSimulator._startServerOnFreePort(${kind}): could not bind a free port in ${maxAttempts} attempts`
+    );
   }
 
   async _handleWorkerRequest(req, res) {
@@ -324,13 +408,9 @@ class GraphSimulator {
   // Control API (test/control plane; workers never see this port)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _startControlServer() {
-    return new Promise((resolve, reject) => {
-      this._controlServer = http.createServer((req, res) => this._handleControlRequest(req, res));
-      this._controlServer.on('error', reject);
-      this._controlServer.listen(this._controlPort, this._bindAddress, () => resolve());
-    });
-  }
+  // _startControlServer is now provided by _startServerOnFreePort above
+  // (see the start() entry point). Keeping a stub here would shadow the
+  // real implementation in some module-load orderings.
 
   async _handleControlRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);

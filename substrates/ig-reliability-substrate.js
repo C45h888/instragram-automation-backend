@@ -1,4 +1,4 @@
-// graph-capability-kernel/substrates/ig-reliability-substrate.js
+// substrates/ig-reliability-substrate.js
 // Instagram Reliability Substrate — RELIABILITY-SUBSTRATE implementation
 // for the Instagram Graph API dependency.
 //
@@ -39,7 +39,7 @@
 //     quotaMetadata, correlationIds,
 //   });
 //
-// LIVES AT: graph-capability-kernel/substrates/ because the
+// LIVES AT: substrates/ because this is a shared bedrock substrate
 // token-resolution kernel is the IG-side credential authority,
 // and the substrate integrates with it (per spec §4). The
 // substrate is a client of the token-resolution kernel, not a
