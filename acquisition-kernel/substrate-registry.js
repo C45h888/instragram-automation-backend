@@ -18,6 +18,8 @@
 const engagement = require('./substrates/engagement-substrate');
 const ugcContent   = require('./substrates/ugc-content-substrate');
 const insights    = require('./substrates/insights-substrate');
+const webhookAcquisition =
+  require('./substrates/webhook-acquisition-substrate');
 
 // Publish substrates — for the publish:* domains, "fetch" is a
 // misnomer. The publishing substrates execute the outbound action
@@ -134,12 +136,30 @@ const CLASSIFICATION_WORKER_MAP = {
 // domains are included so the validate() function can check the
 // worker maps. The `execute` field is the publish substrate's
 // execute (the outbound action).
+// Webhook worker map — domain-bounded, one worker per event type.
+// Workers live in the acquisition kernel; they mount on the
+// ig-reliability-substrate bedrock for failure analysis.
+// Used by substrateRegistry.getWebhookWorker(domain).
+const WEBHOOK_WORKER_MAP = {
+  'webhook:messages':       './substrates/webhook-acquisition-substrate/workers/messages-worker',
+  'webhook:comments':       './substrates/webhook-acquisition-substrate/workers/comments-worker',
+  'webhook:mentions':       './substrates/webhook-acquisition-substrate/workers/mentions-worker',
+  'webhook:story-mentions': './substrates/webhook-acquisition-substrate/workers/story-mentions-worker',
+};
+
 const DOMAIN_REGISTRY = {
   comments:         { fetch: engagement.fetch.bind(engagement) },
   messages:         { fetch: engagement.fetch.bind(engagement) },
   ugc:              { fetch: ugcContent.fetch.bind(ugcContent) },
   insights:         { fetch: insights.fetch.bind(insights) },
   media:            { fetch: ugcContent.fetch.bind(ugcContent) },
+  // ── Webhook acquisition domains (Phase 1) ────────────────────────
+  // The substrate owns routing; the binding exposes process so any
+  // kernel can ask for the canonical processWebhook entry point.
+  'webhook:messages':       { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:comments':       { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:mentions':       { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:story-mentions': { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
   'publish:post':   { execute: publishContent.execute.bind(publishContent) },
   'publish:story':  { execute: publishContent.execute.bind(publishContent) },
   'publish:comment':{ execute: publishEngagement.execute.bind(publishEngagement) },
@@ -200,7 +220,7 @@ function getRetryWorker(domain) {
 /**
  * Return the bounded classification worker for a domain.
  * The classification worker is the semantically-blind error classifier.
- * It receives raw error, returns classified action tag. The FSM
+ * It receives a raw error, returns classified action tag. The FSM
  * (engagement-fsm) consumes the tag and decides state mutation.
  *
  * @param {string} domain
@@ -208,6 +228,21 @@ function getRetryWorker(domain) {
  */
 function getClassificationWorker(domain) {
   const workerPath = CLASSIFICATION_WORKER_MAP[domain];
+  if (!workerPath) return null;
+  return require(workerPath);
+}
+
+/**
+ * Return the bounded webhook worker for a webhook domain.
+ * One worker per event type (messages, comments, mentions, story-mentions).
+ * Workers are semantically isolated; each one validates + normalizes one
+ * event shape and dispatches to the acquisition-fsm.
+ *
+ * @param {string} domain — 'webhook:messages' | 'webhook:comments' | etc.
+ * @returns {object|null} worker module with execute()
+ */
+function getWebhookWorker(domain) {
+  const workerPath = WEBHOOK_WORKER_MAP[domain];
   if (!workerPath) return null;
   return require(workerPath);
 }
@@ -274,6 +309,7 @@ module.exports = {
   getParsingWorker,
   getRetryWorker,
   getClassificationWorker,
+  getWebhookWorker,
   domainForAction,
   fetchTypeForAction,
   allDomains,

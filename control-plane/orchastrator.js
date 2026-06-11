@@ -244,6 +244,23 @@ function _wire() {
   constitutional.registerWorker('acquisition', 'insights-parser',
     require('../acquisition-kernel/substrates/parsing-substrate/workers/insights-parser'));
 
+  // ── acquisition-fsm — webhook workers (Phase 1) ──────────────────────
+  // Webhook acquisition substrate: one bounded worker per event type,
+  // mounted on substrates/ig-reliability-substrate.js for failure
+  // analysis. The substrate itself is wired via webhookAcquisition
+  // setGovernance() below in startAllWorkers().
+  const webhookAcquisitionSubstrate =
+    require('../acquisition-kernel/substrates/webhook-acquisition-substrate');
+  constitutional.registerWorker('acquisition', 'webhook-messages',
+    require('../acquisition-kernel/substrates/webhook-acquisition-substrate/workers/messages-worker'));
+  constitutional.registerWorker('acquisition', 'webhook-comments',
+    require('../acquisition-kernel/substrates/webhook-acquisition-substrate/workers/comments-worker'));
+  constitutional.registerWorker('acquisition', 'webhook-mentions',
+    require('../acquisition-kernel/substrates/webhook-acquisition-substrate/workers/mentions-worker'));
+  constitutional.registerWorker('acquisition', 'webhook-story-mentions',
+    require('../acquisition-kernel/substrates/webhook-acquisition-substrate/workers/story-mentions-worker'));
+  webhookAcquisitionSubstrate.setGovernance(constitutional);
+
   // ── dedup-fsm — dedup workers (bound to substrates/dedup/index.js) ─
   constitutional.registerWorker('dedup', 'check-dedup',
     require('../dedup-kernel/substrates/dedup/workers/check-dedup-worker'));
