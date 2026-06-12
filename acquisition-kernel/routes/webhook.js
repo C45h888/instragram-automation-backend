@@ -1,25 +1,12 @@
 // acquisition-kernel/routes/webhook.js
-// Meta Instagram webhook endpoint — Phase 1+2.
+// Meta Instagram webhook endpoint — HTTP surface only.
 //
-// Phase 1: signature verification + entry.id extraction + delegation to
-//          the webhook-acquisition-substrate. The substrate routes the
-//          payload to bounded workers (mounted on ig-reliability-substrate
-//          for failure analysis). Workers normalize into canonical event
-//          objects and dispatch them into the acquisition-fsm, which
-//          holds them in _stagedEvents (in-memory).
+// Owns: signature verification, GET handshake, 200-fast return.
+// Does NOT own: entry shape inspection, worker selection, intentId
+//               generation, persistence trigger, batch buffering.
 //
-// Phase 2: substrate's PERSIST_STAGED_EVENT flows through CK →
-//          acquisition-fsm → hydration → resolver → DB_WRITE_REQUESTED
-//          → persist-telemetry-fsm → writers → Supabase. Cross-kernel
-//          return via PARSING_COMPLETE removes staged events.
-//
-// This file lives inside the acquisition kernel (was previously in
-// /routes/webhook.js) because the entire webhook acquisition pipeline
-// is owned by the acquisition kernel: substrate, workers, resolvers,
-// FSM, and now the route handler.
-//
-// All routes return 200 fast (Meta's webhook timeouts are ~10s). Substrate
-// does fire-and-forget async work per entry via setImmediate.
+// All heavy work (classification, normalization, FSM staging, DB write)
+// runs async via setImmediate so Meta gets a 200 within ~10s.
 
 const express = require('express');
 const crypto = require('crypto');
@@ -28,21 +15,14 @@ const router = express.Router();
 const webhookAcquisition =
   require('../substrates/webhook-acquisition-substrate');
 
-// ── Meta signature verification (constant-time HMAC-SHA1) ──────────────────
-// Meta signs the raw request body with HMAC-SHA1 using META_APP_SECRET.
-// Header: X-Hub-Signature (sha1=...) — newer docs use SHA256 but SHA1
-// remains the canonical Meta signature for Instagram webhooks.
+// ── Meta signature verification (constant-time HMAC-SHA1/256) ───────────────
 function verifyMetaSignature(rawBody, signatureHeader, appSecret) {
   if (!rawBody || !signatureHeader || !appSecret) return false;
 
-  // Meta prefixes the signature with the algorithm, e.g. "sha1=abcdef..."
   const [algo, expected] = String(signatureHeader).split('=', 2);
   if (!algo || !expected) return false;
 
-  const supportedAlgos = {
-    sha1: 'sha1',
-    sha256: 'sha256',
-  };
+  const supportedAlgos = { sha1: 'sha1', sha256: 'sha256' };
   const nodeAlgo = supportedAlgos[String(algo).toLowerCase()];
   if (!nodeAlgo) return false;
 
@@ -50,16 +30,13 @@ function verifyMetaSignature(rawBody, signatureHeader, appSecret) {
   hmac.update(rawBody);
   const computed = hmac.digest('hex');
 
-  // Constant-time comparison to prevent timing attacks
   const a = Buffer.from(computed, 'utf8');
   const b = Buffer.from(expected, 'utf8');
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
 }
 
-// ── Webhook verification handshake (GET) ──────────────────────────────────
-// Meta calls GET /webhook/instagram with hub.mode, hub.verify_token, hub.challenge
-// when you first register the webhook in the app dashboard.
+// ── Webhook verification handshake (GET) ───────────────────────────────────
 router.get('/instagram', (req, res) => {
   const mode      = req.query['hub.mode'];
   const token     = req.query['hub.verify_token'];
@@ -77,19 +54,12 @@ router.get('/instagram', (req, res) => {
 });
 
 // ── Webhook event delivery (POST) ─────────────────────────────────────────
-// Meta calls POST /webhook/instagram with the JSON body. We verify
-// the HMAC signature against META_APP_SECRET, extract the IG account
-// id from each entry, and hand the payload to the substrate.
-//
-// Signature verification is permissive in dev (no META_APP_SECRET → log
-// and continue; Meta still delivers). In production, set
-// META_APP_SECRET and the route will reject unsigned payloads.
 router.post('/instagram', (req, res) => {
-  const rawBody = req.rawBody; // set by bodyParser.verify hook in server.js
+  const rawBody   = req.rawBody; // set by bodyParser.verify hook in server.js
   const signature = req.headers['x-hub-signature'] || req.headers['X-Hub-Signature'];
   const appSecret = process.env.META_APP_SECRET || process.env.INSTAGRAM_APP_SECRET;
 
-  // ── Signature verification ──────────────────────────────────────────
+  // ── Signature verification ───────────────────────────────────────────
   if (appSecret) {
     if (!rawBody) {
       console.warn('[webhook] POST missing rawBody — bodyParser hook did not run?');
@@ -103,7 +73,6 @@ router.post('/instagram', (req, res) => {
       return res.status(401).json({ error: 'invalid_signature' });
     }
   } else {
-    // Dev mode: no secret configured — log and continue
     if (process.env.NODE_ENV === 'production') {
       console.error('[webhook] META_APP_SECRET not configured in production');
       return res.status(500).json({ error: 'server_misconfigured' });
@@ -116,10 +85,6 @@ router.post('/instagram', (req, res) => {
     return res.status(400).json({ error: 'invalid_payload' });
   }
 
-  // ── Account id resolution (entry.id is the IG business account id) ──
-  // Multiple entries can be in one payload; the substrate processes each.
-  // We extract the first entry's id as the "primary" accountId for
-  // observability. Workers receive per-entry accountId themselves.
   const firstEntry = Array.isArray(payload.entry) ? payload.entry[0] : null;
   const accountId = firstEntry?.id || null;
 
@@ -131,36 +96,14 @@ router.post('/instagram', (req, res) => {
     return res.status(200).json({ received: true, warning: 'no_entry_id' });
   }
 
-  // ── Delegate to substrate (fire-and-forget) ─────────────────────────
+  // Delegate — substrate owns timing, classification, and persistence trigger.
   const result = webhookAcquisition.processWebhook(payload, accountId);
 
-  // Always 200 fast — Meta will retry on non-200
   return res.status(200).json({
     received: true,
     requestId: req.requestId,
     routing: result,
   });
-});
-
-// ── Health surface for the substrate (read-only) ─────────────────────────
-// Useful for debugging without grepping logs.
-router.get('/staged-events', (req, res) => {
-  try {
-    const acquisitionFsm = require('../fsm');
-    const accountId = req.query.accountId || null;
-    if (accountId) {
-      return res.status(200).json({
-        accountId,
-        events: acquisitionFsm.getStagedEvents(accountId),
-      });
-    }
-    // No specific account — return state only
-    return res.status(200).json({
-      state: acquisitionFsm.getState(),
-    });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
 });
 
 module.exports = router;

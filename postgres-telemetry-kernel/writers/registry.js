@@ -3,7 +3,9 @@
 
 const WORKER_MAP = {
   batch_upsert_comments:              './comments-writer',
+  batch_upsert_comment_replies:       './comments-writer',
   batch_upsert_messages:              './messages-writer',
+  batch_upsert_dm_seen:               './messages-writer',
   batch_upsert_conversations:         './conversations-writer',
   batch_upsert_posts:                 './content-writer',
   batch_upsert_insights:              './content-writer',

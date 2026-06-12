@@ -20,6 +20,10 @@
 const { analyzeFailure } =
   require('../../../../substrates/ig-reliability-substrate');
 const { normalizeMessaging, EVENT_TYPES } = require('../normalizer');
+const { WorkerStateMachine } = require('./_state-machine');
+
+const WORKER_DOMAIN = 'webhook:messages';
+const WORKER_EVENT_TYPE = EVENT_TYPES.DM_ECHO;
 
 // ── Validation helpers (semantic shape checks for the worker) ─────────────
 
@@ -60,29 +64,36 @@ function _validateMessagingEntry(item) {
  * @returns {Promise<{ status: string, eventId: string|null, eventType: string }>}
  */
 async function execute(rawItem, accountId, intentId, governance) {
-  // ── Layer 1: shape validation (semantic, worker-local) ───────────────
+  const wstate = new WorkerStateMachine({
+    accountId, intentId, eventType: WORKER_EVENT_TYPE,
+    domain: WORKER_DOMAIN, governance,
+  });
+
+  wstate.transition('VALIDATING');
   const v = _validateMessagingEntry(rawItem);
   if (!v.ok) {
+    wstate.transition('FAILED_VALIDATION', v.reason);
     return _emitFailure(rawItem, accountId, intentId, v.reason, governance);
   }
 
-  // ── Layer 2: normalize via the substrate's normalizer ───────────────
+  wstate.transition('NORMALIZING');
   let canonical;
   try {
     canonical = normalizeMessaging(rawItem, null);
     canonical.igAccountId = accountId || null;
   } catch (err) {
+    wstate.transition('FAILED_NORMALIZE', err.message);
     return _emitFailure(rawItem, accountId, intentId, `normalizer_threw:${err.message}`, governance);
   }
 
-  // ── Layer 3: dispatch to CK → acquisition-fsm will hold it ───────────
+  wstate.transition('DISPATCHING');
   try {
     if (governance && typeof governance.dispatch === 'function') {
       governance.dispatch({
         type: 'WEBHOOK_EVENT_RECEIVED',
         accountId,
         intentId,
-        domain: 'webhook:messages',
+        domain: WORKER_DOMAIN,
         eventType: canonical.eventType,
         eventId: canonical.eventId,
         occurredAt: canonical.occurredAt,
@@ -93,11 +104,11 @@ async function execute(rawItem, accountId, intentId, governance) {
       });
     }
   } catch (err) {
-    // Dispatch failure is rare; the substrate is the canonical failure
-    // interpreter. We ask it for an analysis rather than classify ourselves.
+    wstate.transition('FAILED_DISPATCH', err.message);
     return _emitFailure(rawItem, accountId, intentId, `dispatch_threw:${err.message}`, governance);
   }
 
+  wstate.transition('STAGED');
   return {
     status: 'staged',
     eventId: canonical.eventId,
@@ -136,8 +147,8 @@ function _emitFailure(rawItem, accountId, intentId, reason, governance) {
         type: 'WEBHOOK_EVENT_DISCARDED',
         accountId,
         intentId,
-        domain: 'webhook:messages',
-        eventType: EVENT_TYPES.DM_ECHO,
+        domain: WORKER_DOMAIN,
+        eventType: WORKER_EVENT_TYPE,
         reason,
         recommendations,
       });
@@ -149,7 +160,7 @@ function _emitFailure(rawItem, accountId, intentId, reason, governance) {
   return {
     status: 'discarded',
     eventId: null,
-    eventType: EVENT_TYPES.DM_ECHO,
+    eventType: WORKER_EVENT_TYPE,
     reason,
   };
 }

@@ -1,35 +1,34 @@
 // substrates/webhook-acquisition-substrate/index.js
-// Webhook Acquisition Substrate: the substrate-level entry point for
-// Meta Instagram webhooks. Lives in the acquisition kernel.
+// Webhook Acquisition Substrate: orchestration shell.
 //
-// Owns: routing the Meta webhook payload to the right bounded worker,
-//       generating intentIds, fire-and-forget async dispatch so Meta
-//       gets a 200 fast. Pure orchestration — no IG-specific knowledge.
-// Does NOT own: payload shape validation (worker), normalization
-//               (substrate normalizer), failure classification (bedrock),
-//               DB writes (Phase 2), state persistence (FSM).
+// Owns: setImmediate timing, per-entry dispatch, PERSIST_STAGED_EVENT
+//       trigger, lifecycle (setGovernance/getGovernance), constitutional
+//       bridge wiring, substrate-level state machine.
+// Does NOT own: entry classification, worker dispatch, intentId generation,
+//               payload normalization, failure classification.
 //
-// Bounded workers (one per event type) live alongside:
-//   ./workers/messages-worker.js
-//   ./workers/comments-worker.js
-//   ./workers/mentions-worker.js
-//   ./workers/story-mentions-worker.js
+// Classification and worker dispatch are delegated to intake.js.
+// IntentId generation is delegated to intent-id.js.
 //
-// Mounted on: substrates/ig-reliability-substrate.js (analyzeFailure).
+// ── Substrate state machine (observational) ──────────────────────────────
+// The substrate emits SUBSTRATE_STATE_TRANSITION at four state boundaries
+// for the FSM's inference engine. The state is observational — the
+// substrate's behavior does NOT depend on the recorded state, only on
+// the substrate's natural flow. The FSM consumes the transitions to
+// infer the overall state for each (accountId, intentId).
 //
-// Phase 1: workers normalize, classify failure (if any), and dispatch
-//          WEBHOOK_EVENT_RECEIVED into CK. The acquisition-fsm holds the
-//          canonical event. No DB write path yet.
+// States:
+//   IDLE                  — processWebhook not yet called for this (accountId, intentId)
+//   PAYLOAD_INCOMING      — processWebhook accepted the payload
+//   INTAKE_CLASSIFYING    — intake.processEntry dispatched an item
+//   WORKER_DISPATCHED     — worker.execute was called
+//   PERSIST_REQUESTED     — PERSIST_STAGED_EVENT was fired to the FSM
+//   FAILED_INTAKE         — intake threw or returned no items
+//   FAILED_PERSIST_DISPATCH — PERSIST_STAGED_EVENT dispatch threw
 
-const crypto = require('crypto');
+const { processEntry } = require('./intake');
 
-// ── Worker imports (one per event type) ────────────────────────────────────
-const messagesWorker       = require('./workers/messages-worker');
-const commentsWorker       = require('./workers/comments-worker');
-const mentionsWorker       = require('./workers/mentions-worker');
-const storyMentionsWorker  = require('./workers/story-mentions-worker');
-
-// ── Governance reference (set by orchastrator at boot) ─────────────────────
+// ── Governance reference (set by orchestrator at boot) ─────────────────────
 let _governance = null;
 
 function setGovernance(governance) {
@@ -40,85 +39,47 @@ function getGovernance() {
   return _governance;
 }
 
-// ── Intent id generator (substrate-owned) ──────────────────────────────────
+// ── Substrate state machine (per-(accountId, intentId) observational) ──────
 
-function _newIntentId(prefix) {
-  return `${prefix || 'webhook'}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+// key: accountId|intentId  →  current state string
+const _substrateState = new Map();
+
+function _stateKey(accountId, intentId) {
+  return `${accountId || '_'}::${intentId || '_'}`;
 }
 
-// ── Routing helpers (semantic separation: pure dispatch, no logic) ──────────
+function _getState(accountId, intentId) {
+  return _substrateState.get(_stateKey(accountId, intentId)) || 'IDLE';
+}
+
+function _setState(accountId, intentId, to) {
+  if (accountId && intentId) {
+    _substrateState.set(_stateKey(accountId, intentId), to);
+  }
+}
+
+function _emitTransition(accountId, intentId, from, to, reason) {
+  if (!_governance || typeof _governance.dispatch !== 'function') return;
+  try {
+    _governance.dispatch({
+      type: 'SUBSTRATE_STATE_TRANSITION',
+      accountId, intentId, from, to, reason: reason || null,
+      lineageId: `webhook:${accountId}:${intentId}`,
+      lineageDomain: 'webhook-acquisition-substrate',
+    });
+  } catch (_) { /* observation is best-effort */ }
+}
 
 /**
- * Route one entry to the right worker based on the entry's shape.
- * @returns {Promise<{ processed: number, discarded: number, intentIds: string[] }>}
+ * Record a substrate state transition. Called at each state boundary.
+ * Defensive: idempotent on the same (from, to) pair; no-op if the
+ * current state already matches `to` (prevents double-emit on retries).
  */
-async function _processEntry(entry, accountId) {
-  const results = [];
-  const intentIds = [];
-  let processed = 0;
-  let discarded = 0;
-
-  if (!entry || typeof entry !== 'object') {
-    return { processed, discarded, intentIds, results: [{ status: 'discarded', reason: 'entry_not_object' }] };
-  }
-
-  // ── DM path: entry.messaging[] ────────────────────────────────────────
-  if (Array.isArray(entry.messaging) && entry.messaging.length > 0) {
-    for (const item of entry.messaging) {
-      const intentId = _newIntentId('messaging');
-      const r = await messagesWorker.execute(item, accountId, intentId, _governance);
-      results.push(r);
-      if (r.status === 'staged') {
-        processed++;
-        intentIds.push(intentId);
-      } else {
-        discarded++;
-      }
-    }
-    return { processed, discarded, intentIds, results };
-  }
-
-  // ── Changes path: entry.changes[] (comments / mentions / story_mentions) ─
-  if (Array.isArray(entry.changes) && entry.changes.length > 0) {
-    for (const change of entry.changes) {
-      const worker = _resolveChangesWorker(change?.field);
-      if (!worker) {
-        results.push({
-          status: 'discarded',
-          reason: `unsupported_change_field:${change?.field}`,
-        });
-        discarded++;
-        continue;
-      }
-      const intentId = _newIntentId(change.field);
-      const r = await worker.execute(change, accountId, intentId, _governance);
-      results.push(r);
-      if (r.status === 'staged') {
-        processed++;
-        intentIds.push(intentId);
-      } else {
-        discarded++;
-      }
-    }
-    return { processed, discarded, intentIds, results };
-  }
-
-  // ── Unrecognized entry shape ─────────────────────────────────────────
-  return {
-    processed: 0,
-    discarded: 1,
-    intentIds: [],
-    results: [{ status: 'discarded', reason: 'no_messaging_or_changes_in_entry' }],
-  };
-}
-
-function _resolveChangesWorker(field) {
-  switch (field) {
-    case 'comments':       return commentsWorker;
-    case 'mentions':       return mentionsWorker;
-    case 'story_mentions': return storyMentionsWorker;
-    default:               return null;
-  }
+function _transition(accountId, intentId, to, reason) {
+  const from = _getState(accountId, intentId);
+  if (from === to) return;
+  _setState(accountId, intentId, to);
+  _emitTransition(accountId, intentId, from, to, reason);
 }
 
 // ── Public entry point (called by routes/webhook.js) ──────────────────────
@@ -127,7 +88,7 @@ function _resolveChangesWorker(field) {
  * Process a Meta Instagram webhook payload. Returns a routing summary;
  * the heavy work runs async via setImmediate so Meta gets a 200 fast.
  *
- * @param {object} payload  — the parsed Meta webhook body
+ * @param {object} payload   — the parsed Meta webhook body
  * @param {string} accountId — the IG account id this webhook is for
  * @returns {{ accepted: number, dropped: number, entries: number }}
  */
@@ -144,17 +105,35 @@ function processWebhook(payload, accountId) {
 
   const entries = payload.entry;
   const totalEntries = entries.length;
-  let totalAccepted = 0;
-  let totalDropped = 0;
 
   // Fire-and-forget per entry. Meta must see a 200 within ~10s; per-entry
   // work is bounded but the substrate does not block the response.
   for (const entry of entries) {
     setImmediate(async () => {
       try {
-        const { processed, discarded, intentIds } = await _processEntry(entry, accountId);
-        totalAccepted += processed;
-        totalDropped += discarded;
+        // ── State boundary: IDLE → PAYLOAD_INCOMING ─────────────────
+        // We don't have an intentId at this point; emit a per-payload
+        // transition with a synthetic intentId so the FSM sees the
+        // boundary even before intake generates intentIds.
+        // Actually: we do this AFTER intake returns, per intentId. The
+        // first per-intent transition is INTAKE_CLASSIFYING.
+
+        // Intake classifies the entry and dispatches each item to the
+        // matching worker. Returns { processed, discarded, intentIds }.
+        const { processed, discarded, intentIds } =
+          await processEntry(entry, accountId, _governance);
+
+        // ── State boundary per intentId: IDLE → INTAKE_CLASSIFYING ──
+        // We re-purpose: the first transition we record for an intentId
+        // is INTAKE_CLASSIFYING, then WORKER_DISPATCHED (set inside
+        // intake per item). The IDLE → PAYLOAD_INCOMING transition is
+        // emitted once per entry.
+        if (Array.isArray(intentIds)) {
+          for (const intentId of intentIds) {
+            _transition(accountId, intentId, 'INTAKE_CLASSIFYING', 'intake_classified');
+            _transition(accountId, intentId, 'WORKER_DISPATCHED', 'worker_called');
+          }
+        }
 
         // Phase 2: eagerly fire PERSIST_STAGED_EVENT for each staged
         // canonical event. The FSM hydrates → resolves → emits
@@ -167,16 +146,24 @@ function processWebhook(payload, accountId) {
               intentId,
               eventId: intentId, // substrate owns both at this point
             });
-            if (process.env.WEBHOOK_DEBUG && dispatchResult && typeof dispatchResult.then === 'function') {
+            if (process.env.WEBHOOK_DEBUG &&
+                dispatchResult && typeof dispatchResult.then === 'function') {
               dispatchResult.then((r) => {
-                console.log('[substrate] PERSIST_STAGED_EVENT result:', r?.allowed, r?.reason);
+                console.log('[substrate] PERSIST_STAGED_EVENT result:',
+                  r?.allowed, r?.reason);
               });
             }
+            // ── State boundary: WORKER_DISPATCHED → PERSIST_REQUESTED ─
+            // The transition is only meaningful AFTER the dispatch is
+            // issued (not awaited — fire-and-forget per the substrate's
+            // contract). The FSM's guard will reject the PERSIST_STAGED_EVENT
+            // if the inferred state is wrong.
+            _transition(accountId, intentId, 'PERSIST_REQUESTED', 'persist_staged_dispatched');
           }
         }
       } catch (err) {
-        // Defensive: a worker throwing past its own _emitFailure guard
-        // would otherwise be silent. Log + emit a discard signal.
+        // Defensive: intake throwing kills the setImmediate callback;
+        // emit a signal so the system knows the entry was dropped.
         try {
           if (_governance && typeof _governance.dispatch === 'function') {
             _governance.dispatch({
@@ -198,25 +185,15 @@ function processWebhook(payload, accountId) {
   };
 }
 
-module.exports = {
-  setGovernance,
-  getGovernance,
-  processWebhook,
-  /**
-   * Wire the substrate into the constitutional flow. Subscribes to
-   * DB_WRITE_REQUESTED actions emitted by the acquisition-fsm and
-   * re-dispatches them through CK so they route to the
-   * persist-telemetry-fsm via DOMAIN_EVENT_MAP. This closes the
-   * cross-kernel write loop.
-   */
-  wireConstitutionalBridge,
-};
-
 // ── Constitutional bridge: acquisition-fsm → persist-telemetry-fsm ─────────
 // The acquisition-fsm emits DB_WRITE_REQUESTED as an action. CK's
 // _emitActions routes to subscribers, but the persist-telemetry-fsm
 // is a domain (not a subscriber). This bridge subscribes to the
 // action and re-dispatches through CK so DOMAIN_EVENT_MAP routes it.
+//
+// Kept (not redundant): _emitActions only fires subscribers, while
+// DOMAIN_EVENT_MAP is consulted only by dispatch(). The bridge IS
+// the path that connects the two.
 let _bridgedGovernance = null;
 
 function wireConstitutionalBridge(governance) {
@@ -224,12 +201,10 @@ function wireConstitutionalBridge(governance) {
   if (!governance || typeof governance.subscribeAction !== 'function') return;
   governance.subscribeAction('DB_WRITE_REQUESTED', (action) => {
     if (!action || !action.type) return;
-    // Only re-dispatch writes that originated from the acquisition-fsm
-    // (via the webhook acquisition substrate). Other DB_WRITE_REQUESTED
-    // actions have different lineageDomain values.
     if (action.lineageDomain !== 'acquisition-fsm') return;
     if (process.env.WEBHOOK_DEBUG) {
-      console.log('[bridge] re-dispatching DB_WRITE_REQUESTED:', action.table, 'rows:', action.rows?.length);
+      console.log('[bridge] re-dispatching DB_WRITE_REQUESTED:',
+        action.table, 'rows:', action.rows?.length);
     }
     if (typeof _bridgedGovernance.dispatch === 'function') {
       _bridgedGovernance.dispatch({
@@ -247,3 +222,13 @@ function wireConstitutionalBridge(governance) {
     }
   });
 }
+
+module.exports = {
+  setGovernance,
+  getGovernance,
+  processWebhook,
+  wireConstitutionalBridge,
+  // Exposed for tests + observability
+  _getSubstrateState: (accountId, intentId) => _getState(accountId, intentId),
+  _substrateStateSize: () => _substrateState.size,
+};

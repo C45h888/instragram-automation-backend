@@ -27,20 +27,22 @@ function resolve(canonicalEvent, context) {
   if (!context || !context.accountId) return { error: 'missing_account_context' };
   if (!context.businessAccountId) return { error: 'missing_business_account_context' };
 
+  const eventId = `mention:${n.mentionId}:${context.businessAccountId}`;
+
   const row = {
-    ugc_id:                 n.mentionId,
+    visitor_post_id:        eventId,
     business_account_id:    context.businessAccountId,
     author_instagram_id:    n.authorInstagramId || null,
     author_username:        n.authorUsername || null,
     ugc_type:               'mention',
-    source_media_id:        context.mediaId || null,
-    instagram_media_id:     n.mediaId || null,
-    referenced_comment_id:  n.commentId || null,
-    captured_at:            new Date(canonicalEvent.occurredAt || Date.now()).toISOString(),
+    created_time:           new Date(canonicalEvent.occurredAt || Date.now()).toISOString(),
     metadata: {
-      source: canonicalEvent.source,
-      priority: canonicalEvent.priority,
-      raw_event_id: canonicalEvent.eventId,
+      source_media_id:      context.mediaId || null,
+      instagram_media_id:   n.mediaId || null,
+      referenced_comment_id: n.commentId || null,
+      source:               canonicalEvent.source,
+      priority:             canonicalEvent.priority,
+      raw_event_id:         canonicalEvent.eventId,
     },
   };
 

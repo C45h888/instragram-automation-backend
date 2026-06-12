@@ -8,6 +8,10 @@
 const { analyzeFailure } =
   require('../../../../substrates/ig-reliability-substrate');
 const { normalizeStoryMention, EVENT_TYPES } = require('../normalizer');
+const { WorkerStateMachine } = require('./_state-machine');
+
+const WORKER_DOMAIN = 'webhook:story-mentions';
+const WORKER_EVENT_TYPE = EVENT_TYPES.STORY_MENTION;
 
 function _validateStoryMentionChange(change) {
   if (!change || typeof change !== 'object') {
@@ -27,26 +31,36 @@ function _validateStoryMentionChange(change) {
 }
 
 async function execute(rawChange, accountId, intentId, governance) {
+  const wstate = new WorkerStateMachine({
+    accountId, intentId, eventType: WORKER_EVENT_TYPE,
+    domain: WORKER_DOMAIN, governance,
+  });
+
+  wstate.transition('VALIDATING');
   const v = _validateStoryMentionChange(rawChange);
   if (!v.ok) {
+    wstate.transition('FAILED_VALIDATION', v.reason);
     return _emitFailure(rawChange, accountId, intentId, v.reason, governance);
   }
 
+  wstate.transition('NORMALIZING');
   let canonical;
   try {
     canonical = normalizeStoryMention(rawChange, null);
     canonical.igAccountId = accountId || null;
   } catch (err) {
+    wstate.transition('FAILED_NORMALIZE', err.message);
     return _emitFailure(rawChange, accountId, intentId, `normalizer_threw:${err.message}`, governance);
   }
 
+  wstate.transition('DISPATCHING');
   try {
     if (governance && typeof governance.dispatch === 'function') {
       governance.dispatch({
         type: 'WEBHOOK_EVENT_RECEIVED',
         accountId,
         intentId,
-        domain: 'webhook:story-mentions',
+        domain: WORKER_DOMAIN,
         eventType: canonical.eventType,
         eventId: canonical.eventId,
         occurredAt: canonical.occurredAt,
@@ -57,9 +71,11 @@ async function execute(rawChange, accountId, intentId, governance) {
       });
     }
   } catch (err) {
+    wstate.transition('FAILED_DISPATCH', err.message);
     return _emitFailure(rawChange, accountId, intentId, `dispatch_threw:${err.message}`, governance);
   }
 
+  wstate.transition('STAGED');
   return {
     status: 'staged',
     eventId: canonical.eventId,
@@ -71,7 +87,7 @@ function _emitFailure(rawChange, accountId, intentId, reason, governance) {
   const rawError = {
     message: reason,
     source: 'webhook-acquisition:story-mentions',
-    eventType: EVENT_TYPES.STORY_MENTION,
+    eventType: WORKER_EVENT_TYPE,
   };
 
   let recommendations = [];
@@ -92,8 +108,8 @@ function _emitFailure(rawChange, accountId, intentId, reason, governance) {
         type: 'WEBHOOK_EVENT_DISCARDED',
         accountId,
         intentId,
-        domain: 'webhook:story-mentions',
-        eventType: EVENT_TYPES.STORY_MENTION,
+        domain: WORKER_DOMAIN,
+        eventType: WORKER_EVENT_TYPE,
         reason,
         recommendations,
       });
@@ -103,7 +119,7 @@ function _emitFailure(rawChange, accountId, intentId, reason, governance) {
   return {
     status: 'discarded',
     eventId: null,
-    eventType: EVENT_TYPES.STORY_MENTION,
+    eventType: WORKER_EVENT_TYPE,
     reason,
   };
 }

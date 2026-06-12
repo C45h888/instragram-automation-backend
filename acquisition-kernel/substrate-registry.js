@@ -16,7 +16,6 @@
 // (post-queue-worker under persist-telemetry-fsm governance).
 
 const engagement = require('./substrates/engagement-substrate');
-const ugcContent   = require('./substrates/ugc-content-substrate');
 const insights    = require('./substrates/insights-substrate');
 const webhookAcquisition =
   require('./substrates/webhook-acquisition-substrate');
@@ -37,9 +36,7 @@ const publishEngagement = require('../publishing-kernel/substrates/engagement/in
 const PARSING_WORKER_MAP = {
   comments:  './substrates/parsing-substrate/workers/comments-parser',
   messages:  './substrates/parsing-substrate/workers/messages-parser',
-  ugc:       './substrates/parsing-substrate/workers/ugc-parser',
   insights:  './substrates/parsing-substrate/workers/insights-parser',
-  media:     './substrates/parsing-substrate/workers/content-parser',
 };
 
 // Retry-substrate workers — domain-bounded, registered here, looked up
@@ -51,9 +48,7 @@ const PARSING_WORKER_MAP = {
 const RETRY_WORKER_MAP = {
   comments:           '../retry-cadence-kernel/workers/engagement-retry-worker',
   messages:           '../retry-cadence-kernel/workers/engagement-retry-worker',
-  ugc:                '../retry-cadence-kernel/workers/ugc-retry-worker',
   insights:           '../retry-cadence-kernel/workers/insights-retry-worker',
-  media:              '../retry-cadence-kernel/workers/content-retry-worker',
   // ── Publish retry workers (Step 6) ────────────────────────
   // Two workers, bound to the two publish substrates. The
   // dual-binding pattern: each publish:* domain has a dedicated
@@ -97,9 +92,7 @@ const RETRY_WORKER_MAP = {
 const CLASSIFICATION_WORKER_MAP = {
   comments:           '../retry-cadence-kernel/workers/classification-worker',
   messages:           '../retry-cadence-kernel/workers/classification-worker',
-  ugc:                '../retry-cadence-kernel/workers/classification-worker',
   insights:           '../retry-cadence-kernel/workers/classification-worker',
-  media:              '../retry-cadence-kernel/workers/classification-worker',
   // Publish classification — owned by the Instagram Reliability
   // Substrate (substrates/ig-reliability-substrate.js).
   // The 4 publish:* domains flow through IG_FAILURE_OBSERVED →
@@ -141,25 +134,37 @@ const CLASSIFICATION_WORKER_MAP = {
 // ig-reliability-substrate bedrock for failure analysis.
 // Used by substrateRegistry.getWebhookWorker(domain).
 const WEBHOOK_WORKER_MAP = {
-  'webhook:messages':       './substrates/webhook-acquisition-substrate/workers/messages-worker',
-  'webhook:comments':       './substrates/webhook-acquisition-substrate/workers/comments-worker',
-  'webhook:mentions':       './substrates/webhook-acquisition-substrate/workers/mentions-worker',
-  'webhook:story-mentions': './substrates/webhook-acquisition-substrate/workers/story-mentions-worker',
+  'webhook:messages':         './substrates/webhook-acquisition-substrate/workers/messages-worker',
+  'webhook:comments':         './substrates/webhook-acquisition-substrate/workers/comments-worker',
+  'webhook:mentions':         './substrates/webhook-acquisition-substrate/workers/mentions-worker',
+  'webhook:story-mentions':   './substrates/webhook-acquisition-substrate/workers/story-mentions-worker',
+  'webhook:comment-replies':  './substrates/webhook-acquisition-substrate/workers/comment-replies-worker',
+  'webhook:live-comments':    './substrates/webhook-acquisition-substrate/workers/live-comments-worker',
+  'webhook:message-reactions':'./substrates/webhook-acquisition-substrate/workers/message-reactions-worker',
+  'webhook:message-seen':     './substrates/webhook-acquisition-substrate/workers/message-seen-worker',
+  'webhook:standby':          './substrates/webhook-acquisition-substrate/workers/standby-worker',
+  'webhook:media-publish':    './substrates/webhook-acquisition-substrate/workers/media-publish-worker',
+  'webhook:tags':             './substrates/webhook-acquisition-substrate/workers/tags-worker',
 };
 
 const DOMAIN_REGISTRY = {
   comments:         { fetch: engagement.fetch.bind(engagement) },
   messages:         { fetch: engagement.fetch.bind(engagement) },
-  ugc:              { fetch: ugcContent.fetch.bind(ugcContent) },
   insights:         { fetch: insights.fetch.bind(insights) },
-  media:            { fetch: ugcContent.fetch.bind(ugcContent) },
   // ── Webhook acquisition domains (Phase 1) ────────────────────────
   // The substrate owns routing; the binding exposes process so any
   // kernel can ask for the canonical processWebhook entry point.
-  'webhook:messages':       { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
-  'webhook:comments':       { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
-  'webhook:mentions':       { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
-  'webhook:story-mentions': { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:messages':         { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:comments':         { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:mentions':         { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:story-mentions':   { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:comment-replies':  { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:live-comments':    { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:message-reactions':{ process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:message-seen':     { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:standby':          { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:media-publish':    { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
+  'webhook:tags':             { process: webhookAcquisition.processWebhook.bind(webhookAcquisition) },
   'publish:post':   { execute: publishContent.execute.bind(publishContent) },
   'publish:story':  { execute: publishContent.execute.bind(publishContent) },
   'publish:comment':{ execute: publishEngagement.execute.bind(publishEngagement) },

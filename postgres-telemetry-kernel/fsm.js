@@ -420,6 +420,23 @@ const TRANSITION_MAP = {
         }];
       }
 
+      // Success confirmation span: the constitutional path for retry-cadence
+      // is the FAILURE path (DB_PERSIST_FAILURE on DB_WRITE_FAILED). The
+      // success path closes the in-flight counter and emits a span so the
+      // observability plane sees the write landed. No retry is instantiated
+      // — the retry-cadence kernel only acts on failures.
+      if (ctx && ctx.dispatchGlobal) {
+        try {
+          ctx.dispatchGlobal({
+            type: 'DB_WRITE_CONFIRMED',
+            domain, accountId, intentId, table,
+            count: count || 0,
+            writeId: event.writeId || null,
+            lineageId: event.lineageId || null,
+          });
+        } catch (_) { /* observation is best-effort; do not block the path */ }
+      }
+
       // Forward completion to originating domain so it can resolve pending writes.
       // DB_WRITE_ACKNOWLEDGED is routed by CK to the domain that dispatched DB_WRITE_REQUESTED.
       // This closes the request-and-await loop for credential status updates and other

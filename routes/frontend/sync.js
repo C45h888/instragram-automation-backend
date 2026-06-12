@@ -1,133 +1,52 @@
 // backend.api/routes/frontend/sync.js
-// Data sync routes: sync UGC tagged posts, sync business posts.
-// Frontend-facing — user-initiated, not governed by AcquisitionIntent contract.
-// Uses IG fetcher modules (pure transport) + persistence substrate (pure DB write).
+// ⚠️  DEPRECATED — ugc/content polling fetch logic removed (Phase A).
+//     Both endpoints below will return 501 Not Implemented. UGC data is
+//     now sourced from the webhook acquisition path. Frontend should be
+//     updated to consume webhook-driven data instead of these polling
+//     endpoints. This file is kept as a stub to preserve the route mount.
 
 const express = require('express');
 const router = express.Router();
 const { logAudit: logAuditService } = require('../../config/supabase');
-const { resolveAccountCredentials } = require('../../graph-capability-kernel/substrates/credential-resolver');
-const dispatchWrite = require('../../postgres-telemetry-kernel/writers').dispatchWrite;
-const { mapRawPostToUgcContent } = require('../../acquisition-kernel/substrates/ugc-content-substrate/ugc-normalizer');
-const ugcTransport = require('../../acquisition-kernel/substrates/ugc-content-substrate/ugc-transport');
-const contentTransport = require('../../acquisition-kernel/substrates/ugc-content-substrate/content-transport');
+
+console.warn(
+  '[routes/frontend/sync] DEPRECATED polling-sync endpoints loaded as 501 stubs. ' +
+  'UGC + content data is now sourced from the webhook acquisition path. ' +
+  'Update frontend callers before removing this file.'
+);
 
 const logAudit = logAuditService;
 
 // ==========================================
-// ROUTES
+// ROUTES — STUBS
 // ==========================================
 
 /**
- * POST /api/instagram/sync/ugc
- * Triggers sync of tagged posts from Instagram to database.
- * User-initiated (frontend) — direct transport + persistence.
+ * POST /api/instagram/sync/ugc — REMOVED
+ * Previously triggered sync of tagged posts via ugc-transport. Polling
+ * fetch path retired. UGC data is delivered via webhooks.
  */
 router.post('/sync/ugc', async (req, res) => {
-  try {
-    const { businessAccountId } = req.body;
-
-    if (!businessAccountId) {
-      return res.status(400).json({ success: false, error: 'businessAccountId is required' });
-    }
-
-    const creds = await resolveAccountCredentials(businessAccountId);
-    const result = await ugcTransport.fetchTaggedMedia(businessAccountId, 50, creds);
-
-    if (!result.success) {
-      return res.status(result.retryable === false ? 401 : 500).json({
-        success: false,
-        error: result.error,
-        code: result.code,
-        retryable: result.retryable,
-        error_category: result.error_category,
-      });
-    }
-
-    if (result.records?.length > 0) {
-      const rows = result.records
-        .filter(p => p.id)
-        .map(p => mapRawPostToUgcContent(p, businessAccountId, 'tagged', null));
-      if (rows.length > 0) {
-        dispatchWrite('batch_upsert_ugc', {
-          domain: 'ugc', accountId: businessAccountId, intentId: null, table: 'ugc_content',
-          rows,
-        });
-      }
-    }
-
-    res.json({ success: true, synced_count: result.count || 0 });
-
-    await logAudit('ugc_sync_completed', null, {
-      business_account_id: businessAccountId,
-      synced_count: result.count || 0,
-    });
-
-  } catch (error) {
-    console.error('[sync/ugc] Error:', error.message);
-    res.status(500).json({ success: false, error: error.message || 'Sync failed' });
-  }
+  res.status(501).json({
+    success: false,
+    error: 'deprecated',
+    message: 'UGC polling sync is deprecated. UGC data is now delivered via Meta webhooks.',
+  });
+  await logAudit('ugc_sync_deprecated_hit', null, { business_account_id: req.body?.businessAccountId || null });
 });
 
 /**
- * POST /api/instagram/sync/posts
- * Triggers sync of business media from Instagram to database.
- * User-initiated (frontend) — direct transport + persistence.
+ * POST /api/instagram/sync/posts — REMOVED
+ * Previously triggered sync of business media via content-transport.
+ * Polling fetch path retired. Media data is delivered via webhooks.
  */
 router.post('/sync/posts', async (req, res) => {
-  try {
-    const { businessAccountId } = req.body;
-
-    if (!businessAccountId) {
-      return res.status(400).json({ success: false, error: 'businessAccountId is required' });
-    }
-
-    const result = await contentTransport.fetchPosts(businessAccountId, 50);
-
-    if (!result.success) {
-      return res.status(result.retryable === false ? 401 : 500).json({
-        success: false,
-        error: result.error,
-        code: result.code,
-        retryable: result.retryable,
-        error_category: result.error_category,
-      });
-    }
-
-    if (result.posts?.length > 0) {
-      const rows = result.posts
-        .filter(p => p && p.id)
-        .map(p => ({
-          instagram_media_id: p.id,
-          business_account_id: businessAccountId,
-          media_type: p.media_type || null,
-          caption: p.caption || null,
-          media_url: p.media_url || null,
-          thumbnail_url: p.thumbnail_url || null,
-          permalink: p.permalink || null,
-          like_count: p.like_count || 0,
-          comments_count: p.comments_count || 0,
-          published_at: p.timestamp || null,
-        }));
-      if (rows.length > 0) {
-        dispatchWrite('batch_upsert_posts', {
-          domain: 'media', accountId: businessAccountId, intentId: null, table: 'instagram_media',
-          rows,
-        });
-      }
-    }
-
-    res.json({ success: true, synced_count: result.count || 0 });
-
-    await logAudit('business_posts_sync_completed', null, {
-      business_account_id: businessAccountId,
-      synced_count: result.count || 0,
-    });
-
-  } catch (error) {
-    console.error('[sync/posts] Error:', error.message);
-    res.status(500).json({ success: false, error: error.message || 'Sync failed' });
-  }
+  res.status(501).json({
+    success: false,
+    error: 'deprecated',
+    message: 'Content polling sync is deprecated. Media data is now delivered via Meta webhooks.',
+  });
+  await logAudit('posts_sync_deprecated_hit', null, { business_account_id: req.body?.businessAccountId || null });
 });
 
 module.exports = router;

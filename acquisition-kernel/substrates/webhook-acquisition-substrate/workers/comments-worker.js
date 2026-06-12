@@ -13,6 +13,10 @@
 const { analyzeFailure } =
   require('../../../../substrates/ig-reliability-substrate');
 const { normalizeComment, EVENT_TYPES } = require('../normalizer');
+const { WorkerStateMachine } = require('./_state-machine');
+
+const WORKER_DOMAIN = 'webhook:comments';
+const WORKER_EVENT_TYPE = EVENT_TYPES.COMMENT;
 
 function _validateCommentChange(change) {
   if (!change || typeof change !== 'object') {
@@ -35,29 +39,36 @@ function _validateCommentChange(change) {
 }
 
 async function execute(rawChange, accountId, intentId, governance) {
-  // ── Layer 1: shape validation ────────────────────────────────────────
+  const wstate = new WorkerStateMachine({
+    accountId, intentId, eventType: WORKER_EVENT_TYPE,
+    domain: WORKER_DOMAIN, governance,
+  });
+
+  wstate.transition('VALIDATING');
   const v = _validateCommentChange(rawChange);
   if (!v.ok) {
+    wstate.transition('FAILED_VALIDATION', v.reason);
     return _emitFailure(rawChange, accountId, intentId, v.reason, governance);
   }
 
-  // ── Layer 2: normalize ───────────────────────────────────────────────
+  wstate.transition('NORMALIZING');
   let canonical;
   try {
     canonical = normalizeComment(rawChange, null);
     canonical.igAccountId = accountId || null;
   } catch (err) {
+    wstate.transition('FAILED_NORMALIZE', err.message);
     return _emitFailure(rawChange, accountId, intentId, `normalizer_threw:${err.message}`, governance);
   }
 
-  // ── Layer 3: dispatch ────────────────────────────────────────────────
+  wstate.transition('DISPATCHING');
   try {
     if (governance && typeof governance.dispatch === 'function') {
       governance.dispatch({
         type: 'WEBHOOK_EVENT_RECEIVED',
         accountId,
         intentId,
-        domain: 'webhook:comments',
+        domain: WORKER_DOMAIN,
         eventType: canonical.eventType,
         eventId: canonical.eventId,
         occurredAt: canonical.occurredAt,
@@ -68,9 +79,11 @@ async function execute(rawChange, accountId, intentId, governance) {
       });
     }
   } catch (err) {
+    wstate.transition('FAILED_DISPATCH', err.message);
     return _emitFailure(rawChange, accountId, intentId, `dispatch_threw:${err.message}`, governance);
   }
 
+  wstate.transition('STAGED');
   return {
     status: 'staged',
     eventId: canonical.eventId,

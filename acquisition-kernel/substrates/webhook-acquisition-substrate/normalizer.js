@@ -21,11 +21,18 @@ const WEBHOOK_SOURCE = 'webhook:instagram';
 
 // ── Event type enum (single source of truth) ──────────────────────────────
 const EVENT_TYPES = Object.freeze({
-  COMMENT:        'comment',
-  DM_ECHO:        'dm_echo',
-  DM_POSTBACK:    'dm_postback',
-  MENTION:        'mention',
-  STORY_MENTION:  'story_mention',
+  COMMENT:           'comment',
+  COMMENT_REPLY:     'comment_reply',
+  LIVE_COMMENT:      'live_comment',
+  DM_ECHO:           'dm_echo',
+  DM_POSTBACK:       'dm_postback',
+  DM_REACTION:       'dm_reaction',
+  DM_SEEN:           'dm_seen',
+  MENTION:           'mention',
+  STORY_MENTION:     'story_mention',
+  STANDBY:           'standby',
+  MEDIA_PUBLISH:     'media_publish',
+  TAG:               'tag',
 });
 
 // ── Small helpers ──────────────────────────────────────────────────────────
@@ -201,6 +208,191 @@ function normalizeMessaging(item, entryTime) {
   };
 }
 
+// ── Comment reply (entry[].changes[].field === "comments" with reply) ──────
+// Meta delivers comment replies under field="comments" with parent_id set
+// (value.parent_id is the id of the comment being replied to).
+//   value.id          = reply id
+//   value.parent_id   = parent comment id
+//   value.text        = reply text
+//   value.from        = { id, username }
+//   value.media       = { id, media_product_type }
+function normalizeCommentReply(change, entryTime) {
+  const value = change?.value || {};
+  const from = value.from || {};
+  const media = value.media || {};
+
+  return {
+    eventType: EVENT_TYPES.COMMENT_REPLY,
+    igAccountId: null,
+    eventId: value.id || _eventId('comment_reply', entryTime, value.text, value.parent_id),
+    occurredAt: _ms(value.created_at || entryTime),
+    source: WEBHOOK_SOURCE,
+    priority: WEBHOOK_PRIORITY,
+    raw: { change, entryTime },
+    normalized: {
+      replyId: value.id || null,
+      parentCommentId: value.parent_id || null,
+      authorInstagramId: from.self_ig_scoped_id || from.id || null,
+      authorUsername: from.username || null,
+      text: value.text || null,
+      mediaId: media.id || null,
+    },
+  };
+}
+
+// ── Live comment (entry[].changes[].field === "live_comments") ──────────────
+// Comments on a live broadcast video.
+//   value.id         = comment id
+//   value.from       = { id, username }
+//   value.media      = { id } — the live video
+//   value.text       = comment text
+function normalizeLiveComment(change, entryTime) {
+  const value = change?.value || {};
+  const from = value.from || {};
+  const media = value.media || {};
+
+  return {
+    eventType: EVENT_TYPES.LIVE_COMMENT,
+    igAccountId: null,
+    eventId: value.id || _eventId('live_comment', entryTime, value.text),
+    occurredAt: _ms(value.created_at || entryTime),
+    source: WEBHOOK_SOURCE,
+    priority: WEBHOOK_PRIORITY,
+    raw: { change, entryTime },
+    normalized: {
+      commentId: value.id || null,
+      authorInstagramId: from.id || null,
+      authorUsername: from.username || null,
+      text: value.text || null,
+      mediaId: media.id || null,
+    },
+  };
+}
+
+// ── Message reaction (entry[].changes[].field === "message_reactions") ─────
+// Reactions on DMs (emoji reactions to a specific message).
+//   value.message_id = the message being reacted to
+//   value.reaction   = emoji character
+//   value.action     = "react" | "unreact"
+//   value.sender     = { id }
+function normalizeMessageReaction(change, entryTime) {
+  const value = change?.value || {};
+  const sender = value.sender || {};
+
+  return {
+    eventType: EVENT_TYPES.DM_REACTION,
+    igAccountId: null,
+    eventId: _eventId('dm_reaction', value.message_id, value.reaction, value.action, entryTime),
+    occurredAt: _ms(entryTime),
+    source: WEBHOOK_SOURCE,
+    priority: WEBHOOK_PRIORITY,
+    raw: { change, entryTime },
+    normalized: {
+      messageId: value.message_id || null,
+      reaction: value.reaction || null,
+      action: value.action || null,
+      senderId: sender.id || null,
+    },
+  };
+}
+
+// ── Message seen / read receipt (entry[].changes[].field === "message_seen")
+//   value.message_id = the message that was read
+//   value.read       = { watermark (unix ms) }
+//   value.sender     = { id } — the reader
+function normalizeMessageSeen(change, entryTime) {
+  const value = change?.value || {};
+  const read = value.read || {};
+  const sender = value.sender || {};
+
+  return {
+    eventType: EVENT_TYPES.DM_SEEN,
+    igAccountId: null,
+    eventId: _eventId('dm_seen', value.message_id, sender.id, read.watermark),
+    occurredAt: _ms(read.watermark || entryTime),
+    source: WEBHOOK_SOURCE,
+    priority: WEBHOOK_PRIORITY,
+    raw: { change, entryTime },
+    normalized: {
+      messageId: value.message_id || null,
+      senderId: sender.id || null,
+      watermark: read.watermark || null,
+    },
+  };
+}
+
+// ── Standby channel (entry[].changes[].field === "standby") ────────────────
+// Standby messages come through a separate channel when a human agent
+// (Page Inbox / human take-over) is handling the conversation. Webhook
+// delivers a thin envelope so the business can pause automated replies.
+//   value.message_id = the message handled by the human
+//   value.page_id    = the Page id where the standby is active
+function normalizeStandby(change, entryTime) {
+  const value = change?.value || {};
+
+  return {
+    eventType: EVENT_TYPES.STANDBY,
+    igAccountId: null,
+    eventId: _eventId('standby', value.message_id, value.page_id, entryTime),
+    occurredAt: _ms(entryTime),
+    source: WEBHOOK_SOURCE,
+    priority: WEBHOOK_PRIORITY,
+    raw: { change, entryTime },
+    normalized: {
+      messageId: value.message_id || null,
+      pageId: value.page_id || null,
+    },
+  };
+}
+
+// ── Media publish (entry[].changes[].field === "media") ────────────────────
+// Delivered when the IG business account publishes a new media item.
+//   value.media_id   = the new media id
+//   value.media_type = "IMAGE" | "VIDEO" | "CAROUSEL_ALBUM" | ...
+function normalizeMediaPublish(change, entryTime) {
+  const value = change?.value || {};
+
+  return {
+    eventType: EVENT_TYPES.MEDIA_PUBLISH,
+    igAccountId: null,
+    eventId: value.media_id || _eventId('media_publish', entryTime),
+    occurredAt: _ms(entryTime),
+    source: WEBHOOK_SOURCE,
+    priority: WEBHOOK_PRIORITY,
+    raw: { change, entryTime },
+    normalized: {
+      mediaId: value.media_id || null,
+      mediaType: value.media_type || null,
+    },
+  };
+}
+
+// ── Tag (entry[].changes[].field === "tags") ───────────────────────────────
+// A user was tagged in a photo or video (other people's media).
+//   value.media_id  = media containing the tag
+//   value.media_url = permalink
+//   value.from      = { id, username } of the media author
+function normalizeTag(change, entryTime) {
+  const value = change?.value || {};
+  const from = value.from || {};
+
+  return {
+    eventType: EVENT_TYPES.TAG,
+    igAccountId: null,
+    eventId: _eventId('tag', value.media_id, from.id, entryTime),
+    occurredAt: _ms(entryTime),
+    source: WEBHOOK_SOURCE,
+    priority: WEBHOOK_PRIORITY,
+    raw: { change, entryTime },
+    normalized: {
+      mediaId: value.media_id || null,
+      mediaUrl: value.media_url || null,
+      authorInstagramId: from.id || null,
+      authorUsername: from.username || null,
+    },
+  };
+}
+
 module.exports = {
   EVENT_TYPES,
   WEBHOOK_PRIORITY,
@@ -209,4 +401,11 @@ module.exports = {
   normalizeMention,
   normalizeStoryMention,
   normalizeMessaging,
+  normalizeCommentReply,
+  normalizeLiveComment,
+  normalizeMessageReaction,
+  normalizeMessageSeen,
+  normalizeStandby,
+  normalizeMediaPublish,
+  normalizeTag,
 };

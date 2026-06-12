@@ -155,6 +155,12 @@ function _findStagedEventById(accountId, eventId) {
 const resolvers =
   require('./substrates/webhook-acquisition-substrate/resolvers');
 
+// ── Inference engine (deterministic state reducer) ──────────────────────
+// The FSM uses this engine to compute the inferred state for any
+// (accountId, intentId) by replaying the transition log. State is
+// COMPUTED, not stored. Same log → same state, always.
+const inferenceEngine = require('./inference-engine');
+
 /**
  * Hydrate the resolved context that resolvers expect.
  * Performs governed reads for account UUID, media UUID, conversation UUID.
@@ -421,6 +427,11 @@ const REQUIRED_PAYLOAD_FIELDS = {
   PERSIST_STAGED_EVENT:         ['accountId', 'intentId', 'eventId'],
   WEBHOOK_EVENT_PERSISTED:      ['accountId', 'intentId', 'eventId', 'table', 'count'],
   WEBHOOK_EVENT_PERSIST_FAILED: ['accountId', 'intentId', 'eventId', 'error'],
+  // ── Inference engine inputs (Phase 1) ─────────────────────────────────
+  // The FSM records these transitions to its log; the reducer computes
+  // the inferred state. Workers and the substrate emit these.
+  WORKER_STATE_TRANSITION:      ['accountId', 'intentId', 'from', 'to', 'domain', 'eventType'],
+  SUBSTRATE_STATE_TRANSITION:   ['accountId', 'intentId', 'from', 'to'],
 };
 
 function _guardPayload(event) {
@@ -911,7 +922,18 @@ const TRANSITION_MAP = {
       if (!staged) {
         return { allowed: false, reason: `staged_event_not_found:${event.accountId}:${event.intentId}` };
       }
-      return { allowed: true };
+      // Inference engine gate: the FSM only accepts PERSIST_STAGED_EVENT
+      // when the inferred state shows the worker has completed.
+      const inferred = inferenceEngine.reduceInferredState(event.accountId, event.intentId);
+      if (inferred === inferenceEngine.INFERRED.STAGED ||
+          inferred === inferenceEngine.INFERRED.PERSIST_REQUESTED) {
+        return { allowed: true, inferredState: inferred };
+      }
+      return {
+        allowed: false,
+        reason: `inferred_state_not_ready:${inferred}`,
+        inferredState: inferred,
+      };
     },
     buildActions: async (event, ctx) => {
       const { accountId, intentId, eventId } = event;
@@ -921,9 +943,17 @@ const TRANSITION_MAP = {
         return [];
       }
 
+      // Note: the INTERNAL:PERSIST_REQUESTED→PERSIST_ACKNOWLEDGED
+      // transition is recorded LATER in this buildActions — only after
+      // hydration, resolve, and the gate all pass. The intermediate
+      // failure paths (FAILED_HYDRATION, FAILED_RESOLVE, FAILED_GATE)
+      // move the state directly from PERSIST_REQUESTED to a terminal
+      // failure state.
+
       // ── Hydrate context via governed reads ───────────────────────────
       const context = await _hydrateResolverContext(staged, effectiveCtx);
       if (context.error) {
+        inferenceEngine.recordTransition(accountId, intentId, 'SUBSTRATE', 'PERSIST_REQUESTED', 'FAILED_HYDRATION');
         _emitSpan('WEBHOOK_EVENT_PERSIST_FAILED', intentId, accountId, staged.domain, {
           eventType: staged.eventType,
           reason: context.error,
@@ -946,6 +976,7 @@ const TRANSITION_MAP = {
         return [];
       }
       if (result.error) {
+        inferenceEngine.recordTransition(accountId, intentId, 'SUBSTRATE', 'PERSIST_REQUESTED', 'FAILED_RESOLVE');
         _emitSpan('WEBHOOK_EVENT_PERSIST_FAILED', intentId, accountId, staged.domain, {
           eventType: staged.eventType,
           reason: result.error,
@@ -968,6 +999,7 @@ const TRANSITION_MAP = {
         rowCount: result.rows?.length || 0,
       }, null);
       if (!gate.allowed) {
+        inferenceEngine.recordTransition(accountId, intentId, 'SUBSTRATE', 'PERSIST_REQUESTED', 'FAILED_GATE');
         return [{
           type: 'GATE_REJECTED',
           operation: 'db_write',
@@ -989,6 +1021,13 @@ const TRANSITION_MAP = {
         operation: result.operation,
         rowCount: result.rows?.length || 0,
       });
+
+      // ── Internal transition: PERSIST_REQUESTED → PERSIST_ACKNOWLEDGED ──
+      // The FSM is committing to dispatch; record the internal transition
+      // BEFORE the action emit so any subsequent reader sees the state.
+      inferenceEngine.recordTransition(accountId, intentId, 'INTERNAL', 'PERSIST_REQUESTED', 'PERSIST_ACKNOWLEDGED');
+      // ── Internal transition: PERSIST_ACKNOWLEDGED → DB_WRITE_DISPATCHED ─
+      inferenceEngine.recordTransition(accountId, intentId, 'INTERNAL', 'PERSIST_ACKNOWLEDGED', 'DB_WRITE_DISPATCHED');
 
       // ── Cross-kernel dispatch via CK (constitutional flow) ───────────
       const actions = [{
@@ -1045,11 +1084,25 @@ const TRANSITION_MAP = {
     guard: (event) => {
       const l3 = _guardPayload(event);
       if (!l3.allowed) return l3;
-      return { allowed: true };
+      // Inference engine gate: only accept the persisted signal if the
+      // inferred state shows the write was actually dispatched.
+      const inferred = inferenceEngine.reduceInferredState(event.accountId, event.intentId);
+      if (inferred === inferenceEngine.INFERRED.DB_WRITE_DISPATCHED) {
+        return { allowed: true, inferredState: inferred };
+      }
+      return {
+        allowed: false,
+        reason: `inferred_state_not_dispatched:${inferred}`,
+        inferredState: inferred,
+      };
     },
     buildActions: async (event) => {
       const { accountId, intentId, eventId, table, count } = event;
+      // Record the terminal transition.
+      inferenceEngine.recordTransition(accountId, intentId, 'INTERNAL', 'DB_WRITE_DISPATCHED', 'PERSISTED');
       const removed = _removeStagedEvent(accountId, intentId);
+      // Housekeeping: drop the inference log for terminal intents.
+      inferenceEngine.purgeIfTerminal(accountId, intentId);
 
       _emitSpan('WEBHOOK_EVENT_PERSISTED', intentId, accountId, null, {
         eventId,
@@ -1075,10 +1128,22 @@ const TRANSITION_MAP = {
     guard: (event) => {
       const l3 = _guardPayload(event);
       if (!l3.allowed) return l3;
-      return { allowed: true };
+      // Accept only when the inferred state shows the write was dispatched.
+      const inferred = inferenceEngine.reduceInferredState(event.accountId, event.intentId);
+      if (inferred === inferenceEngine.INFERRED.DB_WRITE_DISPATCHED) {
+        return { allowed: true, inferredState: inferred };
+      }
+      return {
+        allowed: false,
+        reason: `inferred_state_not_dispatched:${inferred}`,
+        inferredState: inferred,
+      };
     },
     buildActions: async (event, ctx) => {
       const { accountId, intentId, eventId, error, phase } = event;
+      // Record the terminal transition.
+      inferenceEngine.recordTransition(accountId, intentId, 'INTERNAL', 'DB_WRITE_DISPATCHED', 'PERSIST_FAILED');
+      inferenceEngine.purgeIfTerminal(accountId, intentId);
       const errorString = typeof error === 'string' ? error : (error?.message || 'unknown');
 
       _emitSpan('WEBHOOK_EVENT_PERSIST_FAILED', intentId, accountId, null, {
@@ -1104,6 +1169,72 @@ const TRANSITION_MAP = {
       }
 
       return actions;
+    },
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // INFERENCE ENGINE INPUTS — Phase 1
+  // ═══════════════════════════════════════════════════════════════════════
+  // The FSM records these transitions to the inference log; the reducer
+  // computes the inferred state. No side effects, no dispatch. Pure
+  // observation + recording.
+
+  WORKER_STATE_TRANSITION: {
+    target: () => _localState,  // global state is unrelated to per-intent state
+    guard: (event) => {
+      const l3 = _guardPayload(event);
+      if (!l3.allowed) return l3;
+      if (!event.from || !event.to) {
+        return { allowed: false, reason: 'worker_transition_missing_from_or_to' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event) => {
+      const { accountId, intentId, from, to, eventType, domain, reason } = event;
+      // Record to the inference log (the reducer will compute the new state).
+      inferenceEngine.recordTransition(accountId, intentId, 'WORKER', from, to);
+      // Validate the transition is legal from the inferred state.
+      // If not, the transition is silently dropped (defensive: the log
+      // already records the emission, but the inferred state doesn't move).
+      const inferredBefore = inferenceEngine.reduceInferredState(accountId, intentId);
+      const inferredAfter  = inferenceEngine.reduceInferredState(accountId, intentId);
+      const isLegal = inferenceEngine.isLegalTransition(accountId, intentId, 'WORKER', from, to);
+      if (process.env.WEBHOOK_DEBUG && !isLegal) {
+        console.log(`[fsm] illegal worker transition: ${from}→${to} (inferred=${inferredBefore})`);
+      }
+      _emitSpan('WORKER_TRANSITION_RECORDED', intentId, accountId, domain, {
+        from, to, eventType, reason: reason || null,
+        inferredState: inferredAfter,
+      });
+      return [];
+    },
+  },
+
+  SUBSTRATE_STATE_TRANSITION: {
+    target: () => _localState,
+    guard: (event) => {
+      const l3 = _guardPayload(event);
+      if (!l3.allowed) return l3;
+      // For SUBSTRATE_STATE_TRANSITION, the `reason` field is OPTIONAL
+      // (only FAILED_* transitions require it). The base guard checks for
+      // it strictly, so we override here.
+      if (!event.from || !event.to) {
+        return { allowed: false, reason: 'substrate_transition_missing_from_or_to' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event) => {
+      const { accountId, intentId, from, to, reason } = event;
+      inferenceEngine.recordTransition(accountId, intentId, 'SUBSTRATE', from, to);
+      const inferredAfter = inferenceEngine.reduceInferredState(accountId, intentId);
+      const isLegal = inferenceEngine.isLegalTransition(accountId, intentId, 'SUBSTRATE', from, to);
+      if (process.env.WEBHOOK_DEBUG && !isLegal) {
+        console.log(`[fsm] illegal substrate transition: ${from}→${to} (inferred=${inferredAfter})`);
+      }
+      _emitSpan('SUBSTRATE_TRANSITION_RECORDED', intentId, accountId, null, {
+        from, to, reason: reason || null, inferredState: inferredAfter,
+      });
+      return [];
     },
   },
 };
@@ -1529,4 +1660,6 @@ module.exports = {
   getTimeoutConfig,
   startTimeoutSweeper,
   stopTimeoutSweeper,
+  // Phase 2: deterministic inference engine (read-only access)
+  inferenceEngine,
 };

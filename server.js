@@ -396,6 +396,14 @@ try {
 }
 
 try {
+  const webhookHealthRoutes = require('./routes/webhook-health');
+  app.use('/webhook', webhookHealthRoutes);
+  console.log('✅ Webhook health routes loaded');
+} catch (error) {
+  console.error('❌ Failed to load webhook health routes:', error.message);
+}
+
+try {
   const legalRoutes = require('./routes/legal');
   app.use('/legal', legalRoutes);
   console.log('✅ Legal routes loaded');

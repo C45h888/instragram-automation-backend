@@ -10,7 +10,7 @@
 
 const InsightsWorker = require('./fetch-workers/insights-fetcher');
 const { normalizeMediaInsight } = require('./normalizer');
-const { syncHashtagsFromCaptions } = require('../ugc-content-substrate/hashtag-sync');
+const { syncHashtagsFromCaptions } = require('./hashtag-sync');
 const { getSupabaseAdmin } = require('../../../config/supabase');
 const { resolveAccountCredentials } =
   require('../../../graph-capability-kernel/substrates/credential-resolver');
