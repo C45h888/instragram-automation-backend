@@ -296,6 +296,12 @@ function inferStateFromEnvelope(envelope, now) {
 
 const _byCred = new Map(); // businessAccountId → credRecord
 
+// ── Immediate token refresh tracking (Phase 8) ───────────────────────────
+// When CK dispatches IMMEDIATE_TOKEN_REFRESH, the FSM records the
+// businessAccountId here. When CAPABILITY_HEALTH_CHECK_COMPLETED fires
+// for token_health, we check this map and emit TOKEN_REFRESH_RESULT.
+const _immediateTokenRefreshes = new Map(); // businessAccountId → true
+
 function _credRecord(baId) {
   if (!baId) return null;
   if (!_byCred.has(baId)) {
@@ -448,17 +454,35 @@ const TRANSITION_MAP = {
       }
 
       if (ctx && ctx.dispatchGlobal) {
-        ctx.dispatchGlobal({
-          type: 'CAPABILITY_CHECK_RESULT',
-          sourceDomain: 'graph-capability',
-          targetDomain: 'publishing',
-          businessAccountId: baId,
-          correlationId: event.correlationId,
-          capabilityState,
-          quotaState,
-          freshnessMs,
-          consecutiveFailures,
-        });
+        // Phase 8: when sourceDomain is 'acquisition', the query is from CK's
+        // authority-vector orchestration (INSIGHTS_POLL_FAILURE path). Route
+        // the result through a CK-level event so CK's GLOBAL_TRANSITION_MAP
+        // can process the decision chain (retry vs defer vs refresh).
+        // Publishing callers still use CAPABILITY_CHECK_RESULT → 'publishing'.
+        if (event.sourceDomain === 'acquisition') {
+          ctx.dispatchGlobal({
+            type: 'CK_CAPABILITY_CHECK_RESULT',
+            sourceDomain: 'graph-capability',
+            businessAccountId: baId,
+            correlationId: event.correlationId,
+            capabilityState,
+            quotaState,
+            freshnessMs,
+            consecutiveFailures,
+          });
+        } else {
+          ctx.dispatchGlobal({
+            type: 'CAPABILITY_CHECK_RESULT',
+            sourceDomain: 'graph-capability',
+            targetDomain: 'publishing',
+            businessAccountId: baId,
+            correlationId: event.correlationId,
+            capabilityState,
+            quotaState,
+            freshnessMs,
+            consecutiveFailures,
+          });
+        }
       }
 
       return [];
@@ -633,7 +657,7 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
+    buildActions: (event, ctx) => {
       const cred = _resolveCred(event);
       if (cred) {
         const now = Date.now();
@@ -641,7 +665,57 @@ const TRANSITION_MAP = {
         else if (event.checkType === 'uat_refresh') cred.lastUatRefreshCheckAt = now;
         else if (event.checkType === 'data_access_expiry') cred.lastDataAccessExpiryCheckAt = now;
       }
+
+      // ── Immediate token refresh return path (Phase 8) ──────────────────
+      // If CK ordered an immediate token refresh (IMMEDIATE_TOKEN_REFRESH),
+      // the health worker's completion signals back through this handler.
+      // We emit TOKEN_REFRESH_RESULT via dispatchGlobal so CK's
+      // GLOBAL_TRANSITION_MAP can process the decision.
+      const baId = event.businessAccountId || (event.envelope && event.envelope.businessAccountId);
+      if (baId && event.checkType === 'token_health' && _immediateTokenRefreshes.has(baId)) {
+        _immediateTokenRefreshes.delete(baId);
+        const credState = cred ? cred.state : 'UNKNOWN';
+        const lastObservedAt = cred ? cred.lastObservedAt : null;
+        const consecutiveFailures = cred ? cred.consecutiveFailures : 0;
+        if (ctx && ctx.dispatchGlobal) {
+          ctx.dispatchGlobal({
+            type: 'TOKEN_REFRESH_RESULT',
+            sourceDomain: 'graph-capability',
+            businessAccountId: baId,
+            success: credState === 'AUTHORIZED' || credState === 'LIMITED',
+            capabilityState: credState,
+            lastObservedAt,
+            consecutiveFailures,
+          });
+        }
+      }
+
       return [];
+    },
+  },
+
+  // ── IMMEDIATE_TOKEN_REFRESH — CK-ordered ungated token recovery (Phase 8) ─
+  // CK dispatches this when token health is UNAUTHORIZED and a retry
+  // is worth attempting. The FSM emits RUN_TOKEN_HEALTH_CHECK with the
+  // immediate flag, bypassing the per-cred cadence gate. The health
+  // worker runs _recoverPatViaUat() for this specific account.
+  IMMEDIATE_TOKEN_REFRESH: {
+    target: null,  // no state change — delegate to health membrane
+    guard: (event) => {
+      if (!event.businessAccountId) {
+        return { allowed: false, reason: 'IMMEDIATE_TOKEN_REFRESH requires businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const baId = event.businessAccountId;
+      _immediateTokenRefreshes.set(baId, true);
+      return [{
+        type: 'RUN_TOKEN_HEALTH_CHECK',
+        businessAccountId: baId,
+        immediate: true,
+        source: 'ck.immediate_refresh',
+      }];
     },
   },
 

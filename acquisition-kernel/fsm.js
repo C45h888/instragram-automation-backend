@@ -273,6 +273,10 @@ function _createIntentRecord(event) {
     failureReason:        null,
     gateVetoes:           _makeRing(_timeoutConfig.gateVetoRingSize),
     outcome:              null,
+    lastFailureAt:        null,  // set by INSIGHTS_POLL_FAILURE
+    lastFailureError:     null,  // set by INSIGHTS_POLL_FAILURE
+    deferredAt:           null,  // set by ACQUISITION_DEFER
+    deferredReason:       null,  // set by ACQUISITION_DEFER
   };
 }
 
@@ -432,6 +436,9 @@ const REQUIRED_PAYLOAD_FIELDS = {
   // the inferred state. Workers and the substrate emit these.
   WORKER_STATE_TRANSITION:      ['accountId', 'intentId', 'from', 'to', 'domain', 'eventType'],
   SUBSTRATE_STATE_TRANSITION:   ['accountId', 'intentId', 'from', 'to'],
+  // ── Cross-kernel failure intake (Phase 8) ─────────────────────────────
+  INSIGHTS_POLL_FAILURE:        ['accountId', 'intentId', 'domain', 'error'],
+  ACQUISITION_DEFER:            ['accountId', 'domain', 'reason'],
 };
 
 function _guardPayload(event) {
@@ -1215,9 +1222,6 @@ const TRANSITION_MAP = {
     guard: (event) => {
       const l3 = _guardPayload(event);
       if (!l3.allowed) return l3;
-      // For SUBSTRATE_STATE_TRANSITION, the `reason` field is OPTIONAL
-      // (only FAILED_* transitions require it). The base guard checks for
-      // it strictly, so we override here.
       if (!event.from || !event.to) {
         return { allowed: false, reason: 'substrate_transition_missing_from_or_to' };
       }
@@ -1234,6 +1238,72 @@ const TRANSITION_MAP = {
       _emitSpan('SUBSTRATE_TRANSITION_RECORDED', intentId, accountId, null, {
         from, to, reason: reason || null, inferredState: inferredAfter,
       });
+      return [];
+    },
+  },
+
+  // ── INSIGHTS_POLL_FAILURE — cross-kernel failure intake (Phase 8) ──────
+  // Emitted by insights-retry-worker on failure. The acquisition FSM
+  // records the failure on the intent and escalates to CK for
+  // authority-vector orchestration. CK queries GCK for token health
+  // and quota state, decides retry vs defer vs token-refresh.
+  INSIGHTS_POLL_FAILURE: {
+    target: () => 'ACQUIRING',  // stays ACQUIRING — intent is still alive
+    guard: (event) => {
+      const l3 = _guardPayload(event);
+      if (!l3.allowed) return l3;
+      const rec = _intents.get(event.intentId);
+      if (!rec) {
+        return { allowed: false, reason: `intent_not_found:${event.intentId}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const { accountId, intentId, domain, error, errorShape } = event;
+      const rec = _intents.get(intentId);
+      if (rec) {
+        rec.lastFailureAt = Date.now();
+        rec.lastFailureError = error || 'insights_poll_failure';
+        _emitSpan('INSIGHTS_POLL_FAILURE_RECORDED', intentId, accountId, domain, {
+          error: error || null,
+          errorShape: errorShape || null,
+        });
+      }
+      if (ctx && ctx.dispatchGlobal) {
+        ctx.dispatchGlobal({
+          type: 'CK_INSIGHTS_FAILURE_OBSERVED',
+          accountId, intentId, domain,
+          error: error || null,
+          errorShape: errorShape || null,
+        });
+      }
+      return [];
+    },
+  },
+
+  // ── ACQUISITION_DEFER — CK-ordered deferral (Phase 8) ─────────────────
+  // CK dispatches this when token health is unrecoverable or quota is
+  // exhausted. The acquisition FSM records the deferral on the intent
+  // and leaves it for cadence-tick re-evaluation.
+  ACQUISITION_DEFER: {
+    target: () => 'ACQUIRING',  // stays ACQUIRING — intent is deferred, not dead
+    guard: (event) => {
+      const l3 = _guardPayload(event);
+      if (!l3.allowed) return l3;
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const { accountId, intentId, domain, reason, capabilityState, quotaState } = event;
+      const rec = intentId ? _intents.get(intentId) : null;
+      if (rec) {
+        rec.deferredAt = Date.now();
+        rec.deferredReason = reason || 'unknown';
+        _emitSpan('ACQUISITION_DEFERRED', intentId, accountId, domain, {
+          reason: reason || null,
+          capabilityState: capabilityState || null,
+          quotaState: quotaState || null,
+        });
+      }
       return [];
     },
   },

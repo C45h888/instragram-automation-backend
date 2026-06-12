@@ -74,6 +74,24 @@ async function execute(domain, accountId, intentId, params, retryCount, maxRetri
     retryCount,
     transportMeta: { success: result.success },
   });
+
+  // On failure, also emit INSIGHTS_POLL_FAILURE for the acquisition→CK
+  // cross-kernel token-health diagnostic flow. CK owns the decision logic.
+  if (!result.success) {
+    (governance.dispatchGlobal || governance.dispatch)({
+      type: 'INSIGHTS_POLL_FAILURE',
+      accountId, intentId, domain,
+      error: result.error || null,
+      errorShape: {
+        category: result.error_category || null,
+        code: result.code || null,
+        retryable: result.retryable ?? null,
+        retryAfterSeconds: result.retry_after_seconds || null,
+      },
+      retryCount,
+      latencyMs,
+    });
+  }
 }
 
 module.exports = { execute };

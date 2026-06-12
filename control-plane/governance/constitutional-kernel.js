@@ -441,6 +441,11 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   // inbound Meta webhook payloads, parallel to IG_FAILURE_OBSERVED).
   'WEBHOOK_EVENT_RECEIVED','WEBHOOK_EVENT_DISCARDED',
   'PERSIST_STAGED_EVENT','WEBHOOK_EVENT_PERSISTED','WEBHOOK_EVENT_PERSIST_FAILED',
+  // Phase 8: CK authority-vector events — CK dispatches these from
+  // GLOBAL_TRANSITION_MAP handlers during cross-kernel orchestration.
+  // No lineageId required; CK IS the canonical source.
+  'RETRY_REQUESTED','ACQUISITION_DEFER',
+  'IMMEDIATE_TOKEN_REFRESH',
 ]);
 
 function _extractForeignAuthorityDomain(authority) {
@@ -541,6 +546,8 @@ const DOMAIN_EVENT_MAP = {
   WORKER_OUTCOME_REPORTED: 'engagement',
   PARSING_DISPATCHED: 'acquisition',
   PARSING_COMPLETE: 'acquisition',
+  INSIGHTS_POLL_FAILURE: 'acquisition',  // Phase 8: cross-kernel failure intake
+  ACQUISITION_DEFER: 'acquisition',      // Phase 8: CK-ordered deferral
 
   // Webhook acquisition substrate (Phase 1+2) — routes to acquisition-fsm.
   // The FSM owns the staged event lifecycle; CK only knows the routing.
@@ -642,6 +649,7 @@ const DOMAIN_EVENT_MAP = {
   CAPABILITY_CADENCE_TICK: 'graph-capability',
   API_RATE_LIMIT_CHECK: 'graph-capability',
   CAPABILITY_CHECK: 'graph-capability',  // Publishing FSM → GC kernel capability check (2026-06-11)  // Phase C: routed to graph-capability FSM by constitutional-kernel's cadence loop
+  IMMEDIATE_TOKEN_REFRESH: 'graph-capability',  // Phase 8: CK-ordered ungated token recovery
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',
@@ -1040,6 +1048,146 @@ const GLOBAL_TRANSITION_MAP = {
       return [];
     },
   },
+
+  // ── CK_CAPABILITY_CHECK_RESULT — Phase 8 GCK health response ────────────
+  // Dispatched by GC FSM via ctx.dispatchGlobal in response to
+  // CAPABILITY_CHECK with sourceDomain='acquisition'. CK is the authority
+  // vector: it decides retry vs defer vs token-refresh based on the
+  // capability and quota state.
+  CK_CAPABILITY_CHECK_RESULT: {
+    target: () => null,
+    guard: () => ({ allowed: true }),
+    buildActions: (event, ctx) => {
+      const { businessAccountId, capabilityState, quotaState } = event;
+      const pending = _pendingInsightsFailures.get(businessAccountId);
+
+      const intentId = pending ? pending.intentId : null;
+      const domain = pending ? pending.domain : 'insights';
+
+      // If quota is exhausted, defer immediately — no amount of
+      // token refresh will help.
+      if (quotaState === 'DEFERRING' || quotaState === 'LOCKED_OUT') {
+        _pendingInsightsFailures.delete(businessAccountId);
+        dispatch({
+          type: 'ACQUISITION_DEFER',
+          accountId: businessAccountId,
+          domain, intentId,
+          reason: 'quota_exhausted',
+          quotaState,
+          source: 'ck.quota_check',
+        });
+        return [];
+      }
+
+      // Token is healthy — retry now
+      if (capabilityState === 'AUTHORIZED' || capabilityState === 'LIMITED') {
+        _pendingInsightsFailures.delete(businessAccountId);
+        dispatch({
+          type: 'RETRY_REQUESTED',
+          accountId: businessAccountId,
+          domain, intentId,
+          retryAfterMs: 0,
+          source: 'ck.capability_healthy',
+        });
+        return [];
+      }
+
+      // Token is degraded — retry likely futile, defer
+      if (capabilityState === 'DEGRADED') {
+        _pendingInsightsFailures.delete(businessAccountId);
+        dispatch({
+          type: 'ACQUISITION_DEFER',
+          accountId: businessAccountId,
+          domain, intentId,
+          reason: 'token_degraded',
+          capabilityState,
+          source: 'ck.capability_degraded',
+        });
+        return [];
+      }
+
+      // Token is UNAUTHORIZED — try immediate refresh via GCK
+      dispatch({
+        type: 'IMMEDIATE_TOKEN_REFRESH',
+        businessAccountId,
+        source: 'ck.capability_unauthorized',
+      });
+      // Keep pending in _pendingInsightsFailures for TOKEN_REFRESH_RESULT
+      return [];
+    },
+  },
+  // Dispatched by acquisition FSM via ctx.dispatchGlobal when the insights
+  // polling worker fails. CK is the authority vector: it queries GCK for
+  // token health + quota state, then decides retry vs defer vs refresh.
+  CK_INSIGHTS_FAILURE_OBSERVED: {
+    target: () => null,  // CK does not change lifecycle state
+    guard: (event, ctx) => {
+      if (_currentState === 'HALTED' || _currentState === 'DEAD') {
+        return { allowed: false, reason: `CK is ${_currentState}` };
+      }
+      if (!event.accountId) {
+        return { allowed: false, reason: 'CK_INSIGHTS_FAILURE_OBSERVED requires accountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event, ctx) => {
+      const { accountId, intentId, domain } = event;
+      // Step 1: query GCK for capability + quota state
+      // CK dispatches CAPABILITY_CHECK to GCK; GCK responds with
+      // CAPABILITY_CHECK_RESULT which CK handles in its own GLOBAL_TRANSITION.
+      // We store the pending context so the result handler can decide.
+      _pendingInsightsFailures.set(accountId, { intentId, domain, failedAt: Date.now() });
+      dispatch({
+        type: 'CAPABILITY_CHECK',
+        businessAccountId: accountId,
+        correlationId: intentId,
+        sourceDomain: 'acquisition',
+      });
+      return [];
+    },
+  },
+
+  // ── TOKEN_REFRESH_RESULT — Phase 8 GCK response after immediate refresh ──
+  // Dispatched by GC FSM via ctx.dispatchGlobal after IMMEDIATE_TOKEN_REFRESH
+  // completes. CK decides: if success → RETRY_REQUESTED (to engagement FSM),
+  // if failure → ACQUISITION_DEFER (to acquisition FSM).
+  TOKEN_REFRESH_RESULT: {
+    target: () => null,
+    guard: () => ({ allowed: true }),
+    buildActions: (event, ctx) => {
+      const { businessAccountId, success, capabilityState } = event;
+      const pending = _pendingInsightsFailures.get(businessAccountId);
+      _pendingInsightsFailures.delete(businessAccountId);
+
+      const intentId = pending ? pending.intentId : null;
+      const domain = pending ? pending.domain : 'insights';
+
+      if (success) {
+        // Token recovered — tell engagement FSM to retry
+        dispatch({
+          type: 'RETRY_REQUESTED',
+          accountId: businessAccountId,
+          domain,
+          intentId,
+          retryAfterMs: 0,
+          source: 'ck.token_refresh_success',
+        });
+        return [];
+      }
+
+      // Token unrecoverable — tell acquisition FSM to defer
+      dispatch({
+        type: 'ACQUISITION_DEFER',
+        accountId: businessAccountId,
+        domain,
+        intentId,
+        reason: 'token_health_degraded',
+        capabilityState: capabilityState || 'UNAUTHORIZED',
+        source: 'ck.token_refresh_failure',
+      });
+      return [];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1095,6 +1243,13 @@ let _loopInterval = null;
 // Snapshot building moved to reconciliation-substrate.js — CK no longer captures it
 
 let _accountIds = [];
+
+// ── Phase 8: cross-kernel failure orchestration state ────────────────────
+// CK tracks pending insights failures while it queries GCK for capability
+// health. The pending entry carries the original intent context so
+// CK_CAPABILITY_CHECK_RESULT and TOKEN_REFRESH_RESULT can route the
+// decision (RETRY vs DEFER) back to the right domain.
+const _pendingInsightsFailures = new Map(); // accountId → { intentId, domain, failedAt }
 
 // Domain registry
 const _domains = new Map(); // domainName → fsm

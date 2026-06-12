@@ -71,6 +71,17 @@ class TokenHealthWorker {
     this._governance = governance;
 
     governance.subscribeAction('RUN_TOKEN_HEALTH_CHECK', (action) => {
+      // ── Immediate token refresh (Phase 8) — CK-ordered ungated recovery ──
+      // When action.immediate is true, run targeted recovery for a single
+      // account with no cadence gate. Used by the acquisition→CK→GCK
+      // cross-kernel failure recovery flow.
+      if (action.immediate && action.businessAccountId) {
+        console.log(`[token-health] Immediate token refresh for account ${action.businessAccountId}`);
+        this.executeImmediateRecovery(action.businessAccountId).catch(err => {
+          console.error('[token-health] Immediate token refresh failed:', err.message);
+        });
+        return;
+      }
       console.log('[token-health] Membrane received RUN_TOKEN_HEALTH_CHECK — executing');
       this.executeTokenHealth().catch(err => {
         console.error('[token-health] RUN_TOKEN_HEALTH_CHECK failed:', err.message);
@@ -248,6 +259,100 @@ class TokenHealthWorker {
     }
 
     return Math.max(0, Math.min(100, score));
+  }
+
+  // ── Immediate Token Recovery (Phase 8) ──────────────────────────────────
+  // CK-ordered ungated token recovery for a single account. Runs
+  // _recoverPatViaUat() immediately — no cadence gate, no scan loop.
+  // Used by the acquisition→CK→GCK cross-kernel failure recovery flow.
+  // On completion, dispatches CAPABILITY_HEALTH_CHECK_COMPLETED so the
+  // GC FSM can emit TOKEN_REFRESH_RESULT back to CK.
+  async executeImmediateRecovery(businessAccountId) {
+    console.log(`[token-health] executeImmediateRecovery for account ${businessAccountId}`);
+    const startTime = Date.now();
+    const governance = this._governance;
+
+    if (!governance || !businessAccountId) {
+      console.warn('[token-health] executeImmediateRecovery: missing governance or businessAccountId');
+      return { success: false, recovered: false, error: 'missing_params' };
+    }
+
+    try {
+      // Read the specific credential for this business account
+      const result = await governance.governedRead('db.credential', {
+        query: 'scanActivePageCredentials',
+        businessAccountId,
+      });
+      const creds = result.success ? (result.data || []) : [];
+
+      if (creds.length === 0) {
+        console.log(`[token-health] No active credential for account ${businessAccountId}`);
+        this._dispatchCompletion('token_health', [businessAccountId]);
+        return { success: false, recovered: false, error: 'no_credential' };
+      }
+
+      const cred = creds[0];
+      const userId = cred.user_id;
+      const baId = cred.business_account_id;
+
+      // Validate token
+      let token, tokenInfo;
+      try {
+        token = await vault.pat.retrieve({ userId, businessAccountId: baId });
+        tokenInfo = await vault.uat.detect({ token, businessAccountId: baId, userId });
+      } catch (err) {
+        console.warn(`[token-health] Token validation failed for account ${baId}: ${err.message}`);
+        this._dispatchCompletion('token_health', [baId]);
+        return { success: false, recovered: false, error: 'token_validation_failed' };
+      }
+
+      if (tokenInfo && tokenInfo.isValid) {
+        // Token is valid — no recovery needed. Stamp + emit envelope.
+        await this._updateCredentialStatus({
+          credentialId: cred.id, debugTokenChecked: true, businessAccountId: baId,
+        });
+        const healthyEnv = fsm.newEnvelope({ businessAccountId: baId, userId });
+        healthyEnv.pat = { isDecryptable: true, source: 'health.immediate' };
+        signalDispatch.emitEnvelope({ envelope: healthyEnv });
+        signalDispatch.emitEvaluate({ businessAccountId: baId, userId, source: 'health.immediate' });
+        this._dispatchCompletion('token_health', [baId]);
+        return { success: true, recovered: false, state: 'healthy' };
+      }
+
+      // Token invalid — attempt recovery
+      const recoveryResult = await this._recoverPatViaUat(cred);
+
+      if (recoveryResult.success) {
+        this._writeLifecycleEvent({
+          credential_id: cred.id,
+          business_account_id: baId,
+          event_type: 'pat_auto_recovered',
+          token_age_days: _ageDays(cred.issued_at),
+          details: { source: 'token_health.immediate' },
+        });
+        const recoveredEnv = fsm.newEnvelope({ businessAccountId: baId, userId });
+        recoveredEnv.pat = { isDecryptable: true, source: 'health.immediate_recovery' };
+        signalDispatch.emitEnvelope({ envelope: recoveredEnv });
+        signalDispatch.emitEvaluate({ businessAccountId: baId, userId, source: 'health.immediate_recovery' });
+        await this._updateCredentialStatus({
+          credentialId: cred.id, debugTokenChecked: true, businessAccountId: baId,
+        });
+        this._dispatchCompletion('token_health', [baId]);
+        return { success: true, recovered: true, state: 'recovered' };
+      }
+
+      // Recovery failed — emit failure envelope
+      const failedEnv = fsm.newEnvelope({ businessAccountId: baId, userId });
+      failedEnv.pat = { isDecryptable: false, reason: 'immediate_recovery_failed' };
+      signalDispatch.emitEnvelope({ envelope: failedEnv });
+      console.warn(`[token-health] Immediate recovery failed for account ${baId}: ${recoveryResult.error}`);
+      this._dispatchCompletion('token_health', [baId]);
+      return { success: false, recovered: false, error: recoveryResult.error || 'recovery_failed' };
+    } catch (err) {
+      console.error('[token-health] executeImmediateRecovery fatal:', err.message);
+      this._dispatchCompletion('token_health', [businessAccountId]);
+      return { success: false, recovered: false, error: err.message };
+    }
   }
 
   // ── Token Health Check (migrated from health-substrate runTokenHealthCheck) ──
