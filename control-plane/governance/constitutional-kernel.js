@@ -722,6 +722,53 @@ const GLOBAL_TRANSITION_MAP = {
     buildActions: () => [{ type: 'START_INTENT_DISCOVERY' }],
   },
 
+  // ── Domain DB writes — CK routes to postgres-telemetry-kernel writers ──
+  DB_WRITE_REQUESTED: {
+    target: null,  // no CK state change — this is a domain operation
+    buildActions: async (event) => {
+      const actions = [];
+      try {
+        const postgresKernel = require('../../../postgres-telemetry-kernel');
+        const writer = postgresKernel.getWriter(event.domain);
+        if (!writer) {
+          actions.push({
+            type: 'DB_WRITE_FAILED',
+            domain: event.domain,
+            accountId: event.accountId,
+            error: `no writer registered for domain: ${event.domain}`,
+            timestamp: new Date().toISOString(),
+          });
+          return actions;
+        }
+        const ctx = {
+          emit: (completionEvent) => {
+            actions.push(completionEvent);
+          },
+        };
+        await writer.execute(event, ctx);
+      } catch (err) {
+        actions.push({
+          type: 'DB_WRITE_FAILED',
+          domain: event.domain,
+          accountId: event.accountId,
+          error: err.message,
+          timestamp: new Date().toISOString(),
+        });
+      }
+      return actions;
+    },
+  },
+
+  DB_WRITE_COMPLETE: {
+    target: null,  // domain write acknowledged — no CK state change
+    buildActions: () => [],
+  },
+
+  DB_WRITE_FAILED: {
+    target: null,  // domain write failed — no CK state change (retry-cadence handles)
+    buildActions: () => [],
+  },
+
   FATAL_ERROR: {
     target: 'HALTED',
     buildActions: (event) => [{

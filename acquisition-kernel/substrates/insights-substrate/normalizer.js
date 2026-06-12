@@ -17,6 +17,10 @@
  */
 function normalizeMediaInsight(item, businessAccountId) {
   const isStory = item.media_type === 'STORY';
+  const insights = item.insights || [];
+
+  const _metric = (name) => insights.find(i => i.name === name)?.values?.[0]?.value;
+
   return {
     instagram_media_id: item.media_id,
     business_account_id: businessAccountId,
@@ -27,9 +31,20 @@ function normalizeMediaInsight(item, businessAccountId) {
     permalink: item.permalink || null,
     like_count: item.like_count || 0,
     comments_count: item.comments_count || 0,
-    reach: item.insights.find(i => i.name === 'reach')?.values?.[0]?.value || 0,
-    impressions: item.insights.find(i => i.name === 'impressions')?.values?.[0]?.value || 0,
-    saves: isStory ? null : (item.insights.find(i => i.name === 'saved')?.values?.[0]?.value ?? 0),
+    // Core metrics (all media types)
+    reach:        _metric('reach')        || 0,
+    impressions:  _metric('impressions')  || 0,
+    engagement:   _metric('engagement')   || 0,
+    plays:        _metric('plays')        || 0,
+    shares:       _metric('shares')       || 0,
+    saved:        isStory ? null : (_metric('saved') ?? 0),
+    total_interactions: _metric('total_interactions') || 0,
+    // Video/Reels metrics (zero for non-video)
+    video_views:  _metric('video_views')  || 0,
+    // Reels-only metrics
+    clips_replays_count:           _metric('clips_replays_count')           || 0,
+    ig_reels_avg_watch_time:       _metric('ig_reels_avg_watch_time')       || 0,
+    ig_reels_video_view_total_time:_metric('ig_reels_video_view_total_time')|| 0,
     published_at: item.timestamp || null,
   };
 }

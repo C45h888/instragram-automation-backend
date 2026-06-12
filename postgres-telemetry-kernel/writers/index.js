@@ -1,29 +1,53 @@
 // postgres-telemetry-kernel/writers/index.js
-// DB Writers — canonical Supabase write authority.
+// Domain writer registry — maps domain names to bounded Postgres writers.
 //
-// Owns: dispatching write operations to operationally bounded workers.
-// Does NOT own: governance policy, table validation (persist-telemetry-fsm),
-//               read operations, parse/normalize logic.
+// Each writer is a semantically blind execution module. Writers receive
+// DB_WRITE_REQUESTED events from the CK and execute deterministic Postgres
+// writes. They emit DB_WRITE_COMPLETE or DB_WRITE_FAILED back to the CK.
+//
+// Pattern:
+//   CK receives DB_WRITE_REQUESTED { domain: 'insights', ... }
+//   CK looks up writer via getWriter(event.domain)
+//   CK invokes writer.execute(event, ctx)
+//   Writer writes → emits completion via ctx.emit(completionEvent)
+//   CK transitions FSM: WRITER_DISPATCHED → DB_WRITE_COMPLETE → IDLE
 
-const registry = require('./registry');
-let _governance = null;
+const insightsDomainWriter = require('./insights-domain-writer');
 
-function setGovernance(gov) { _governance = gov; }
+// Domain → writer map. Add new domains here as writers are built.
+const DOMAIN_WRITER_MAP = {
+    insights: insightsDomainWriter,
+};
 
-function dispatchWrite(operation, params) {
-  const writer = registry.getWriter(operation);
-  if (!writer) {
-    if (_governance) {
-      _governance.dispatch({
-        type: 'DB_WRITE_COMPLETE',
-        ...params,
-        count: 0, error: `unknown_operation: ${operation}`,
-      });
-    }
-    return;
-  }
-  // Async — fire and forget, worker emits completion via governance
-  setImmediate(() => writer.execute(params, _governance));
+/**
+ * Get the bounded writer for a domain.
+ * @param {string} domain — 'insights' | future: 'comments' | 'messages' | 'ugc'
+ * @returns {object|null} writer module with execute(event, ctx)
+ */
+function getWriter(domain) {
+    return DOMAIN_WRITER_MAP[domain] || null;
 }
 
-module.exports = { dispatchWrite, setGovernance };
+/**
+ * Check if a writer is registered for a domain.
+ * @param {string} domain
+ * @returns {boolean}
+ */
+function hasWriter(domain) {
+    return domain in DOMAIN_WRITER_MAP;
+}
+
+/**
+ * Get all registered domain names.
+ * @returns {string[]}
+ */
+function getRegisteredDomains() {
+    return Object.keys(DOMAIN_WRITER_MAP);
+}
+
+module.exports = {
+    getWriter,
+    hasWriter,
+    getRegisteredDomains,
+    DOMAIN_WRITER_MAP,
+};
