@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T16-34-22-717Z",
+  "test_name": "recovery-to-publishing",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T16:34:22.717Z",
+  "started_at": 1781368462717,
+  "finished_at": 1781368462717,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_recovery_publishing_1781368462717_vffu4p",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781368462700_gaw9ysj14qu",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 0
+}

@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T16-35-13-603Z",
+  "test_name": "recovery-to-insights",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T16:35:13.604Z",
+  "started_at": 1781368513604,
+  "finished_at": 1781368513604,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_recovery_insights_1781368513604_vct82p",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781368513590_6srmwmdkzma",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 0
+}

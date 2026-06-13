@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T16-35-57-521Z",
+  "test_name": "publishing-to-insights",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T16:35:57.521Z",
+  "started_at": 1781368557521,
+  "finished_at": 1781368557522,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_publishing_insights_1781368557521_uvgcwn",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781368557485_owk6l9kjm5j",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 1
+}

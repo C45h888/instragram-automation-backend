@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T16-36-00-365Z",
+  "test_name": "recovery-to-capability",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T16:36:00.366Z",
+  "started_at": 1781368560366,
+  "finished_at": 1781368560366,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_recovery_capability_1781368560366_luousv",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781368560356_15jsr8sycia",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 0
+}
