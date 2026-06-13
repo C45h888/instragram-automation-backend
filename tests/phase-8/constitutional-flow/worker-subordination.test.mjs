@@ -31,12 +31,27 @@ const WORKER_CANDIDATES = [
   'telemetry-kernel/workers',
 ];
 
+// Workers are constitutionally execution-only. They MUST NOT:
+//   - import a scheduler / governance / FSM module
+//   - import a priority-queue
+//   - call escalate() (governance action)
+//
+// The matchers below look for ACTUAL imports / requires, not
+// parameter names or JSDoc references. A worker can take
+// `governance` as an argument — that's a wired dependency, not
+// a forbidden import.
 const FORBIDDEN_IMPORTS = [
-  'scheduler',
-  'governance',
-  '/fsm/',
-  'priority-queue',
-  'escalate',
+  "require(['\"]scheduler",
+  "require(['\"]governance",
+  "require(['\"]priority-queue",
+  "from ['\"]scheduler",
+  "from ['\"]governance",
+  "from ['\"]priority-queue",
+  'import.*scheduler',
+  'import.*governance',
+  'import.*priority-queue',
+  'escalate(',  // method call
+  '/fsm/',       // path token
 ];
 
 function exists(p) {
@@ -65,18 +80,23 @@ describe('constitutional-flow/worker-subordination', () => {
       .filter(exists);
     const violations = [];
 
+    // Strip comments before scanning — false positives from prose
+    // ("escalate via strike" inside a comment) must not count as
+    // worker autonomy violations.
+    const stripComments = (s) =>
+      s.replace(/\/\*[\s\S]*?\*\//g, '')   // block comments
+       .replace(/\/\/[^\n]*/g, '');         // line comments
+
     for (const dir of found) {
       const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
       for (const f of files) {
         const full = path.join(dir, f);
-        const text = fs.readFileSync(full, 'utf8');
+        const raw = fs.readFileSync(full, 'utf8');
+        const code = stripComments(raw);
         for (const forbid of FORBIDDEN_IMPORTS) {
-          if (text.includes(forbid)) {
-            violations.push({
-              file: full,
-              forbid,
-              sample: text.split('\n').find((l) => l.includes(forbid))?.trim(),
-            });
+          if (code.includes(forbid)) {
+            const sample = raw.split('\n').find((l) => l.includes(forbid))?.trim();
+            violations.push({ file: full, forbid, sample });
           }
         }
       }

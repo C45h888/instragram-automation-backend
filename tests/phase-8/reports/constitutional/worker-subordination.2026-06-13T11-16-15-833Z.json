@@ -1,0 +1,350 @@
+{
+  "run_id": "2026-06-13T11-16-15-833Z",
+  "test_name": "worker-subordination",
+  "suite": "constitutional",
+  "timestamp": "2026-06-13T11:16:15.834Z",
+  "started_at": 1781349375834,
+  "finished_at": 1781349375861,
+  "status": "pass",
+  "vitest_assertion_count": 2,
+  "constitutional_summary": [],
+  "drift_findings": [
+    {
+      "kind": "worker-autonomy",
+      "violations": [
+        {
+          "file": "/app/retry-cadence-kernel/workers/authentication-recovery-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/backoff-enforcement-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/cache-repair-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/conflict-resolution-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/conflict-resolution-worker.js",
+          "forbid": "escalate",
+          "sample": "*                                  (consistency failure, escalate)"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/connection-recovery-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/dedup-redis-retry-worker.js",
+          "forbid": "governance",
+          "sample": "//            maxRetries, governance) from engagement-fsm._executeRetry."
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/dedup-repair-retry-worker.js",
+          "forbid": "governance",
+          "sample": "//            maxRetries, governance) from engagement-fsm._executeRetry."
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/defer-execution-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/engagement-retry-worker.js",
+          "forbid": "governance",
+          "sample": "//             maxRetries, governance } from engagement-fsm via"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/escalation-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-media-container-recovery-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(event, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-permission-validation-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(event, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-proactive-refresh-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(event, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-publication-verify-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(event, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-publish-comment-retry-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(event, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-publish-message-retry-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(event, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-publish-post-retry-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-publish-story-retry-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(event, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-token-refresh-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference (used to dispatch"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/ig-webhook-rebuild-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(event, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/insights-retry-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/reconciliation-retry-worker.js",
+          "forbid": "governance",
+          "sample": "//            maxRetries, governance) from engagement-fsm._executeRetry."
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/resource-throttling-worker.js",
+          "forbid": "governance",
+          "sample": "* state — it signals through governance."
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/schema-recovery-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/state-reconciliation-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/telemetry-retry-authority-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/telemetry-retry-health-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/telemetry-retry-integrity-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/telemetry-retry-runtime-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/telemetry-retry-systemic-worker.js",
+          "forbid": "governance",
+          "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+        },
+        {
+          "file": "/app/retry-cadence-kernel/workers/timeout-recovery-worker.js",
+          "forbid": "governance",
+          "sample": "* @param {object} governance — CK reference"
+        }
+      ]
+    }
+  ],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "worker_dirs_found": [
+      "/app/retry-cadence-kernel/workers",
+      "/app/scheduling-kernel/workers"
+    ],
+    "worker_violations": [
+      {
+        "file": "/app/retry-cadence-kernel/workers/authentication-recovery-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/backoff-enforcement-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/cache-repair-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/conflict-resolution-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/conflict-resolution-worker.js",
+        "forbid": "escalate",
+        "sample": "*                                  (consistency failure, escalate)"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/connection-recovery-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/dedup-redis-retry-worker.js",
+        "forbid": "governance",
+        "sample": "//            maxRetries, governance) from engagement-fsm._executeRetry."
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/dedup-repair-retry-worker.js",
+        "forbid": "governance",
+        "sample": "//            maxRetries, governance) from engagement-fsm._executeRetry."
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/defer-execution-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/engagement-retry-worker.js",
+        "forbid": "governance",
+        "sample": "//             maxRetries, governance } from engagement-fsm via"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/escalation-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-media-container-recovery-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(event, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-permission-validation-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(event, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-proactive-refresh-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(event, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-publication-verify-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(event, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-publish-comment-retry-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(event, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-publish-message-retry-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(event, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-publish-post-retry-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-publish-story-retry-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(event, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-token-refresh-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference (used to dispatch"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/ig-webhook-rebuild-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(event, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/insights-retry-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/reconciliation-retry-worker.js",
+        "forbid": "governance",
+        "sample": "//            maxRetries, governance) from engagement-fsm._executeRetry."
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/resource-throttling-worker.js",
+        "forbid": "governance",
+        "sample": "* state — it signals through governance."
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/schema-recovery-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/state-reconciliation-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/telemetry-retry-authority-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/telemetry-retry-health-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/telemetry-retry-integrity-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/telemetry-retry-runtime-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/telemetry-retry-systemic-worker.js",
+        "forbid": "governance",
+        "sample": "async function execute(domain, accountId, intentId, params, retryCount, maxRetries, governance) {"
+      },
+      {
+        "file": "/app/retry-cadence-kernel/workers/timeout-recovery-worker.js",
+        "forbid": "governance",
+        "sample": "* @param {object} governance — CK reference"
+      }
+    ]
+  },
+  "error": null,
+  "duration_ms": 27
+}

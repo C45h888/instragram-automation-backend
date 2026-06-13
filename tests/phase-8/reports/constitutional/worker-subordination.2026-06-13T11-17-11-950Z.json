@@ -1,0 +1,23 @@
+{
+  "run_id": "2026-06-13T11-17-11-950Z",
+  "test_name": "worker-subordination",
+  "suite": "constitutional",
+  "timestamp": "2026-06-13T11:17:11.950Z",
+  "started_at": 1781349431950,
+  "finished_at": 1781349431964,
+  "status": "pass",
+  "vitest_assertion_count": 2,
+  "constitutional_summary": [],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "worker_dirs_found": [
+      "/app/retry-cadence-kernel/workers",
+      "/app/scheduling-kernel/workers"
+    ],
+    "worker_violations": []
+  },
+  "error": null,
+  "duration_ms": 14
+}

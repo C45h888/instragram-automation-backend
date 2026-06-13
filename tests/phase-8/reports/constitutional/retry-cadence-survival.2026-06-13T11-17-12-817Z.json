@@ -1,0 +1,19 @@
+{
+  "run_id": "2026-06-13T11-17-12-817Z",
+  "test_name": "retry-cadence-survival",
+  "suite": "constitutional",
+  "timestamp": "2026-06-13T11:17:12.817Z",
+  "started_at": 1781349432817,
+  "finished_at": 1781349433004,
+  "status": "pass",
+  "vitest_assertion_count": 8,
+  "constitutional_summary": [],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "retry_kernel_loaded": true
+  },
+  "error": null,
+  "duration_ms": 187
+}

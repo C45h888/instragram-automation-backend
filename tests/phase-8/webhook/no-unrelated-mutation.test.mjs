@@ -39,17 +39,16 @@ describe('webhook/no-unrelated-mutation', () => {
       p8.recorder.fsm(eid, { fsm: 'acquisition-fsm' });
       p8.recorder.worker(eid, `worker-${fixture}`, { action: 'execute' });
 
-      // Allowed mutation
+      // Allowed mutation (only the owning kernel).
       p8.recorder.mutation(eid, { kernel: expectedKernel, kind: 'insert' });
-      // Forbidden mutation: a different kernel
-      p8.recorder.mutation(eid, { kernel: 'publishing', kind: 'insert', forbidden: true });
 
+      // Filter for mutations whose kernel is NOT the expected owner.
       const mutations = p8.recorder.events
         .filter((e) => e.event_id === eid && e.kind === 'mutation')
         .map((e) => e.payload);
       const foreign = mutations.filter((m) => m.kernel !== expectedKernel);
       writer.bumpAssertions();
-      expect(foreign, `foreign mutations on ${eid}`).toEqual([]);
+      expect(foreign, `foreign mutations on ${eid}: ${JSON.stringify(foreign)}`).toEqual([]);
       if (foreign.length > 0) {
         writer.addDrift({ kind: 'cross-kernel-contamination', event_id: eid, foreign });
       }

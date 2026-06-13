@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T11-19-07-405Z",
+  "test_name": "insights-to-acquisition",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T11:19:07.405Z",
+  "started_at": 1781349547405,
+  "finished_at": 1781349547405,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_insights_acquisition_1781349547405_pdsmtl",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781349547395_ig66x6jgvrk",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 0
+}

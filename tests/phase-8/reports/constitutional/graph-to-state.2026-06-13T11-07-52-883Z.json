@@ -1,0 +1,19 @@
+{
+  "run_id": "2026-06-13T11-07-52-883Z",
+  "test_name": "graph-to-state",
+  "suite": "constitutional",
+  "timestamp": "2026-06-13T11:07:52.883Z",
+  "started_at": 1781348872883,
+  "finished_at": 1781348872894,
+  "status": "pass",
+  "vitest_assertion_count": 1,
+  "constitutional_summary": [],
+  "drift_findings": [],
+  "event_ids": [
+    "graph_evt2_1781348872893"
+  ],
+  "timeline_sample": [],
+  "extras": {},
+  "error": null,
+  "duration_ms": 11
+}

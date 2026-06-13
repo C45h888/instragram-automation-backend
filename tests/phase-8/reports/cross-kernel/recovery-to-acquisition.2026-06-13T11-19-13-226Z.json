@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T11-19-13-226Z",
+  "test_name": "recovery-to-acquisition",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T11:19:13.226Z",
+  "started_at": 1781349553226,
+  "finished_at": 1781349553227,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_recovery_acquisition_1781349553226_baze58",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781349553215_wi9bprdl4dq",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 1
+}

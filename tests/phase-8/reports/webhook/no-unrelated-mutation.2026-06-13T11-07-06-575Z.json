@@ -1,0 +1,17 @@
+{
+  "run_id": "2026-06-13T11-07-06-575Z",
+  "test_name": "no-unrelated-mutation",
+  "suite": "webhook",
+  "timestamp": "2026-06-13T11:07:06.576Z",
+  "started_at": 1781348826576,
+  "finished_at": 1781348826604,
+  "status": "pass",
+  "vitest_assertion_count": 6,
+  "constitutional_summary": [],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {},
+  "error": null,
+  "duration_ms": 28
+}

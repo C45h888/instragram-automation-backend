@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T11-17-36-898Z",
+  "test_name": "acquisition-to-publishing",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T11:17:36.898Z",
+  "started_at": 1781349456898,
+  "finished_at": 1781349456899,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_acquisition_publishing_1781349456898_bjnk90",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781349456888_8cpm97h0547",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 1
+}
