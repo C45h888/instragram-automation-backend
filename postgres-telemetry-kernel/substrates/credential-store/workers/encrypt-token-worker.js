@@ -1,15 +1,11 @@
 // postgres-telemetry-kernel/substrates/credential-store/workers/encrypt-token-worker.js
-// Encrypt Token Worker: encrypt an access token via Supabase vault RPC.
+// Encrypt Token Worker: encrypt via Supabase vault RPC.
 //
-// Owns: ONE bounded RPC call — encrypt_instagram_token.
+// Owns: param validation. RPC delegated to bedrock.
 // Does NOT own: key provisioning, credential storage, signal dispatch.
 
-const { getSupabaseAdmin } = require('../../../../config/supabase');
+const bedrock = require('../../../bedrock');
 
-/**
- * @param {{ token: string, encryptionKeyId: string|null }} params
- * @returns {Promise<{ success: boolean, encryptedToken?: string|null, error?: string }>}
- */
 async function execute(params) {
   const { token, encryptionKeyId } = params;
 
@@ -17,23 +13,13 @@ async function execute(params) {
     return { success: false, encryptedToken: null, error: 'token required' };
   }
 
-  const supabase = getSupabaseAdmin();
-  if (!supabase) {
-    return { success: false, encryptedToken: null, error: 'supabase_unavailable' };
+  const result = await bedrock.rpc.encryptToken(token, encryptionKeyId);
+
+  if (!result.success) {
+    return { success: false, encryptedToken: null, error: result.error || 'Encryption failed' };
   }
 
-  try {
-    const { data: encryptedToken, error: encryptError } = await supabase
-      .rpc('encrypt_instagram_token', { token, p_key_id: encryptionKeyId });
-
-    if (encryptError || !encryptedToken) {
-      return { success: false, encryptedToken: null, error: encryptError?.message || 'Encryption returned null' };
-    }
-
-    return { success: true, encryptedToken };
-  } catch (err) {
-    return { success: false, encryptedToken: null, error: err.message };
-  }
+  return { success: true, encryptedToken: result.data, error: null };
 }
 
 module.exports = { execute };

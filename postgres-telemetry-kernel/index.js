@@ -23,10 +23,15 @@
 //   - Retry decisions (retry-cadence-kernel owns)
 
 const writers = require('./writers');
+const bedrock = require('./bedrock');
 
 module.exports = {
     writers,
     getWriter: writers.getWriter,
     hasWriter: writers.hasWriter,
     getRegisteredDomains: writers.getRegisteredDomains,
+
+    // Canonical persistence abstraction — the ONLY surface workers should touch
+    // for all Supabase operations. Domain facades: ugc, publishing, insights, token.
+    bedrock,
 };

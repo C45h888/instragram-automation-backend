@@ -1,28 +1,20 @@
 // substrates/db/reading/workers/post-queue-worker.js
-// Post Queue + Scheduled Posts Worker: governed Supabase reads for the publishing domain.
+// Post Queue + Scheduled Posts Worker: governed reads for publishing domain.
 //
-// Owns: getPendingPostQueue(), getApprovedScheduledPosts() with FSM-governed caching.
+// Owns: query routing + caching. All Supabase I/O delegated to bedrock.
 // Does NOT own: governance policy (FSM), routing (CK), IG API calls, status mutations.
-//
-// This worker is the pull-based bridge between the cognition layer and the publishing FSM.
-// Cognition-scanner provides push-based Realtime triggers; this worker provides
-// the pull-fallback — querying the DB directly for publishable items on demand.
 //
 // Operationally bounded to: db.post-queue, db.scheduled-posts read domains.
 // Dispatched by: substrates/db/reading/index.js
-//
-// Replaces: substrates/db/writers/publishing-writer.js (status mutations removed —
-//           cognition-scanner's Realtime subscriptions are the sole trigger source;
-//           this reader provides the governed pull path).
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const bedrock = require('../../bedrock');
 
 // ── Per-worker cache ────────────────────────────────────────────────────────
-const _cache = new Map(); // key → { data, expiresAt }
+const _cache = new Map();
 
 const CACHE_TTL_MS = {
-  getPendingPostQueue:         60_000,  // 1 min
-  getApprovedScheduledPosts:  120_000,  // 2 min (scheduled posts change less often)
+  getPendingPostQueue:         60_000,
+  getApprovedScheduledPosts:  120_000,
 };
 
 function _cacheKey(accountId, query) {
@@ -45,13 +37,6 @@ function _setCache(accountId, query, data) {
 
 // ── Execute ──────────────────────────────────────────────────────────────────
 
-/**
- * Execute a governed DB read for the publishing domain.
- *
- * @param {object} params     — { accountId, query: 'getPendingPostQueue'|'getApprovedScheduledPosts' }
- * @param {object} governance — CK module (for DB_READ_OBSERVED emission)
- * @returns {Promise<{success: boolean, data?, error?, latencyMs: number, cached?: boolean}>}
- */
 async function execute(params, governance) {
   const { accountId, query } = params;
   const startTime = Date.now();
@@ -63,34 +48,17 @@ async function execute(params, governance) {
     return { success: true, data: cached, error: null, latencyMs: Date.now() - startTime, cached: true };
   }
 
-  const supabase = getSupabaseAdmin();
-  if (!supabase) {
-    const elapsed = Date.now() - startTime;
-    _emitObserved(governance, accountId, query, elapsed, 'supabase_unavailable');
-    return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
-  }
-
   try {
     let data;
 
     if (query === 'getApprovedScheduledPosts') {
-      const result = await supabase
-        .from('scheduled_posts')
-        .select('*')
-        .eq('business_account_id', accountId)
-        .eq('status', 'approved')
-        .order('scheduled_at', { ascending: true });
-      if (result.error) throw result.error;
+      const result = await bedrock.publishing.getScheduledPosts(accountId);
+      if (!result.success) throw new Error(result.error);
       data = result.data || [];
     } else {
       // default: getPendingPostQueue
-      const result = await supabase
-        .from('post_queue')
-        .select('*')
-        .eq('business_account_id', accountId)
-        .in('status', ['pending', 'failed'])
-        .order('created_at', { ascending: true });
-      if (result.error) throw result.error;
+      const result = await bedrock.publishing.getPendingPublications(accountId);
+      if (!result.success) throw new Error(result.error);
       data = result.data || [];
     }
 

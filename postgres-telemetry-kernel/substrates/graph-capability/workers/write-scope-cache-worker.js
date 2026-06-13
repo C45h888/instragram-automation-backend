@@ -1,22 +1,13 @@
 // postgres-telemetry-kernel/substrates/graph-capability/workers/write-scope-cache-worker.js
-// Scope cache writer: one bounded UPDATE on instagram_credentials.
+// Scope cache writer: UPDATE on instagram_credentials.
 //
-// Owns: UPDATE scope_cache, scope_cache_updated_at WHERE id = credentialId.
-// Does NOT own: cache TTL logic (caller concern), signal dispatch, vault ops,
-//               failure classification (persistence-failure-substrate),
-//               retry policy (retry-cadence-kernel).
+// Owns: param validation. All Supabase I/O delegated to bedrock.
+// Does NOT own: cache TTL logic, signal dispatch, vault ops.
 
-const { getSupabaseAdmin } = require('../../../../config/supabase');
+const bedrock = require('../../../bedrock');
 
-/**
- * @param {{ credentialId: string, scopes: string[] }} params
- * @param {object} governance — CK reference (used to emit DB_WRITE_FAILED on failure)
- * @returns {Promise<{ success: boolean, error?: string }>}
- */
 async function execute(params, governance) {
-  // FSM passes { domain, accountId, intentId, table, rows }.
-  // Operation-specific fields are in rows[0].
-  const { domain, accountId, intentId, table, rows } = params;
+  const { domain, accountId, intentId, rows } = params;
   const row = (rows && rows[0]) || {};
   const { credentialId, scopes } = row;
   if (!credentialId) {
@@ -30,31 +21,16 @@ async function execute(params, governance) {
     return { success: false, error: err };
   }
 
-  const supabase = getSupabaseAdmin();
-  if (!supabase) {
-    const err = 'supabase_unavailable';
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: err, rawError: { message: err }, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
-    return { success: false, error: err };
+  const result = await bedrock.token.updateScopeCache(credentialId, scopes, {
+    accountId, intentId, governance, domain,
+  });
+
+  if (!result.success) {
+    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: result.error, rawError: { message: result.error }, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
+    return { success: false, error: result.error };
   }
 
-  try {
-    const { error } = await supabase
-      .from('instagram_credentials')
-      .update({
-        scope_cache: scopes,
-        scope_cache_updated_at: new Date().toISOString(),
-      })
-      .eq('id', credentialId);
-
-    if (error) {
-      governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: error.message, rawError: error, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
-      return { success: false, error: error.message };
-    }
-    return { success: true, error: null };
-  } catch (err) {
-    governance?.dispatch({ type: 'DB_WRITE_FAILED', domain, accountId, intentId, table: 'instagram_credentials', count: 0, rows, error: err.message, rawError: err, workerName: 'write-scope-cache-worker', lineageId: intentId, primaryKeyField: 'id', primaryKeyValue: credentialId, attemptN: 1, operation: 'write', source: 'supabase' });
-    return { success: false, error: err.message };
-  }
+  return { success: true, error: null };
 }
 
 module.exports = { execute };

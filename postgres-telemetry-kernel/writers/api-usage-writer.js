@@ -1,78 +1,31 @@
 // postgres-telemetry-kernel/writers/api-usage-writer.js
 // API Usage Writer: governed write for the api_usage table.
 //
-// Owns: log_api_request — UPSERT api_usage row for rate-limit tracking.
-// Does NOT own: governance policy (FSM), rate-limit decisions,
-//               failure classification (persistence-failure-substrate),
-//               retry policy (retry-cadence-kernel).
+// Owns: param extraction. All Supabase I/O delegated to bedrock.
+// Does NOT own: governance policy (FSM), rate-limit decisions.
 //
-// Contract: execute(params, governance) — async, emits DB_WRITE_COMPLETE on
-// success or DB_WRITE_FAILED on failure (with errorShape).
-// Called via: CK → persist-telemetry FSM → dispatchWrite(log_api_request, ...)
+// Bedrock handles: client check, upsert, retry, governance dispatch.
 
-const { getSupabaseAdmin } = require('../../config/supabase');
+const bedrock = require('../bedrock');
 
-/**
- * @param {object} params — { domain, accountId, table, rows }
- *   rows[0]: { userId, businessAccountId, endpoint, method, hourBucket, statusCode, success }
- * @param {object} governance — CK reference
- */
 async function execute(params, governance) {
   const { domain, accountId, table } = params;
   const row = (params.rows && params.rows[0]) || {};
   const { userId, businessAccountId, endpoint, method, hourBucket, statusCode, success } = row;
 
-  const pkValue = `${userId || '*'}|${hourBucket || '*'}|${endpoint || '*'}`;
-
-  const supabase = getSupabaseAdmin();
-  if (!supabase) {
-    governance?.dispatch({
-      type: 'DB_WRITE_FAILED',
-      domain, accountId, table,
-      count: 0, rows, error: 'supabase_unavailable', rawError: { message: 'supabase_unavailable' }, workerName: 'api-usage-writer', lineageId: `${userId}-${hourBucket}`, primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue, attemptN: 1, operation: 'write', source: 'supabase',
-    });
-    return;
-  }
-
-  try {
-    const { error } = await supabase
-      .from('api_usage')
-      .upsert({
-        user_id: userId,
-        business_account_id: businessAccountId || null,
-        endpoint: endpoint || null,
-        method: method || null,
-        hour_bucket: hourBucket,
-        request_count: 1,
-        status_code: statusCode || null,
-        success: typeof success === 'boolean' ? success : true,
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: 'user_id,business_account_id,endpoint,hour_bucket',
-        ignoreDuplicates: false,
-      });
-
-    if (error) {
-      governance?.dispatch({
-        type: 'DB_WRITE_FAILED',
-        domain, accountId, table,
-        count: 0, rows, error: error.message, rawError: error, workerName: 'api-usage-writer', lineageId: `${userId}-${hourBucket}`, primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue, attemptN: 1, operation: 'write', source: 'supabase',
-      });
-      return;
-    }
-
-    governance?.dispatch({
-      type: 'DB_WRITE_COMPLETE',
-      domain, accountId, table,
-      count: 1, status: 'success', error: null,
-    });
-  } catch (err) {
-    governance?.dispatch({
-      type: 'DB_WRITE_FAILED',
-      domain, accountId, table,
-      count: 0, rows, error: err.message, rawError: err, workerName: 'api-usage-writer', lineageId: `${userId}-${hourBucket}`, primaryKeyField: 'user_id,endpoint,hour_bucket', primaryKeyValue: pkValue, attemptN: 1, operation: 'write', source: 'supabase',
-    });
-  }
+  await bedrock.token.persistApiUsage({
+    user_id: userId,
+    business_account_id: businessAccountId || null,
+    endpoint: endpoint || null,
+    method: method || null,
+    hour_bucket: hourBucket,
+    request_count: 1,
+    status_code: statusCode || null,
+    success: typeof success === 'boolean' ? success : true,
+    updated_at: new Date().toISOString(),
+  }, {
+    accountId, intentId: `${userId}-${hourBucket}`, governance, domain,
+  });
 }
 
 module.exports = { execute };

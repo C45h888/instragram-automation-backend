@@ -1,37 +1,27 @@
 // substrates/db/reading/workers/accounts-worker.js
 // Accounts Worker: governed Supabase reads for the accounts domain.
 //
-// Owns: getActiveAccounts() with FSM-observable caching.
+// Owns: query routing + caching. All Supabase I/O delegated to bedrock.
 // Does NOT own: governance policy (FSM), routing (CK), IG API calls, account mutations.
 //
 // Operationally bounded to: db.accounts read domain.
 // Dispatched by: substrates/db/reading/index.js (via dispatchRead).
-//
-// Constitutional flow:
-//   Caller → governance.governedRead('db.accounts', params)
-//     → CK(DB_READ_REQUESTED) → persist-telemetry-fsm
-//     → reading-substrate.executeRead → registry → worker.execute()
-//     → DB_READ_COMPLETE → READ_RESULT_AVAILABLE
-//
-// Replaces: persistence.js getActiveAccounts() (account discovery).
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const bedrock = require('../../bedrock');
 
 // ── Per-worker cache ────────────────────────────────────────────────────────
-const _cache = new Map(); // key → { data, expiresAt }
-
+const _cache = new Map();
 const crypto = require('crypto');
 
 const CACHE_TTL_MS = {
-  getActiveAccounts: 30_000,  // 30s (matches legacy persistence.js behavior)
-  igIdToUserId:     30_000,  // 30s — per-igIds-set
-  igThreadIdToUuid: 30_000,  // 30s — per-threadIds-set
+  getActiveAccounts: 30_000,
+  igIdToUserId:     30_000,
+  igThreadIdToUuid: 30_000,
 };
 
 function _cacheKey(query, context = null) {
-  // 'igIdToUserId' is parameterized by the set of IG IDs — use sorted hash
   if (context) return `${query}:${context}`;
-  return `${query}:null`;  // global query, no accountId dimension
+  return `${query}:null`;
 }
 
 function _sortedHash(arr) {
@@ -59,13 +49,6 @@ function _getStale(query, context = null) {
 
 // ── Execute ──────────────────────────────────────────────────────────────────
 
-/**
- * Execute a governed DB read for the accounts domain.
- *
- * @param {object} params     — { query: 'getActiveAccounts' }
- * @param {object} governance — CK module (for DB_READ_OBSERVED emission)
- * @returns {Promise<{success: boolean, data?, error?, latencyMs: number, cached?: boolean, stale?: boolean}>}
- */
 async function execute(params, governance) {
   const { query, igIds, threadIds } = params;
   const startTime = Date.now();
@@ -85,33 +68,20 @@ async function execute(params, governance) {
     }
     const hashCtx = _sortedHash(sorted);
 
-    // Cache hit
     const cached = _getCached(query, hashCtx);
     if (cached !== null) {
       _emitObserved(governance, query, Date.now() - startTime, null, true);
       return { success: true, data: cached, error: null, latencyMs: Date.now() - startTime, cached: true };
     }
 
-    const supabase = getSupabaseAdmin();
-    if (!supabase) {
-      const elapsed = Date.now() - startTime;
-      _emitObserved(governance, query, elapsed, 'supabase_unavailable');
-      return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
-    }
-
     try {
-      const { data, error } = await supabase
-        .from('instagram_business_accounts')
-        .select('instagram_business_id, user_id')
-        .in('instagram_business_id', sorted);
-
-      if (error) throw error;
-
-      const result = data || [];
+      const result = await bedrock.token.resolveBusinessAccountIds(sorted);
+      if (!result.success) throw new Error(result.error);
+      const data = result.data || [];
       const elapsed = Date.now() - startTime;
-      _setCache(query, result, hashCtx);
+      _setCache(query, data, hashCtx);
       _emitObserved(governance, query, elapsed);
-      return { success: true, data: result, error: null, latencyMs: elapsed };
+      return { success: true, data, error: null, latencyMs: elapsed };
     } catch (err) {
       const elapsed = Date.now() - startTime;
       _emitObserved(governance, query, elapsed, err.message);
@@ -133,26 +103,14 @@ async function execute(params, governance) {
       return { success: true, data: cached, error: null, latencyMs: Date.now() - startTime, cached: true };
     }
 
-    const supabase = getSupabaseAdmin();
-    if (!supabase) {
-      const elapsed = Date.now() - startTime;
-      _emitObserved(governance, query, elapsed, 'supabase_unavailable');
-      return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
-    }
-
     try {
-      const { data, error } = await supabase
-        .from('instagram_dm_conversations')
-        .select('id, instagram_thread_id')
-        .in('instagram_thread_id', sorted);
-
-      if (error) throw error;
-
-      const result = data || [];
+      const result = await bedrock.ugc.resolveThreadIds(sorted);
+      if (!result.success) throw new Error(result.error);
+      const data = result.data || [];
       const elapsed = Date.now() - startTime;
-      _setCache(query, result, hashCtx);
+      _setCache(query, data, hashCtx);
       _emitObserved(governance, query, elapsed);
-      return { success: true, data: result, error: null, latencyMs: elapsed };
+      return { success: true, data, error: null, latencyMs: elapsed };
     } catch (err) {
       const elapsed = Date.now() - startTime;
       _emitObserved(governance, query, elapsed, err.message);
@@ -167,37 +125,23 @@ async function execute(params, governance) {
       return { success: false, data: null, error: 'businessAccountId required', latencyMs: Date.now() - startTime };
     }
 
-    const baKey = _cacheKey('getBusinessAccount', businessAccountId);
     const baCached = _getCached('getBusinessAccount', businessAccountId);
     if (baCached !== null) {
       _emitObserved(governance, query, Date.now() - startTime, null, true);
       return { success: true, data: baCached, error: null, latencyMs: Date.now() - startTime, cached: true };
     }
 
-    const supabase = getSupabaseAdmin();
-    if (!supabase) {
-      const elapsed = Date.now() - startTime;
-      _emitObserved(governance, query, elapsed, 'supabase_unavailable');
-      return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
-    }
-
     try {
-      const { data, error } = await supabase
-        .from('instagram_business_accounts')
-        .select('*')
-        .eq('id', businessAccountId)
-        .single();
-
-      if (error) {
+      const result = await bedrock.token.getBusinessAccount(businessAccountId);
+      if (!result.success) {
         const elapsed = Date.now() - startTime;
-        if (error.code === 'PGRST116') return { success: false, data: null, error: 'business_account_not_found', latencyMs: elapsed };
-        return { success: false, data: null, error: error.message, latencyMs: elapsed };
+        if (result.error === 'business_account_not_found') return { success: false, data: null, error: 'business_account_not_found', latencyMs: elapsed };
+        return { success: false, data: null, error: result.error, latencyMs: elapsed };
       }
-
       const elapsed = Date.now() - startTime;
-      _setCache('getBusinessAccount', data, businessAccountId);
+      _setCache('getBusinessAccount', result.data, businessAccountId);
       _emitObserved(governance, query, elapsed);
-      return { success: true, data, error: null, latencyMs: elapsed };
+      return { success: true, data: result.data, error: null, latencyMs: elapsed };
     } catch (err) {
       const elapsed = Date.now() - startTime;
       _emitObserved(governance, query, elapsed, err.message);
@@ -212,31 +156,17 @@ async function execute(params, governance) {
     return { success: true, data: cached, error: null, latencyMs: Date.now() - startTime, cached: true };
   }
 
-  const supabase = getSupabaseAdmin();
-  if (!supabase) {
-    const elapsed = Date.now() - startTime;
-    _emitObserved(governance, query, elapsed, 'supabase_unavailable');
-    return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
-  }
-
   try {
-    const result = await supabase
-      .from('instagram_business_accounts')
-      .select('id, instagram_business_id, user_id')
-      .eq('is_connected', true)
-      .eq('connection_status', 'active');
-
-    if (result.error) throw result.error;
-
+    const result = await bedrock.token.getActiveBusinessAccounts();
+    if (!result.success) throw new Error(result.error);
     const data = result.data || [];
     const elapsed = Date.now() - startTime;
     _setCache(query, data);
     _emitObserved(governance, query, elapsed);
     return { success: true, data, error: null, latencyMs: elapsed };
-
   } catch (err) {
     const elapsed = Date.now() - startTime;
-    // Graceful degradation: return stale cache on error (matches legacy behavior)
+    // Graceful degradation: return stale cache on error
     const stale = _getStale(query);
     if (stale !== null) {
       _emitObserved(governance, query, elapsed, err.message, false);
@@ -267,7 +197,6 @@ function _emitObserved(governance, query, latencyMs, error = null, cached = fals
 // ── Cache management ─────────────────────────────────────────────────────────
 
 function clearCache(accountId) {
-  // Global query — clear all entries (accountId param unused)
   _cache.clear();
 }
 

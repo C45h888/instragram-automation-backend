@@ -1,23 +1,22 @@
 // substrates/db/reading/workers/media-worker.js
 // Media Worker: governed Supabase reads for media domain.
 //
-// Owns: getRecentMedia(), getMonitoredHashtags() with FSM-governed caching.
+// Owns: query routing + caching. All Supabase I/O delegated to bedrock.
 // Does NOT own: governance policy (FSM), routing (CK), IG API calls.
 //
 // Operationally bounded to: db.media read domain.
 // Dispatched by: substrates/db/reading/index.js
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const bedrock = require('../../bedrock');
 
 // ── Per-worker cache ────────────────────────────────────────────────────────
-const _cache = new Map(); // key → { data, expiresAt }
-
+const _cache = new Map();
 const crypto = require('crypto');
 
 const CACHE_TTL_MS = {
-  getRecentMedia:       60_000,   // 1 min
-  getMonitoredHashtags: 300_000,  // 5 min
-  igIdToUuid:           30_000,   // 30s — per-mediaIds-set
+  getRecentMedia:       60_000,
+  getMonitoredHashtags: 300_000,
+  igIdToUuid:           30_000,
 };
 
 function _cacheKey(accountId, query, context = null) {
@@ -45,13 +44,6 @@ function _setCache(accountId, query, data, context = null) {
 
 // ── Execute ──────────────────────────────────────────────────────────────────
 
-/**
- * Execute a governed DB read for the media domain.
- *
- * @param {object} params     — { accountId, query: 'getRecentMedia'|'getMonitoredHashtags' }
- * @param {object} governance — CK module (for DB_READ_OBSERVED emission)
- * @returns {Promise<{success: boolean, data?, error?, latencyMs: number, cached?: boolean}>}
- */
 async function execute(params, governance) {
   const { accountId, query } = params;
   const startTime = Date.now();
@@ -63,13 +55,6 @@ async function execute(params, governance) {
     return { success: true, data: cached, error: null, latencyMs: Date.now() - startTime, cached: true };
   }
 
-  const supabase = getSupabaseAdmin();
-  if (!supabase) {
-    const elapsed = Date.now() - startTime;
-    _emitObserved(governance, accountId, query, elapsed, 'supabase_unavailable');
-    return { success: false, data: null, error: 'supabase_unavailable', latencyMs: elapsed };
-  }
-
   try {
     let data;
 
@@ -77,7 +62,6 @@ async function execute(params, governance) {
     if (query === 'igIdToUuid') {
       const { mediaIds } = params;
       const sorted = [...new Set(mediaIds || [])].sort();
-
       if (sorted.length === 0) {
         return { success: true, data: [], error: null, latencyMs: Date.now() - startTime, cached: false };
       }
@@ -89,38 +73,25 @@ async function execute(params, governance) {
         return { success: true, data: cached, error: null, latencyMs: Date.now() - startTime, cached: true };
       }
 
-      const result = await supabase
-        .from('instagram_media')
-        .select('id, instagram_media_id')
-        .in('instagram_media_id', sorted);
-
-      if (result.error) throw result.error;
+      const result = await bedrock.insights.resolveMediaIds(sorted);
+      if (!result.success) throw new Error(result.error);
 
       data = result.data || [];
       const elapsed = Date.now() - startTime;
       _setCache(accountId, query, data, hashCtx);
       _emitObserved(governance, accountId, query, elapsed);
       return { success: true, data, error: null, latencyMs: elapsed };
-    }
 
-    // ── Other queries ────────────────────────────────────────────────────
-    if (query === 'getMonitoredHashtags') {
-      const result = await supabase
-        .from('ugc_monitored_hashtags')
-        .select('hashtag')
-        .eq('business_account_id', accountId)
-        .eq('is_active', true);
-      if (result.error) throw result.error;
+    // ── getMonitoredHashtags ──────────────────────────────────────────────
+    } else if (query === 'getMonitoredHashtags') {
+      const result = await bedrock.insights.getMonitoredHashtags(accountId);
+      if (!result.success) throw new Error(result.error);
       data = (result.data || []).map(h => h.hashtag);
+
+    // ── default: getRecentMedia ──────────────────────────────────────────
     } else {
-      // default: getRecentMedia
-      const result = await supabase
-        .from('instagram_media')
-        .select('instagram_media_id')
-        .eq('business_account_id', accountId)
-        .order('published_at', { ascending: false })
-        .limit(10);
-      if (result.error) throw result.error;
+      const result = await bedrock.insights.getRecentMedia(accountId);
+      if (!result.success) throw new Error(result.error);
       data = result.data || [];
     }
 

@@ -1,12 +1,13 @@
 // postgres-telemetry-kernel/substrates/cognition-scanner/workers/subscription-worker.js
 // Subscription Worker: owns per-account Realtime channel lifecycle.
-// Bound to: one Supabase Realtime channel per accountId.
+//
+// Owns: channel map + lifecycle. Supabase Realtime access via bedrock.
 // Does NOT own: event processing, queue state, FSM dispatch decisions.
 
-const { getSupabaseAdmin } = require('../../../config/supabase');
+const bedrock = require('../../../bedrock');
 
-/** @type {Map<string, import('@supabase/supabase-js').RealtimeChannel>} */
-const _channels = new Map(); // channelName → RealtimeChannel
+/** @type {Map<string, object>} */
+const _channels = new Map(); // channelName → channel object
 
 function _channelName(accountId) {
   return `cognition:${accountId}`;
@@ -14,24 +15,16 @@ function _channelName(accountId) {
 
 /**
  * Subscribe to cognition events for one account.
- *
- * @param {string} accountId
- * @param {(accountId: string, table: string, record: object) => void} onEvent
- * @returns {import('@supabase/supabase-js').RealtimeChannel | null}
  */
 function subscribe(accountId, onEvent) {
-  const admin = getSupabaseAdmin();
-  if (!admin) return null;
+  unsubscribe(accountId); // clean up existing
 
-  const name = _channelName(accountId);
-  unsubscribe(accountId); // clean up any existing
-
-  const channel = admin.channel(name, {
-    config: {
-      broadcast: { self: false },
-      postgres: { filter: `business_account_id=eq.${accountId}` },
-    },
+  const channel = bedrock.realtime.subscribeToTable('scheduled_posts', {
+    event: 'UPDATE',
+    filter: `status=eq.approved`,
   });
+
+  if (!channel) return null;
 
   channel
     .on('postgres_changes', {
@@ -50,67 +43,40 @@ function subscribe(accountId, onEvent) {
     }, (payload) => {
       onEvent(accountId, 'post_queue', payload.new);
     })
+    .on('postgres_changes', {
+      event: 'INSERT',
+      schema: 'public',
+      table: 'post_queue',
+    }, (payload) => {
+      onEvent(accountId, 'post_queue', payload.new);
+    })
     .subscribe((status) => {
       if (status === 'SUBSCRIBED') {
-        console.log(`[subscription-worker] Subscribed for account ${accountId}`);
-      } else if (status === 'CHANNEL_ERROR') {
-        console.error(`[subscription-worker] Channel error for account ${accountId}`);
-      } else if (status === 'TIMED_OUT') {
-        console.warn(`[subscription-worker] Subscription timed out for account ${accountId}`);
+        console.log(`Cognition channel subscribed for account ${accountId}`);
       }
     });
 
-  _channels.set(name, channel);
+  _channels.set(_channelName(accountId), channel);
   return channel;
 }
 
 /**
- * Unsubscribe and remove channel for one account.
- *
- * @param {string} accountId
+ * Unsubscribe from cognition events for one account.
  */
 function unsubscribe(accountId) {
-  const admin = getSupabaseAdmin();
-  if (!admin) return;
-
   const name = _channelName(accountId);
   const existing = _channels.get(name);
   if (existing) {
-    admin.removeChannel(existing);
+    try { existing.unsubscribe(); } catch (_) {}
     _channels.delete(name);
   }
 }
 
 /**
- * Remove all channels. Call on substrate stop.
+ * Get active channel count.
  */
-function unsubscribeAll() {
-  const admin = getSupabaseAdmin();
-  if (!admin) return;
-
-  for (const [, channel] of _channels) {
-    admin.removeChannel(channel);
-  }
-  _channels.clear();
-}
-
-/**
- * Returns current subscribed account count.
- */
-function activeCount() {
+function getActiveChannelCount() {
   return _channels.size;
 }
 
-/**
- * Returns set of subscribed account IDs.
- */
-function getSubscribedAccountIds() {
-  return new Set([..._channels.keys()].map(k => k.replace('cognition:', '')));
-}
-
-module.exports = {
-  subscribe,
-  unsubscribe,
-  unsubscribeAll,
-  activeCount,
-};
+module.exports = { subscribe, unsubscribe, getActiveChannelCount };
