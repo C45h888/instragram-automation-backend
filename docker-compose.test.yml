@@ -103,10 +103,22 @@ services:
       POSTGRES_PASSWORD: testpass
       POSTGRES_DB: testgovernance
       SKIP_DB_TUNNEL: "true"
+      # Phase 8 — webhook simulator endpoints
+      WEBHOOK_SIMULATOR_HOST: webhook-simulator
+      WEBHOOK_SIMULATOR_PORT: "9200"
+      WEBHOOK_CONTROL_PORT: "9201"
+      # Phase 8 — graph simulator endpoints (reused from phase 7)
+      GRAPH_SIMULATOR_HOST: graph-simulator
+      GRAPH_SIMULATOR_PORT: "9100"
+      GRAPH_CONTROL_PORT: "9101"
+      # Phase 8 — report output
+      PHASE8_REPORT_DIR: /app/tests/phase-8/reports
     depends_on:
       test-redis:
         condition: service_healthy
       test-postgres:
+        condition: service_healthy
+      webhook-simulator:
         condition: service_healthy
     volumes:
       # Project source (read-only) for runtime code
@@ -114,6 +126,8 @@ services:
       # tests/ and output/ are writable — vitest writes JSON reports here
       - ./tests:/app/tests
       - ./tests/output:/app/tests/output
+      # Phase 8 reports (per-test JSON)
+      - ./tests/phase-8/reports:/app/tests/phase-8/reports
     mem_limit: 1g
     cpu_shares: 1024
 
@@ -141,6 +155,33 @@ services:
       - ./tests/phase-7/runtime/graph-simulator.js:/sim/server.js:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9100/v1/accounts >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    mem_limit: 256m
+    cpu_shares: 256
+
+  # ----------------------------------------
+  # Webhook Simulator — Phase 8
+  # ----------------------------------------
+  # Meta-driven acquisition emulator. Delivers
+  # canonical webhook payloads (message, comment,
+  # mention, story-reply, media-update,
+  # conversation-update) on the worker port
+  # (9200) and exposes a control API on 9201
+  # for deterministic chaos injection.
+  webhook-simulator:
+    image: node:22-alpine
+    container_name: instagram-webhook-simulator
+    restart: "no"
+    working_dir: /sim
+    command: ["node", "/sim/server.js"]
+    networks:
+      - test-runtime-net
+    volumes:
+      - ./tests/phase-8/runtime/webhook-simulator.js:/sim/server.js:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9200/health || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5

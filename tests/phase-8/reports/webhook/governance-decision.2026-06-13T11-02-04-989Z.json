@@ -1,0 +1,57 @@
+{
+  "run_id": "2026-06-13T11-02-04-989Z",
+  "test_name": "governance-decision",
+  "suite": "webhook",
+  "timestamp": "2026-06-13T11:02:04.989Z",
+  "started_at": 1781348524989,
+  "finished_at": 1781348525003,
+  "status": "pass",
+  "vitest_assertion_count": 12,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "evt_5023e4450db540bb",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_f723ee46c349276e",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_5c820350e0de3a71",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_525b170bf13e3071",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_2d93d857b117220c",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_da13ee59313a9df2",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [
+    "evt_5023e4450db540bb",
+    "evt_f723ee46c349276e",
+    "evt_5c820350e0de3a71",
+    "evt_525b170bf13e3071",
+    "evt_2d93d857b117220c",
+    "evt_da13ee59313a9df2"
+  ],
+  "timeline_sample": [],
+  "extras": {},
+  "error": null,
+  "duration_ms": 14
+}

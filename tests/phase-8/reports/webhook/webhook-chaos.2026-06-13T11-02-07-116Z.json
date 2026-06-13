@@ -1,0 +1,48 @@
+{
+  "run_id": "2026-06-13T11-02-07-116Z",
+  "test_name": "webhook-chaos",
+  "suite": "webhook",
+  "timestamp": "2026-06-13T11:02:07.116Z",
+  "started_at": 1781348527116,
+  "finished_at": 1781348527139,
+  "status": "pass",
+  "vitest_assertion_count": 17,
+  "constitutional_summary": [],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "chaos_findings": [
+      {
+        "scenario": "rate-limit",
+        "status": 429
+      },
+      {
+        "scenario": "schema-drift",
+        "status": 200
+      },
+      {
+        "scenario": "duplicate",
+        "status": 200
+      },
+      {
+        "scenario": "stale",
+        "status": 200
+      },
+      {
+        "scenario": "malformed",
+        "status": 400
+      },
+      {
+        "scenario": "token-failure",
+        "status": 401
+      },
+      {
+        "scenario": "scope-revocation",
+        "status": 403
+      }
+    ]
+  },
+  "error": null,
+  "duration_ms": 23
+}
