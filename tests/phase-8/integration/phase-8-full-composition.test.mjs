@@ -17,6 +17,7 @@ describe('integration/phase-8-full-composition', () => {
   let crossProbe;
 
   beforeAll(async () => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'integration', testName: 'phase-8-full-composition' });
     crossProbe = new CrossKernelProbe();
     await p8.webhook.reset();

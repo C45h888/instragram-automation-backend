@@ -18,6 +18,7 @@ const EXPECTED_TYPES = {
 describe('webhook/ingress-parser', () => {
   let writer;
   beforeAll(async () => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'webhook', testName: 'ingress-parser' });
     const h = await p8.webhook.health();
     expect(h.status).toBe(200);

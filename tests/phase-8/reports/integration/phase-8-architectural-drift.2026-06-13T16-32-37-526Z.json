@@ -1,0 +1,21 @@
+{
+  "run_id": "2026-06-13T16-32-37-526Z",
+  "test_name": "phase-8-architectural-drift",
+  "suite": "integration",
+  "timestamp": "2026-06-13T16:32:37.526Z",
+  "started_at": 1781368357526,
+  "finished_at": 1781368357532,
+  "status": "pass",
+  "vitest_assertion_count": 4,
+  "constitutional_summary": [],
+  "drift_findings": [
+    null
+  ],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "mutation_count": 0
+  },
+  "error": null,
+  "duration_ms": 6
+}

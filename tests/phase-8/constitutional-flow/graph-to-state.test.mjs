@@ -38,6 +38,7 @@ describe('constitutional-flow/graph-to-state', () => {
   const eventIds = [];
 
   beforeAll(async () => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'constitutional', testName: 'graph-to-state' });
   });
   afterAll(() => {

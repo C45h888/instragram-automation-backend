@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T16-32-18-812Z",
+  "test_name": "capability-to-insights",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T16:32:18.817Z",
+  "started_at": 1781368338817,
+  "finished_at": 1781368338825,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_capability_insights_1781368338822_q8qjna",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781368338787_7w7cs2bs77o",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 8
+}

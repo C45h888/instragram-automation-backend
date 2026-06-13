@@ -22,6 +22,7 @@ describe('webhook/no-unrelated-mutation', () => {
   const eventIds = [];
 
   beforeAll(async () => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'webhook', testName: 'no-unrelated-mutation' });
     await p8.webhook.reset();
   });

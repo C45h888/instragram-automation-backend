@@ -27,12 +27,13 @@ const _projections = {
   // Projection: domain-scoped (acquisition, publishing, scheduling, dedup,
   // reconciliation, capability)
   domain: {
-    acquisition: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
-    publishing: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
-    scheduling: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0, cadenceContinuity: 1.0 },
-    dedup: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
-    reconciliation: { state: 'IDLE', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
+    acquisition: { state: 'IDLE', transitionCount: 0, lastTransition: null, intentCount: 0, failureCount: 0 },
+    publishing: { state: 'IDLE', transitionCount: 0, lastTransition: null, publicationCount: 0, failureCount: 0 },
+    scheduling: { state: 'IDLE', transitionCount: 0, lastTransition: null, cadenceContinuity: 1.0, accountCount: 0 },
+    dedup: { state: 'IDLE', transitionCount: 0, lastTransition: null, batchMarks: 0, batchReplays: 0, collisionCount: 0 },
+    reconciliation: { state: 'IDLE', transitionCount: 0, lastTransition: null, epochCount: 0, driftedEpochCount: 0, escalationSignaled: false, driftRate: 0 },
     capability: { state: 'UNKNOWN', transitionCount: 0, lastTransition: null, authorityStability: 1.0 },
+    'persist-telemetry': { state: 'UNKNOWN', transitionCount: 0, lastTransition: null, failureCount: 0, writeCount: 0, readCount: 0, failureRate: 0 },
   },
   governanceRuntime: {
     runtimeState: 'BOOTING',
@@ -137,25 +138,167 @@ function _computeDomainProjection(domain, entry) {
       break;
 
     case 'capability':
-      // Capability projections track the graph-capability FSM state.
       if (payload.currentCapabilityState) {
         _projections.domain.capability.state = payload.currentCapabilityState;
       }
       if (payload.capabilityAuthorityStability !== undefined) {
         _projections.domain.capability.authorityStability = Math.max(
-          0,
-          Math.min(1, payload.capabilityAuthorityStability),
+          _projections.domain.capability.authorityStability,
+          payload.capabilityAuthorityStability,
         );
       }
-      _projections.domain.capability.transitionCount++;
-      _projections.domain.capability.lastTransition = entry.timestamp || Date.now();
+      if (payload.projectionId || payload.timestamp) {
+        _projections.domain.capability.transitionCount++;
+        _projections.domain.capability.lastTransition = payload.timestamp || Date.now();
+      }
       break;
 
-    default:
+    case 'persist-telemetry':
+      if (payload.currentPersistTelemetryState) {
+        _projections.domain['persist-telemetry'].state = payload.currentPersistTelemetryState;
+      }
+      if (payload.failureCount !== undefined) {
+        _projections.domain['persist-telemetry'].failureCount =
+          (_projections.domain['persist-telemetry'].failureCount || 0) + payload.failureCount;
+      }
+      if (payload.writeCount !== undefined) {
+        _projections.domain['persist-telemetry'].writeCount =
+          (_projections.domain['persist-telemetry'].writeCount || 0) + payload.writeCount;
+      }
+      if (payload.readCount !== undefined) {
+        _projections.domain['persist-telemetry'].readCount =
+          (_projections.domain['persist-telemetry'].readCount || 0) + payload.readCount;
+      }
+      if (payload.failureRate !== undefined) {
+        _projections.domain['persist-telemetry'].failureRate = payload.failureRate;
+      }
+      if (payload.projectionId || payload.timestamp) {
+        _projections.domain['persist-telemetry'].transitionCount++;
+        _projections.domain['persist-telemetry'].lastTransition = payload.timestamp || Date.now();
+      }
+      break;
+
+    case 'reconciliation':
+      if (payload.currentReconciliationState) {
+        _projections.domain.reconciliation.state = payload.currentReconciliationState;
+      }
+      if (payload.epochCount !== undefined) {
+        _projections.domain.reconciliation.epochCount = payload.epochCount;
+      }
+      if (payload.driftedEpochCount !== undefined) {
+        _projections.domain.reconciliation.driftedEpochCount = payload.driftedEpochCount;
+      }
+      if (payload.escalationSignaled !== undefined) {
+        _projections.domain.reconciliation.escalationSignaled = payload.escalationSignaled;
+      }
+      if (payload.driftRate !== undefined) {
+        _projections.domain.reconciliation.driftRate = payload.driftRate;
+      }
+      if (payload.projectionId || payload.timestamp) {
+        _projections.domain.reconciliation.transitionCount++;
+        _projections.domain.reconciliation.lastTransition = payload.timestamp || Date.now();
+      }
+      break;
+
+    case 'scheduling':
+      if (payload.currentSchedulingState) {
+        _projections.domain.scheduling.state = payload.currentSchedulingState;
+      }
+      if (payload.cadenceContinuity !== undefined) {
+        _projections.domain.scheduling.cadenceContinuity = payload.cadenceContinuity;
+      }
+      if (payload.accountCount !== undefined) {
+        _projections.domain.scheduling.accountCount = payload.accountCount;
+      }
+      if (payload.projectionId || payload.timestamp) {
+        _projections.domain.scheduling.transitionCount++;
+        _projections.domain.scheduling.lastTransition = payload.timestamp || Date.now();
+      }
+      break;
+
+    case 'dedup':
+      if (payload.currentDedupState) {
+        _projections.domain.dedup.state = payload.currentDedupState;
+      }
+      if (payload.batchMarks !== undefined) {
+        _projections.domain.dedup.batchMarks = payload.batchMarks;
+      }
+      if (payload.batchReplays !== undefined) {
+        _projections.domain.dedup.batchReplays = payload.batchReplays;
+      }
+      if (payload.collisionCount !== undefined) {
+        _projections.domain.dedup.collisionCount = payload.collisionCount;
+      }
+      if (payload.projectionId || payload.timestamp) {
+        _projections.domain.dedup.transitionCount++;
+        _projections.domain.dedup.lastTransition = payload.timestamp || Date.now();
+      }
+      break;
+
+    case 'publishing':
+      if (payload.currentPublishingState) {
+        _projections.domain.publishing.state = payload.currentPublishingState;
+      }
+      if (payload.publicationCount !== undefined) {
+        _projections.domain.publishing.publicationCount += payload.publicationCount;
+      }
+      if (payload.failureCount !== undefined) {
+        _projections.domain.publishing.failureCount += payload.failureCount;
+      }
+      if (payload.projectionId || payload.timestamp) {
+        _projections.domain.publishing.transitionCount++;
+        _projections.domain.publishing.lastTransition = payload.timestamp || Date.now();
+      }
+      break;
+
+    case 'acquisition':
+      if (payload.currentAcquisitionState) {
+        _projections.domain.acquisition.state = payload.currentAcquisitionState;
+      }
+      if (payload.intentCount !== undefined) {
+        _projections.domain.acquisition.intentCount += payload.intentCount;
+      }
+      if (payload.failureCount !== undefined) {
+        _projections.domain.acquisition.failureCount += payload.failureCount;
+      }
+      if (payload.projectionId || payload.timestamp) {
+        _projections.domain.acquisition.transitionCount++;
+        _projections.domain.acquisition.lastTransition = payload.timestamp || Date.now();
+      }
       break;
   }
 
   return _projections;
+}
+
+/**
+ * Persist a single domain's projection state to a namespace-specific
+ * lineage Redis key at lineage:projection:domain:{domain}. This gives
+ * each FSM a bounded authority isolation path to read its own projection
+ * state without needing to parse the entire aggregate snapshot.
+ *
+ * Fire-and-forget — never blocks the interpreter tick.
+ */
+function _persistDomainProjection(domain, ledgerId) {
+  try {
+    // eslint-disable-next-line global-require
+    const { getRedisClient } = require('../../config/redis');
+    const redis = getRedisClient();
+    if (!redis || redis.status !== 'ready') return;
+
+    const domainProjection = _projections.domain[domain];
+    if (!domainProjection) return;
+
+    const key = `lineage:projection:domain:${domain}`;
+    redis.set(key, JSON.stringify({
+      domain,
+      projection: domainProjection,
+      updatedAt: Date.now(),
+      entryLedgerId: ledgerId,
+    }), 'EX', 60).catch(() => {});
+  } catch (_) {
+    // Best-effort. Never blocks the interpreter.
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -180,7 +323,7 @@ function interpret(action) {
   // Compute domain projection (pure function)
   _computeDomainProjection(domain, entry);
 
-  // Persist projection snapshot to Redis
+  // Persist aggregate projection snapshot to Redis (all namespaces)
   lineageLedger.persistWorkerProjection({
     updatedAt: Date.now(),
     entryLedgerId: action.ledgerId,
@@ -188,6 +331,12 @@ function interpret(action) {
   }).catch(err => {
     console.error('[namespace-projection-interpreter] Persist error:', err.message);
   });
+
+  // Persist namespace-specific projection to lineage domain key so the FSM
+  // can read its own projection state from lineage:projection:domain:{domain}.
+  // This provides bounded authority isolation — each FSM reads only its own
+  // namespace projection, not the entire aggregate.
+  _persistDomainProjection(domain, action.ledgerId);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

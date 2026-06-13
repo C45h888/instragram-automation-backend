@@ -1,0 +1,23 @@
+{
+  "run_id": "2026-06-13T16-32-36-484Z",
+  "test_name": "phase-8-multi-tick-survival",
+  "suite": "integration",
+  "timestamp": "2026-06-13T16:32:36.484Z",
+  "started_at": 1781368356484,
+  "finished_at": 1781368356618,
+  "status": "pass",
+  "vitest_assertion_count": 1,
+  "constitutional_summary": [],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "tier": "medium",
+    "ticks_planned": 250,
+    "elapsed_ms": 122,
+    "ticks_actual": 250,
+    "ticks_per_sec": 2049
+  },
+  "error": null,
+  "duration_ms": 134
+}

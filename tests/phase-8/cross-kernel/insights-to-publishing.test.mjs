@@ -9,9 +9,11 @@
 
 import { describe, it, expect } from 'vitest';
 import { runPair } from './_pair-helper.mjs';
+import p8 from '../runtime/index.mjs';
 
 describe('cross-kernel/insights-to-publishing', () => {
   it('isolates sentinel and preserves constitutional path', async () => {
+    p8.recorder.reset();
     const r = await runPair({ source: 'insights', sink: 'publishing' });
     expect(r.iso.ok, JSON.stringify(r.iso)).toBe(true);
     expect(r.check.ok, JSON.stringify(r.check)).toBe(true);

@@ -111,12 +111,19 @@ const NAMESPACE_ORDER_PRIORITY = {
   runtime: 3,
   health: 4,
   systemic: 5,
+  capability: 6,
+  'persist-telemetry': 7,
+  'reconciliation': 8,
+  'scheduling': 9,
+  'dedup': 10,
+  'publishing': 11,
+  'acquisition': 12,
 };
 const DEFAULT_NAMESPACE_PRIORITY = 99;
 
 // Known projection namespaces — only these may emit projection intents
 const KNOWN_PROJECTION_NAMESPACES = new Set([
-  'integrity', 'authority', 'runtime', 'health', 'systemic', 'capability',
+  'integrity', 'authority', 'runtime', 'health', 'systemic', 'capability', 'persist-telemetry', 'reconciliation', 'scheduling', 'dedup', 'publishing', 'acquisition',
 ]);
 
 // Signal ownership contract — maps projection payload signals to canonical owners.
@@ -163,7 +170,7 @@ const STATE_REGISTRY = {
   },
 };
 
-const INTENT_NAMESPACES = Object.freeze(['runtime', 'integrity', 'authority', 'health', 'systemic']);
+const INTENT_NAMESPACES = Object.freeze(['runtime', 'integrity', 'authority', 'health', 'systemic', 'persist-telemetry', 'reconciliation', 'scheduling', 'dedup', 'publishing', 'acquisition']);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. Domain Transition Map — event → target + guard + action builder

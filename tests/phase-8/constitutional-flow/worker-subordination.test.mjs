@@ -61,6 +61,7 @@ function exists(p) {
 describe('constitutional-flow/worker-subordination', () => {
   let writer;
   beforeAll(() => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'constitutional', testName: 'worker-subordination' });
   });
   afterAll(() => writer.finish());

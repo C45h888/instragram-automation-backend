@@ -25,6 +25,7 @@ describe('webhook/webhook-chaos', () => {
   const findings = [];
 
   beforeAll(async () => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'webhook', testName: 'webhook-chaos' });
     await p8.webhook.reset();
   });

@@ -115,6 +115,21 @@ export class ConstitutionalRecorder {
   assertAllConstitutional(eventIds) {
     return eventIds.map((id) => this.assertConstitutionalPath(id));
   }
+
+  /**
+   * Clear all recorder state. Each test file should call this in
+   * beforeAll() so it does not see events recorded by a prior
+   * file in the same vitest run. Without this, the recorder
+   * accumulates state across the entire test process — and
+   * because event_ids are content-hashed, the same webhook
+   * fixture delivered twice will reuse the same id, causing
+   * workers[] to accumulate historical entries whose
+   * timestamps predate the current tick's governance record.
+   */
+  reset() {
+    this.events = [];
+    this.byId = new Map();
+  }
 }
 
 const singleton = new ConstitutionalRecorder();

@@ -50,7 +50,7 @@ const ERROR_CATEGORIES = Object.freeze({
   UNKNOWN: 'UNKNOWN',
 });
 
-const NAMESPACES = ['runtime', 'integrity', 'authority', 'health', 'systemic'];
+const NAMESPACES = ['runtime', 'integrity', 'authority', 'health', 'systemic', 'persist-telemetry', 'reconciliation', 'scheduling', 'dedup', 'publishing', 'acquisition'];
 
 /**
  * Classify an error into a named category for FSM routing.

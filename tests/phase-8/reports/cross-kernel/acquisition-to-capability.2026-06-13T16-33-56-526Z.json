@@ -1,0 +1,32 @@
+{
+  "run_id": "2026-06-13T16-33-56-526Z",
+  "test_name": "acquisition-to-capability",
+  "suite": "cross-kernel",
+  "timestamp": "2026-06-13T16:33:56.526Z",
+  "started_at": 1781368436526,
+  "finished_at": 1781368436527,
+  "status": "pass",
+  "vitest_assertion_count": 3,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "pkt_acquisition_capability_1781368436527_2udqy0",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "sentinel_isolation": {
+      "ok": true,
+      "sentinel": "phase8_sentinel_1781368436515_ajst1ah8hz",
+      "leak_count": 0,
+      "leaked_samples": []
+    }
+  },
+  "error": null,
+  "duration_ms": 1
+}

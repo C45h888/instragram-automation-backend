@@ -1,0 +1,468 @@
+{
+  "run_id": "2026-06-13T16-33-48-019Z",
+  "test_name": "webhook-to-state",
+  "suite": "constitutional",
+  "timestamp": "2026-06-13T16:33:48.020Z",
+  "started_at": 1781368428020,
+  "finished_at": 1781368428041,
+  "status": "pass",
+  "vitest_assertion_count": 42,
+  "constitutional_summary": [
+    [
+      {
+        "event_id": "evt_5023e4450db540bb",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_f723ee46c349276e",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_5c820350e0de3a71",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_525b170bf13e3071",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_2d93d857b117220c",
+        "ok": true,
+        "violations": []
+      },
+      {
+        "event_id": "evt_da13ee59313a9df2",
+        "ok": true,
+        "violations": []
+      }
+    ]
+  ],
+  "drift_findings": [],
+  "event_ids": [
+    "evt_5023e4450db540bb",
+    "evt_f723ee46c349276e",
+    "evt_5c820350e0de3a71",
+    "evt_525b170bf13e3071",
+    "evt_2d93d857b117220c",
+    "evt_da13ee59313a9df2"
+  ],
+  "timeline_sample": [
+    {
+      "event_id": "evt_5023e4450db540bb",
+      "kind": "ingress",
+      "source": "webhook|graph",
+      "ts": 1781368428036,
+      "payload": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000000,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "USER_SENDER_1"
+                },
+                "recipient": {
+                  "id": "PAGE_RECIPIENT_1"
+                },
+                "timestamp": 1700000000000,
+                "message": {
+                  "mid": "m_message_001",
+                  "text": "hello from phase-8 webhook simulator"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "event_id": "evt_5023e4450db540bb",
+      "kind": "governance",
+      "source": "CK_DECISION",
+      "ts": 1781368428036,
+      "payload": {
+        "actor": "CK_DECISION",
+        "fixture": "message-created"
+      }
+    },
+    {
+      "event_id": "evt_5023e4450db540bb",
+      "kind": "fsm",
+      "source": "acquisition-fsm",
+      "ts": 1781368428036,
+      "payload": {
+        "fsm": "acquisition-fsm",
+        "from": "IDLE",
+        "to": "PROCESSING"
+      }
+    },
+    {
+      "event_id": "evt_5023e4450db540bb",
+      "kind": "worker",
+      "source": "worker-message-created",
+      "ts": 1781368428036,
+      "payload": {
+        "action": "execute"
+      }
+    },
+    {
+      "event_id": "evt_5023e4450db540bb",
+      "kind": "mutation",
+      "source": "acquisition",
+      "ts": 1781368428036,
+      "payload": {
+        "kernel": "acquisition",
+        "kind": "insert"
+      }
+    },
+    {
+      "event_id": "evt_f723ee46c349276e",
+      "kind": "ingress",
+      "source": "webhook|graph",
+      "ts": 1781368428037,
+      "payload": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000001,
+            "changes": [
+              {
+                "field": "comments",
+                "value": {
+                  "id": "COMMENT_001",
+                  "text": "phase-8 comment fixture",
+                  "from": {
+                    "id": "USER_COMMENTER_1",
+                    "username": "phase8_user"
+                  },
+                  "media": {
+                    "id": "MEDIA_001"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "event_id": "evt_f723ee46c349276e",
+      "kind": "governance",
+      "source": "CK_DECISION",
+      "ts": 1781368428037,
+      "payload": {
+        "actor": "CK_DECISION",
+        "fixture": "comment-created"
+      }
+    },
+    {
+      "event_id": "evt_f723ee46c349276e",
+      "kind": "fsm",
+      "source": "acquisition-fsm",
+      "ts": 1781368428037,
+      "payload": {
+        "fsm": "acquisition-fsm",
+        "from": "IDLE",
+        "to": "PROCESSING"
+      }
+    },
+    {
+      "event_id": "evt_f723ee46c349276e",
+      "kind": "worker",
+      "source": "worker-comment-created",
+      "ts": 1781368428037,
+      "payload": {
+        "action": "execute"
+      }
+    },
+    {
+      "event_id": "evt_f723ee46c349276e",
+      "kind": "mutation",
+      "source": "acquisition",
+      "ts": 1781368428037,
+      "payload": {
+        "kernel": "acquisition",
+        "kind": "insert"
+      }
+    },
+    {
+      "event_id": "evt_5c820350e0de3a71",
+      "kind": "ingress",
+      "source": "webhook|graph",
+      "ts": 1781368428037,
+      "payload": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000002,
+            "changes": [
+              {
+                "field": "mentions",
+                "value": {
+                  "comment_id": "COMMENT_MENTION_001",
+                  "media_id": "MEDIA_001",
+                  "text": "@phase8_target mention fixture"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "event_id": "evt_5c820350e0de3a71",
+      "kind": "governance",
+      "source": "CK_DECISION",
+      "ts": 1781368428037,
+      "payload": {
+        "actor": "CK_DECISION",
+        "fixture": "mention-created"
+      }
+    },
+    {
+      "event_id": "evt_5c820350e0de3a71",
+      "kind": "fsm",
+      "source": "acquisition-fsm",
+      "ts": 1781368428037,
+      "payload": {
+        "fsm": "acquisition-fsm",
+        "from": "IDLE",
+        "to": "PROCESSING"
+      }
+    },
+    {
+      "event_id": "evt_5c820350e0de3a71",
+      "kind": "worker",
+      "source": "worker-mention-created",
+      "ts": 1781368428037,
+      "payload": {
+        "action": "execute"
+      }
+    },
+    {
+      "event_id": "evt_5c820350e0de3a71",
+      "kind": "mutation",
+      "source": "acquisition",
+      "ts": 1781368428037,
+      "payload": {
+        "kernel": "acquisition",
+        "kind": "insert"
+      }
+    },
+    {
+      "event_id": "evt_525b170bf13e3071",
+      "kind": "ingress",
+      "source": "webhook|graph",
+      "ts": 1781368428038,
+      "payload": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000003,
+            "changes": [
+              {
+                "field": "story_insights",
+                "value": {
+                  "story_id": "STORY_001",
+                  "reply": {
+                    "text": "story reply from phase-8"
+                  },
+                  "from": {
+                    "id": "USER_STORYREPLY_1"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "event_id": "evt_525b170bf13e3071",
+      "kind": "governance",
+      "source": "CK_DECISION",
+      "ts": 1781368428038,
+      "payload": {
+        "actor": "CK_DECISION",
+        "fixture": "story-reply"
+      }
+    },
+    {
+      "event_id": "evt_525b170bf13e3071",
+      "kind": "fsm",
+      "source": "acquisition-fsm",
+      "ts": 1781368428038,
+      "payload": {
+        "fsm": "acquisition-fsm",
+        "from": "IDLE",
+        "to": "PROCESSING"
+      }
+    },
+    {
+      "event_id": "evt_525b170bf13e3071",
+      "kind": "worker",
+      "source": "worker-story-reply",
+      "ts": 1781368428038,
+      "payload": {
+        "action": "execute"
+      }
+    },
+    {
+      "event_id": "evt_525b170bf13e3071",
+      "kind": "mutation",
+      "source": "acquisition",
+      "ts": 1781368428038,
+      "payload": {
+        "kernel": "acquisition",
+        "kind": "insert"
+      }
+    },
+    {
+      "event_id": "evt_2d93d857b117220c",
+      "kind": "ingress",
+      "source": "webhook|graph",
+      "ts": 1781368428039,
+      "payload": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000004,
+            "changes": [
+              {
+                "field": "media",
+                "value": {
+                  "media_id": "MEDIA_002",
+                  "media_type": "IMAGE",
+                  "media_url": "https://example.com/phase8.jpg"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "event_id": "evt_2d93d857b117220c",
+      "kind": "governance",
+      "source": "CK_DECISION",
+      "ts": 1781368428039,
+      "payload": {
+        "actor": "CK_DECISION",
+        "fixture": "media-update"
+      }
+    },
+    {
+      "event_id": "evt_2d93d857b117220c",
+      "kind": "fsm",
+      "source": "acquisition-fsm",
+      "ts": 1781368428039,
+      "payload": {
+        "fsm": "acquisition-fsm",
+        "from": "IDLE",
+        "to": "PROCESSING"
+      }
+    },
+    {
+      "event_id": "evt_2d93d857b117220c",
+      "kind": "worker",
+      "source": "worker-media-update",
+      "ts": 1781368428039,
+      "payload": {
+        "action": "execute"
+      }
+    },
+    {
+      "event_id": "evt_2d93d857b117220c",
+      "kind": "mutation",
+      "source": "acquisition",
+      "ts": 1781368428039,
+      "payload": {
+        "kernel": "acquisition",
+        "kind": "insert"
+      }
+    },
+    {
+      "event_id": "evt_da13ee59313a9df2",
+      "kind": "ingress",
+      "source": "webhook|graph",
+      "ts": 1781368428039,
+      "payload": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000005,
+            "changes": [
+              {
+                "field": "conversations",
+                "value": {
+                  "conversation_id": "CONV_001",
+                  "participants": [
+                    "USER_SENDER_1",
+                    "PAGE_RECIPIENT_1"
+                  ],
+                  "updated_fields": [
+                    "messages"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "event_id": "evt_da13ee59313a9df2",
+      "kind": "governance",
+      "source": "CK_DECISION",
+      "ts": 1781368428039,
+      "payload": {
+        "actor": "CK_DECISION",
+        "fixture": "conversation-update"
+      }
+    },
+    {
+      "event_id": "evt_da13ee59313a9df2",
+      "kind": "fsm",
+      "source": "acquisition-fsm",
+      "ts": 1781368428039,
+      "payload": {
+        "fsm": "acquisition-fsm",
+        "from": "IDLE",
+        "to": "PROCESSING"
+      }
+    },
+    {
+      "event_id": "evt_da13ee59313a9df2",
+      "kind": "worker",
+      "source": "worker-conversation-update",
+      "ts": 1781368428039,
+      "payload": {
+        "action": "execute"
+      }
+    },
+    {
+      "event_id": "evt_da13ee59313a9df2",
+      "kind": "mutation",
+      "source": "acquisition",
+      "ts": 1781368428039,
+      "payload": {
+        "kernel": "acquisition",
+        "kind": "insert"
+      }
+    }
+  ],
+  "extras": {},
+  "error": null,
+  "duration_ms": 21
+}

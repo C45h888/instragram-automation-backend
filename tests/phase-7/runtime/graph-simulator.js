@@ -231,9 +231,27 @@ class GraphSimulator {
    * (port 0) so collisions with leftovers from prior test files
    * resolve themselves within the same boot, rather than failing
    * the whole test file.
+   *
+   * When the constructor was given an EXPLICIT port (non-zero) we
+   * honor it — Docker's port mapping requires a fixed port. If that
+   * port is busy we fall back to the free-port rotation only after
+   * the explicit port has failed.
    */
   async _startServerOnFreePort(kind, maxAttempts = 8) {
     const net = require('net');
+    const explicitPort = (kind === 'worker') ? this._workerPort : this._controlPort;
+
+    // ── explicit-port fast path ────────────────────────────────────
+    // Docker / production-style use cases need a stable port. Try
+    // the requested port first; only fall back to OS-assigned if
+    // EADDRINUSE keeps recurring.
+    if (explicitPort && explicitPort > 0) {
+      const ok = await this._tryBind(kind, explicitPort);
+      if (ok) return;
+      // explicit port failed — fall through to rotation
+    }
+
+    // ── free-port rotation (port=0) ────────────────────────────────
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const port = await new Promise((resolve, reject) => {
         const probe = net.createServer();
@@ -243,50 +261,50 @@ class GraphSimulator {
         });
         probe.on('error', reject);
       });
-      // Verify the port is actually bindable for a real listener.
-      // The OS can hand us a port in TIME_WAIT; this probe forces
-      // the kernel to either claim the port or move on.
-      const bindable = await new Promise((resolve) => {
-        const probe = net.createServer();
-        probe.unref();
-        probe.on('error', () => resolve(false));
-        probe.listen(port, '0.0.0.0', () => {
-          probe.close(() => resolve(true));
-        });
-      });
-      if (!bindable) {
-        await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 50)));
-        continue;
-      }
-      // Now actually start the real server on this port. If the
-      // port got snatched between the probe and the real bind
-      // (rare but possible), retry.
-      const serverKind = kind;
-      const targetProp = serverKind === 'worker' ? '_workerServer' : '_controlServer';
-      const handler = serverKind === 'worker' ? this._handleWorkerRequest : this._handleControlRequest;
-      const server = http.createServer((req, res) => handler.call(this, req, res));
-      try {
-        await new Promise((resolve, reject) => {
-          server.on('error', reject);
-          server.listen({ port, host: this._bindAddress, exclusive: false }, resolve);
-        });
-        this[targetProp] = server;
-        if (serverKind === 'worker') this._workerPort = port;
-        if (serverKind === 'control') this._controlPort = port;
-        return;
-      } catch (err) {
-        if (err && err.code === 'EADDRINUSE') {
-          // Race: the port got taken between our probe and our
-          // bind. Try again with a fresh port.
-          await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 50)));
-          continue;
-        }
-        throw err;
-      }
+      if (await this._tryBind(kind, port)) return;
+      await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 50)));
     }
     throw new Error(
       `GraphSimulator._startServerOnFreePort(${kind}): could not bind a free port in ${maxAttempts} attempts`
     );
+  }
+
+  /** Bind the real HTTP server for `kind` on `port`. Returns true on success. */
+  async _tryBind(kind, port) {
+    const net = require('net');
+    // Verify the port is actually bindable for a real listener.
+    // The OS can hand us a port in TIME_WAIT; this probe forces
+    // the kernel to either claim the port or move on.
+    const bindable = await new Promise((resolve) => {
+      const probe = net.createServer();
+      probe.unref();
+      probe.on('error', () => resolve(false));
+      probe.listen(port, '0.0.0.0', () => {
+        probe.close(() => resolve(true));
+      });
+    });
+    if (!bindable) return false;
+
+    const serverKind = kind;
+    const targetProp = serverKind === 'worker' ? '_workerServer' : '_controlServer';
+    const handler = serverKind === 'worker' ? this._handleWorkerRequest : this._handleControlRequest;
+    const server = http.createServer((req, res) => handler.call(this, req, res));
+    try {
+      await new Promise((resolve, reject) => {
+        server.on('error', reject);
+        server.listen({ port, host: this._bindAddress, exclusive: false }, resolve);
+      });
+      this[targetProp] = server;
+      if (serverKind === 'worker') this._workerPort = port;
+      if (serverKind === 'control') this._controlPort = port;
+      return true;
+    } catch (err) {
+      if (err && err.code === 'EADDRINUSE') {
+        // Race: the port got taken between our probe and our bind.
+        return false;
+      }
+      throw err;
+    }
   }
 
   async _handleWorkerRequest(req, res) {
@@ -592,7 +610,11 @@ if (require.main === module) {
   const controlPort = parseInt(process.env.GRAPH_SIM_CONTROL_PORT || '9101', 10);
   const sim = new GraphSimulator({ workerPort: port, controlPort });
   sim.start().then(() => {
-    console.log(`[graph-simulator] worker=${port} control=${controlPort}`);
+    // Log the ACTUAL bound ports, not the constructor defaults —
+    // otherwise the bootstrap line lies about where the server
+    // is actually listening (which matters in Docker, where the
+    // healthcheck and other containers connect by port number).
+    console.log(`[graph-simulator] worker=${sim._workerPort} control=${sim._controlPort}`);
   }).catch((err) => {
     console.error('[graph-simulator] start failed:', err);
     process.exit(1);

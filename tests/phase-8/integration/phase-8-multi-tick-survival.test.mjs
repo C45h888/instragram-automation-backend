@@ -35,6 +35,7 @@ describe('integration/phase-8-multi-tick-survival', () => {
   let writer;
 
   beforeAll(async () => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'integration', testName: 'phase-8-multi-tick-survival' });
     writer.addExtra('tier', TIER);
     writer.addExtra('ticks_planned', TICKS);
@@ -49,11 +50,16 @@ describe('integration/phase-8-multi-tick-survival', () => {
       const wh = await p8.webhook.deliver(f);
       if (wh.status !== 200) throw new Error(`webhook fail at tick ${t}: ${wh.status}`);
       const parsed = p8.ingress.parse(wh.body);
-      p8.recorder.ingress(parsed.event_id, wh.body);
-      p8.recorder.governance(parsed.event_id, { actor: 'CK_DECISION', tick: t });
-      p8.recorder.fsm(parsed.event_id, { fsm: 'tick-fsm' });
-      p8.recorder.worker(parsed.event_id, `tick-worker-${t}`, { action: 'tick' });
-      p8.recorder.mutation(parsed.event_id, { kernel: 'tick' });
+      // Per-tick event_id: webhook event_ids are content-hashed,
+      // so the same fixture delivered at tick 0 and tick 6
+      // produces the same id. Append the tick to keep each
+      // recorder chain distinct.
+      const whEid = `${parsed.event_id}__tick_${t}`;
+      p8.recorder.ingress(whEid, wh.body);
+      p8.recorder.governance(whEid, { actor: 'CK_DECISION', tick: t });
+      p8.recorder.fsm(whEid, { fsm: 'tick-fsm' });
+      p8.recorder.worker(whEid, `tick-worker-${t}`, { action: 'tick' });
+      p8.recorder.mutation(whEid, { kernel: 'tick' });
 
       const gr = await getGraph('/v1/accounts');
       if (gr.status !== 200) throw new Error(`graph fail at tick ${t}: ${gr.status}`);
@@ -67,7 +73,7 @@ describe('integration/phase-8-multi-tick-survival', () => {
       p8.recorder.worker(packetId, 'pair-worker', { action: 'pair' });
       p8.recorder.mutation(packetId, { kernel: dst });
 
-      const c1 = p8.recorder.assertConstitutionalPath(parsed.event_id);
+      const c1 = p8.recorder.assertConstitutionalPath(whEid);
       const c2 = p8.recorder.assertConstitutionalPath(packetId);
       if (!c1.ok || !c2.ok) {
         throw new Error(`constitutional fail at tick ${t}: ${JSON.stringify([c1, c2])}`);

@@ -1,28 +1,16 @@
 // telemetry-kernel/substrates/projection/workers/index.js
-// Bounded Telemetry Projection Layer: unified export for all projection workers.
-//
-// Architecture (Phase 3):
-//   Phase 1 Workers (5 bounded projection workers)
-//         ↓  emit PROJECTION_INTENT
-//   Observability Plane (_transitionLog, onWrite hook)
-//         ↓  trigger-driven
-//   Phase 2: FSM Reactive Coordination (telemetryCoordinationFsm)
-//         ↓  CK.dispatch(PROJECTION_PERSISTED)
-//   CK Async Validation (validate → mark ACCEPTED or REJECTED)
-//         ↓  CK.subscribeAction(PROJECTION_ACCEPTED)
-//   Namespace Projection Interpreter (write domain state to namespaces)
-//
-// All 5 projection workers are exported here. They are started/stopped
-// as a group by the projection substrate.
-
 const RuntimeProjectionWorker = require('./runtime-projection-worker');
 const IntegrityProjectionWorker = require('./integrity-projection-worker');
 const AuthorityProjectionWorker = require('./authority-projection-worker');
 const HealthProjectionWorker = require('./health-projection-worker');
 const SystemicPressureProjectionWorker = require('./systemic-pressure-projection-worker');
 const CapabilityProjectionWorker = require('./capability-projection-worker');
-
-// ── Worker instances ───────────────────────────────────────────────────────────
+const PersistTelemetryProjectionWorker = require('./persist-telemetry-projection-worker');
+const ReconciliationProjectionWorker = require('./reconciliation-projection-worker');
+const SchedulingProjectionWorker = require('./scheduling-projection-worker');
+const DedupProjectionWorker = require('./dedup-projection-worker');
+const PublishingProjectionWorker = require('./publishing-projection-worker');
+const AcquisitionProjectionWorker = require('./acquisition-projection-worker');
 
 const workers = {
   runtime: new RuntimeProjectionWorker(),
@@ -31,62 +19,36 @@ const workers = {
   health: new HealthProjectionWorker(),
   systemic: new SystemicPressureProjectionWorker(),
   capability: new CapabilityProjectionWorker(),
+  persistTelemetry: new PersistTelemetryProjectionWorker(),
+  reconciliation: new ReconciliationProjectionWorker(),
+  scheduling: new SchedulingProjectionWorker(),
+  dedup: new DedupProjectionWorker(),
+  publishing: new PublishingProjectionWorker(),
+  acquisition: new AcquisitionProjectionWorker(),
 };
 
-// ── Group lifecycle ─────────────────────────────────────────────────────────────
-
-/**
- * Start all 5 Phase 1 projection workers.
- * Workers should be started BEFORE Phase 2 dumb writer
- * so PROJECTION_INTENT entries are available when Phase 2 subscribes.
- *
- * @param {number} [pollIntervalMs] — override poll interval for all workers
- */
 async function startAll(pollIntervalMs) {
-  const order = ['systemic', 'health', 'integrity', 'authority', 'runtime', 'capability'];
-  for (const key of order) {
-    await workers[key].start(pollIntervalMs);
-  }
-  console.log('[telemetry-kernel/projection-workers] All 6 projection workers started');
+  const order = ['systemic', 'health', 'integrity', 'authority', 'runtime', 'reconciliation', 'capability', 'persistTelemetry', 'scheduling', 'dedup', 'publishing', 'acquisition'];
+  for (const key of order) { await workers[key].start(pollIntervalMs); }
+  console.log('[telemetry-kernel/projection-workers] All 12 projection workers started');
 }
 
-/**
- * Stop all 6 projection workers gracefully.
- */
 async function stopAll() {
-  const order = ['capability', 'runtime', 'authority', 'integrity', 'health', 'systemic'];
-  for (const key of order) {
-    await workers[key].stop();
-  }
-  console.log('[telemetry-kernel/projection-workers] All 6 projection workers stopped');
+  const order = ['acquisition', 'publishing', 'dedup', 'scheduling', 'persistTelemetry', 'capability', 'reconciliation', 'runtime', 'authority', 'integrity', 'health', 'systemic'];
+  for (const key of order) { await workers[key].stop(); }
+  console.log('[telemetry-kernel/projection-workers] All 12 projection workers stopped');
 }
 
-/**
- * Return health signals for all workers.
- */
 function getAllHealth() {
   const result = {};
-  for (const [key, worker] of Object.entries(workers)) {
-    result[key] = worker.getHealth();
-  }
+  for (const [key, worker] of Object.entries(workers)) { result[key] = worker.getHealth(); }
   return result;
 }
 
-/**
- * Return current projections for all workers.
- */
 function getAllProjections() {
   const result = {};
-  for (const [key, worker] of Object.entries(workers)) {
-    result[key] = worker.getProjection();
-  }
+  for (const [key, worker] of Object.entries(workers)) { result[key] = worker.getProjection(); }
   return result;
 }
 
-module.exports = {
-  workers,
-  startAll,
-  stopAll,
-  getAllHealth,
-  getAllProjections,
-};
+module.exports = { workers, startAll, stopAll, getAllHealth, getAllProjections };

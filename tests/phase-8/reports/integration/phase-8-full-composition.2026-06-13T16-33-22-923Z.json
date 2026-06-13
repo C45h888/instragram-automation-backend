@@ -1,0 +1,19 @@
+{
+  "run_id": "2026-06-13T16-33-22-923Z",
+  "test_name": "phase-8-full-composition",
+  "suite": "integration",
+  "timestamp": "2026-06-13T16:33:22.923Z",
+  "started_at": 1781368402923,
+  "finished_at": 1781368402953,
+  "status": "pass",
+  "vitest_assertion_count": 67,
+  "constitutional_summary": [],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "report_dir": "/app/tests/phase-8/reports"
+  },
+  "error": null,
+  "duration_ms": 30
+}

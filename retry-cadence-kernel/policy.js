@@ -83,6 +83,12 @@ const POLICIES = {
   'telemetry:health':    { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
   'telemetry:systemic':  { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
   'telemetry:capability': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:persist-telemetry': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:reconciliation': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:scheduling': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:dedup': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:publishing': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
+  'telemetry:acquisition': { maxRetries: 3, baseDelayMs: 15000, maxDelayMs: 60000, backoffMultiplier: 1.5 },
   // ── Persist-telemetry retries — Supabase is an external unstable domain ──
   // Failure vectors are not predictable (5xx, 429, network, JWT expiry,
   // schema migrations). 3 attempts with moderate backoff. The substrate
@@ -127,6 +133,12 @@ const DOMAIN_TO_SUBSTRATE = {
   'telemetry:health':    'telemetry:health',
   'telemetry:systemic':  'telemetry:systemic',
   'telemetry:capability': 'telemetry:capability',
+  'telemetry:persist-telemetry': 'telemetry:persist-telemetry',
+  'telemetry:reconciliation': 'telemetry:reconciliation',
+  'telemetry:scheduling': 'telemetry:scheduling',
+  'telemetry:dedup': 'telemetry:dedup',
+  'telemetry:publishing': 'telemetry:publishing',
+  'telemetry:acquisition': 'telemetry:acquisition',
   // Persist-telemetry — writes and reads use the same substrate policy
   'persist-telemetry':      'persist-telemetry',
   'persist-telemetry-read': 'persist-telemetry-read',

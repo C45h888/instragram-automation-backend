@@ -29,6 +29,7 @@ describe('integration/phase-8-architectural-drift', () => {
   const findings = [];
 
   beforeAll(() => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'integration', testName: 'phase-8-architectural-drift' });
   });
   afterAll(() => {

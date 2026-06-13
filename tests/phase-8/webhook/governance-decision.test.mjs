@@ -17,6 +17,7 @@ describe('webhook/governance-decision', () => {
   const eventIds = [];
 
   beforeAll(async () => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'webhook', testName: 'governance-decision' });
     await p8.webhook.reset();
   });

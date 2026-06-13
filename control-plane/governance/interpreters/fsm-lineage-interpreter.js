@@ -21,6 +21,9 @@ const FSM_DOMAINS = {
   publishing: 'publishing',
   scheduling: 'scheduling',
   dedup: 'dedup',
+  'persist-telemetry': 'persist-telemetry',
+  publishing: 'publishing',
+  acquisition: 'acquisition',
 };
 
 /**

@@ -38,6 +38,7 @@ describe('constitutional-flow/retry-cadence-survival', () => {
   let deferred = false;
 
   beforeAll(() => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'constitutional', testName: 'retry-cadence-survival' });
     if (existsModule('retry-cadence-kernel')) {
       try { retryModule = require(path.join(ROOT, 'retry-cadence-kernel')); }

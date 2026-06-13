@@ -25,6 +25,7 @@ describe('constitutional-flow/webhook-to-state', () => {
   const eventIds = [];
 
   beforeAll(async () => {
+      p8.recorder.reset();
     writer = new p8.ReportWriter({ suite: 'constitutional', testName: 'webhook-to-state' });
     const h = await p8.webhook.health();
     expect(h.status).toBe(200);

@@ -38,6 +38,12 @@ const authorityWriter = require('./authority-transition-writer');
 const healthWriter = require('./health-transition-writer');
 const systemicWriter = require('./systemic-transition-writer');
 const capabilityWriter = require('./capability-transition-writer');
+const persistTelemetryWriter = require('./persist-telemetry-transition-writer');
+const reconciliationWriter = require('./reconciliation-transition-writer');
+const schedulingWriter = require('./scheduling-transition-writer');
+const dedupWriter = require('./dedup-transition-writer');
+const publishingWriter = require('./publishing-transition-writer');
+const acquisitionWriter = require('./acquisition-transition-writer');
 
 const writers = {
   runtime: runtimeWriter,
@@ -46,6 +52,12 @@ const writers = {
   health: healthWriter,
   systemic: systemicWriter,
   capability: capabilityWriter,
+  'persist-telemetry': persistTelemetryWriter,
+  'reconciliation': reconciliationWriter,
+  'scheduling': schedulingWriter,
+  'dedup': dedupWriter,
+  'publishing': publishingWriter,
+  'acquisition': acquisitionWriter,
 };
 
 /** All domain namespaces this module owns */
@@ -93,7 +105,7 @@ function startAll() {
   for (const writer of Object.values(writers)) {
     writer.start();
   }
-  console.log('[transition-writers] All 6 writers started — event-driven, bounded by namespace');
+  console.log('[transition-writers] All 12 writers started — event-driven, bounded by namespace');
 }
 
 /**
@@ -104,7 +116,7 @@ function stopAll() {
   for (const writer of Object.values(writers)) {
     writer.stop();
   }
-  console.log('[transition-writers] All 5 writers stopped');
+  console.log('[transition-writers] All 12 writers stopped');
 }
 
 /**

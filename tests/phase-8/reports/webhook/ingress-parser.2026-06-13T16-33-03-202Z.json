@@ -1,0 +1,26 @@
+{
+  "run_id": "2026-06-13T16-33-03-202Z",
+  "test_name": "ingress-parser",
+  "suite": "webhook",
+  "timestamp": "2026-06-13T16:33:03.202Z",
+  "started_at": 1781368383202,
+  "finished_at": 1781368383226,
+  "status": "pass",
+  "vitest_assertion_count": 17,
+  "constitutional_summary": [],
+  "drift_findings": [],
+  "event_ids": [],
+  "timeline_sample": [],
+  "extras": {
+    "fixtures": [
+      "message-created",
+      "comment-created",
+      "mention-created",
+      "story-reply",
+      "media-update",
+      "conversation-update"
+    ]
+  },
+  "error": null,
+  "duration_ms": 24
+}

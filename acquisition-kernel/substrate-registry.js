@@ -74,6 +74,12 @@ const RETRY_WORKER_MAP = {
   'telemetry:health':    '../retry-cadence-kernel/workers/telemetry-retry-health-worker',
   'telemetry:systemic':  '../retry-cadence-kernel/workers/telemetry-retry-systemic-worker',
   'telemetry:capability': '../retry-cadence-kernel/workers/telemetry-retry-capability-worker',
+  'telemetry:persist-telemetry': '../retry-cadence-kernel/workers/telemetry-retry-persist-telemetry-worker',
+  'telemetry:reconciliation': '../retry-cadence-kernel/workers/telemetry-retry-reconciliation-worker',
+  'telemetry:scheduling': '../retry-cadence-kernel/workers/telemetry-retry-scheduling-worker',
+  'telemetry:dedup': '../retry-cadence-kernel/workers/telemetry-retry-dedup-worker',
+  'telemetry:publishing': '../retry-cadence-kernel/workers/telemetry-retry-publishing-worker',
+  'telemetry:acquisition': '../retry-cadence-kernel/workers/telemetry-retry-acquisition-worker',
   // ── Persist-telemetry retry domain (phase 3) ─────────────────────────
   // The stub was replaced by the connection-recovery-worker under the
   // retry-execution-substrate. The substrate-registry still maps the
@@ -115,6 +121,12 @@ const CLASSIFICATION_WORKER_MAP = {
   'telemetry:health':    '../retry-cadence-kernel/workers/classification-worker',
   'telemetry:systemic':  '../retry-cadence-kernel/workers/classification-worker',
   'telemetry:capability': '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:persist-telemetry': '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:reconciliation': '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:scheduling': '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:dedup': '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:publishing': '../retry-cadence-kernel/workers/classification-worker',
+  'telemetry:acquisition': '../retry-cadence-kernel/workers/classification-worker',
   // Persist-telemetry classification is owned by the substrate
   // (persistence-failure-substrate.js). The retry-cadence-kernel does
   // NOT re-classify — it consumes the substrate's errorShape. So
@@ -179,6 +191,12 @@ const DOMAIN_REGISTRY = {
   'telemetry:health':    { },  // health projection retry
   'telemetry:systemic':  { },  // systemic pressure projection retry
   'telemetry:capability': { },  // capability projection retry
+  'telemetry:persist-telemetry': { },  // persist-telemetry projection retry
+  'telemetry:reconciliation': { },  // reconciliation projection retry
+  'telemetry:scheduling': { },  // scheduling projection retry
+  'telemetry:dedup': { },  // dedup projection retry
+  'telemetry:publishing': { },  // publishing projection retry
+  'telemetry:acquisition': { },  // acquisition projection retry
   // ── Persist-telemetry retry domain (base phase) ─────────────────
   // Two domains: writes and reads. The substrate is the persistence
   // domain itself; the FSM is the executor. No fetch or execute

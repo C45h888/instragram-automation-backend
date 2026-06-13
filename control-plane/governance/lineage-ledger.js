@@ -74,6 +74,9 @@ const DOMAIN_KEYS = {
   scheduling: 'lineage:ledger:domain:scheduling',
   dedup: 'lineage:ledger:domain:dedup',
   engagement: 'lineage:ledger:domain:engagement',
+  'persist-telemetry': 'lineage:ledger:domain:persist-telemetry',
+  publishing: 'lineage:ledger:domain:publishing',
+  acquisition: 'lineage:ledger:domain:acquisition',
 };
 
 // Worker operational keys
