@@ -1,9 +1,9 @@
 {
-  "derived_at": 1781453755473,
+  "derived_at": 1781457472876,
   "events": {
-    "p9-dup-1781453755316": {
-      "event_id": "p9-dup-1781453755316",
-      "ingress_ts": 1781453755317,
+    "p9-dup-1781457472718": {
+      "event_id": "p9-dup-1781457472718",
+      "ingress_ts": 1781457472718,
       "governance_ts": null,
       "fsm_ts": null,
       "worker_count": 0,
@@ -18,7 +18,7 @@
       "event_id": "evt-3",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781453755317,
+      "fsm_ts": 1781457472720,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
@@ -30,7 +30,7 @@
       "event_id": "evt-4",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781453755317,
+      "fsm_ts": 1781457472720,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
@@ -41,7 +41,7 @@
     "evt-5": {
       "event_id": "evt-5",
       "ingress_ts": null,
-      "governance_ts": 1781453755317,
+      "governance_ts": 1781457472720,
       "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
@@ -53,7 +53,7 @@
     "evt-6": {
       "event_id": "evt-6",
       "ingress_ts": null,
-      "governance_ts": 1781453755368,
+      "governance_ts": 1781457472771,
       "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
@@ -65,7 +65,7 @@
     "evt-7": {
       "event_id": "evt-7",
       "ingress_ts": null,
-      "governance_ts": 1781453755419,
+      "governance_ts": 1781457472823,
       "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
@@ -74,8 +74,8 @@
         "governance"
       ]
     },
-    "871e4440-a42b-461f-a519-21b637446126": {
-      "event_id": "871e4440-a42b-461f-a519-21b637446126",
+    "e3cdce78-1001-4172-bc36-05db259c942b": {
+      "event_id": "e3cdce78-1001-4172-bc36-05db259c942b",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
@@ -86,8 +86,8 @@
         "governance"
       ]
     },
-    "68736a3e-1d2a-4ebf-be9b-6678dbfdf168": {
-      "event_id": "68736a3e-1d2a-4ebf-be9b-6678dbfdf168",
+    "bfaff744-37a0-4559-90d5-b4bbb745d0b0": {
+      "event_id": "bfaff744-37a0-4559-90d5-b4bbb745d0b0",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
@@ -98,8 +98,8 @@
         "governance"
       ]
     },
-    "24636d99-9bcd-4592-941f-94b11a305d40": {
-      "event_id": "24636d99-9bcd-4592-941f-94b11a305d40",
+    "2d802f78-531c-45af-85b4-055cdd0996b9": {
+      "event_id": "2d802f78-531c-45af-85b4-055cdd0996b9",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
@@ -113,7 +113,7 @@
   },
   "constitutional_paths": [
     {
-      "event_id": "p9-dup-1781453755316",
+      "event_id": "p9-dup-1781457472718",
       "ok": false,
       "ordering_ok": true,
       "worker_count": 0,
@@ -155,21 +155,21 @@
       "mutation_count": 0
     },
     {
-      "event_id": "871e4440-a42b-461f-a519-21b637446126",
+      "event_id": "e3cdce78-1001-4172-bc36-05db259c942b",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,
       "mutation_count": 2
     },
     {
-      "event_id": "68736a3e-1d2a-4ebf-be9b-6678dbfdf168",
+      "event_id": "bfaff744-37a0-4559-90d5-b4bbb745d0b0",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,
       "mutation_count": 2
     },
     {
-      "event_id": "24636d99-9bcd-4592-941f-94b11a305d40",
+      "event_id": "2d802f78-531c-45af-85b4-055cdd0996b9",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,

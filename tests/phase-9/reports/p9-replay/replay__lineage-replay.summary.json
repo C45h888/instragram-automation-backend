@@ -8,8 +8,11 @@
     "replay": {
       "diverged_keys": [],
       "missing_observations": [],
-      "matched_keys": 0,
-      "checks_performed": []
+      "matched_keys": 2,
+      "checks_performed": [
+        "injected::STATE_TRANSITION",
+        "membrane::STATE_TRANSITION"
+      ]
     }
   }
 }

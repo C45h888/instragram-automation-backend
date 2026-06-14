@@ -1,6 +1,161 @@
 {
-  "derived_at": 1781437555551,
-  "events": {},
-  "constitutional_paths": [],
+  "derived_at": 1781457537405,
+  "events": {
+    "p9-own-media-1781457537248": {
+      "event_id": "p9-own-media-1781457537248",
+      "ingress_ts": 1781457537248,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": true,
+      "kernels_touched": [
+        "runtime/ingress",
+        "phase7"
+      ]
+    },
+    "evt-2": {
+      "event_id": "evt-2",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781457537251,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "phase7"
+      ]
+    },
+    "evt-3": {
+      "event_id": "evt-3",
+      "ingress_ts": null,
+      "governance_ts": 1781457537251,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-4": {
+      "event_id": "evt-4",
+      "ingress_ts": null,
+      "governance_ts": 1781457537301,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-5": {
+      "event_id": "evt-5",
+      "ingress_ts": null,
+      "governance_ts": 1781457537352,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "5fd74141-9e7d-4b83-b162-77a2d897de07": {
+      "event_id": "5fd74141-9e7d-4b83-b162-77a2d897de07",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "0ab4af31-fd65-40f5-8aa7-8f376abb043d": {
+      "event_id": "0ab4af31-fd65-40f5-8aa7-8f376abb043d",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "f9e38a11-f301-4ba5-9ae6-0e034a6fab24": {
+      "event_id": "f9e38a11-f301-4ba5-9ae6-0e034a6fab24",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    }
+  },
+  "constitutional_paths": [
+    {
+      "event_id": "p9-own-media-1781457537248",
+      "ok": false,
+      "ordering_ok": true,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "evt-2",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-3",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-4",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-5",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "5fd74141-9e7d-4b83-b162-77a2d897de07",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "0ab4af31-fd65-40f5-8aa7-8f376abb043d",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "f9e38a11-f301-4ba5-9ae6-0e034a6fab24",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    }
+  ],
   "drift_findings": []
 }

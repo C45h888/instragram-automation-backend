@@ -1,38 +1,111 @@
 {
-  "derived_at": 1781437623697,
+  "derived_at": 1781456432588,
   "events": {
-    "p9-publishing-1781437623536": {
-      "event_id": "p9-publishing-1781437623536",
+    "p9-publishing-1781456432429": {
+      "event_id": "p9-publishing-1781456432429",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
       "worker_count": 1,
-      "mutation_count": 0,
+      "mutation_count": 2,
       "ordering_ok": true,
       "kernels_touched": [
-        "graph/publishing"
+        "graph/publishing",
+        "phase7"
       ]
     },
     "evt-2": {
       "event_id": "evt-2",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781437623538,
+      "fsm_ts": 1781456432431,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
         "phase7"
       ]
+    },
+    "evt-3": {
+      "event_id": "evt-3",
+      "ingress_ts": null,
+      "governance_ts": 1781456432431,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-4": {
+      "event_id": "evt-4",
+      "ingress_ts": null,
+      "governance_ts": 1781456432483,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-5": {
+      "event_id": "evt-5",
+      "ingress_ts": null,
+      "governance_ts": 1781456432535,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "5694332a-9b64-4054-a940-e4748ed25fac": {
+      "event_id": "5694332a-9b64-4054-a940-e4748ed25fac",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "b5684f15-6ae3-4532-9648-76ccab3c3237": {
+      "event_id": "b5684f15-6ae3-4532-9648-76ccab3c3237",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "f5815cb0-1e70-4dc4-99a6-f25a01dd0430": {
+      "event_id": "f5815cb0-1e70-4dc4-99a6-f25a01dd0430",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
     }
   },
   "constitutional_paths": [
     {
-      "event_id": "p9-publishing-1781437623536",
+      "event_id": "p9-publishing-1781456432429",
       "ok": false,
       "ordering_ok": true,
       "worker_count": 1,
-      "mutation_count": 0
+      "mutation_count": 2
     },
     {
       "event_id": "evt-2",
@@ -40,6 +113,48 @@
       "ordering_ok": null,
       "worker_count": 0,
       "mutation_count": 0
+    },
+    {
+      "event_id": "evt-3",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-4",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-5",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "5694332a-9b64-4054-a940-e4748ed25fac",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "b5684f15-6ae3-4532-9648-76ccab3c3237",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "f5815cb0-1e70-4dc4-99a6-f25a01dd0430",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
     }
   ],
   "drift_findings": []

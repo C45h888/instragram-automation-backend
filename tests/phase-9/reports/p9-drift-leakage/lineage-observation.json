@@ -1,12 +1,12 @@
 [
   {
-    "event_id": "p9-drift-leakage-1781437606602",
+    "event_id": "p9-drift-leakage-1781457515647",
     "kind": "ingress",
     "source": "runtime/ingress",
     "payload": {
       "fixture": "message-created"
     },
-    "ts": 1781437606637
+    "ts": 1781457515648
   },
   {
     "event_id": "evt-2",
@@ -15,6 +15,105 @@
     "payload": {
       "fixture": "message-created"
     },
-    "ts": 1781437606734
+    "ts": 1781457515648
+  },
+  {
+    "event_id": "evt-3",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "5c2f3a01-8a66-48db-a3a8-7e01e29e1840",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781457515648
+  },
+  {
+    "event_id": "evt-4",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "dcc110b3-f12f-4105-a3ea-6abbab07b07e",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781457515700
+  },
+  {
+    "event_id": "evt-5",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "e63eefc8-7525-403a-9c54-279d287ca209",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781457515752
+  },
+  {
+    "event_id": "p9-drift-leakage-1781457515647",
+    "kind": "mutation",
+    "source": "phase7",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "phase7",
+      "entityId": "p9-drift-leakage-1781457515647",
+      "table": "injected"
+    },
+    "ts": 1781457515648
+  },
+  {
+    "event_id": "1292787b-c385-498c-9f01-9ddee447a3ad",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "1292787b-c385-498c-9f01-9ddee447a3ad",
+      "table": "membrane"
+    },
+    "ts": 1781457515648
+  },
+  {
+    "event_id": "f13a9fa2-abc0-4f14-b9b2-a0ecea462dc5",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "f13a9fa2-abc0-4f14-b9b2-a0ecea462dc5",
+      "table": "membrane"
+    },
+    "ts": 1781457515700
+  },
+  {
+    "event_id": "768454c2-a8c2-421d-9a18-d5c72f978939",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "768454c2-a8c2-421d-9a18-d5c72f978939",
+      "table": "membrane"
+    },
+    "ts": 1781457515752
   }
 ]
