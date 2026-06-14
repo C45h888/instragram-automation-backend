@@ -14,6 +14,13 @@
 //     not on the worker allow-list (heuristic: source starts with
 //     "worker-" or matches a known worker pattern).
 //   - fsm ownership: an fsm transition comes from a non-FSM source.
+//
+// FIX (2026-06-14):
+//   - _scan() is now called on every snapshot() call, not just at attach time.
+//   - Findings accumulate across the test run and must be cleared between tests
+//     via reset(). The harness calls reset() before each test.
+//   - All events since the last snapshot are scanned; no events are missed
+//     because the timeline grew after attach().
 
 const KNOWN_FSMS = new Set([
   'acquisition-fsm',
@@ -41,20 +48,33 @@ export class DriftDetector {
     this._attached = false;
     this._simulator = null;
     this._findings = [];
+    // Track timeline length at last scan so we only scan new events
+    this._lastTimelineLen = 0;
   }
 
   attach(simulator) {
     if (this._attached) return;
     this._simulator = simulator;
     this._attached = true;
-    this._scan();
+    // Clear any stale findings and reset timeline cursor on fresh attach
+    this._findings = [];
+    this._lastTimelineLen = 0;
   }
 
+  /**
+   * Scan only new events since the last snapshot call.
+   * Called by snapshot() — callers don't need to call this directly.
+   */
   _scan() {
     if (!this._simulator) return;
     const timeline = this._simulator.timeline();
     const mutations = this._simulator.mutations ? this._simulator.mutations() : [];
-    for (const e of timeline) {
+
+    // Only scan events that arrived since the last scan
+    const newTimeline = timeline.slice(this._lastTimelineLen);
+    this._lastTimelineLen = timeline.length;
+
+    for (const e of newTimeline) {
       const t = (e.type || '').toUpperCase();
       const src = e.source || 'unknown';
       if (t.includes('WORKER') && (t.includes('GOVERN') || t.includes('VALIDATE'))) {
@@ -78,7 +98,22 @@ export class DriftDetector {
     }
   }
 
+  /**
+   * Reset findings and timeline cursor. Call this before each new test
+   * so findings from prior tests don't produce false positives.
+   */
+  reset() {
+    this._findings = [];
+    this._lastTimelineLen = 0;
+  }
+
+  /**
+   * Scan any new events since the last call, then return a copy of
+   * the accumulated findings. Findings are NOT cleared — call reset()
+   * explicitly to clear.
+   */
   snapshot() {
+    this._scan();
     return [...this._findings];
   }
 }

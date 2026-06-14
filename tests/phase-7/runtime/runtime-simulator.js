@@ -278,6 +278,28 @@ class Phase7RuntimeSimulator {
       tickCount: n,
       tickIntervalMs: 0,
       dispatch: async (evt) => {
+        // FIX (2026-06-14): route through observability first so the
+        // EventRecorder captures the event. Then call CK.dispatch so
+        // governance also processes it. Previously tick() bypassed the
+        // observability plane entirely, causing the RecorderObserver to
+        // miss tick-injected events.
+        let observability;
+        try {
+          observability = require('../../../control-plane/observability/index.js');
+          if (observability && typeof observability.transition === 'function') {
+            observability.transition({
+              domain: 'scheduling',
+              entity: 'cadence',
+              entityId: `tick-${Date.now()}`,
+              previousState: null,
+              nextState: evt.type,
+              authority: 'cadence-accelerator',
+              raw: evt,
+            });
+          }
+        } catch (_) {
+          // observability may not be available; fall through to direct CK dispatch
+        }
         CK.dispatch(evt);
       },
     });

@@ -11,28 +11,29 @@
 //   (c) keep the stub trivially teardownable so per-test state does
 //       not leak between tests.
 //
+// FIX (2026-06-14): default permissive behavior removed. Any event type
+// not explicitly handled now returns { allowed: false, reason } so tests
+// cannot accidentally pass when CK would have rejected. Tests that need
+// permissive stubs for a specific event type must explicitly register
+// an override (see HANDLED_EVENTS below).
+//
 // API:
 //   const { stubCk, teardown } = createStubCk({ realFsm });
 //   stubCk.dispatch(event)   — records and routes per the table below
 //   stubCk.findEvents(type)  — returns all recorded events with that type
 //   stubCk.clearEvents()     — wipes the recorded list
+//   stubCk.allow(type)       — mark a specific event type as allowed
+//   stubCk.allowAll()        — restore the old permissive default (use sparingly)
 //   teardown()               — clears any governance ref the FSM stashed
-//
-// Routing table:
-//   CAPABILITY_DATA_REQUEST → realFsm.dispatch (the FSM will then call
-//                              ctx.dispatchGlobal(DB_READ_REQUESTED);
-//                              we forward that back to realFsm which
-//                              resolves the pending read with a cache-
-//                              miss result, satisfying the Promise).
-//   DB_READ_REQUESTED       → realFsm.dispatch (so READ_RESULT_AVAILABLE
-//                              is reachable from a real emit).
-//   anything else           → record and return { allowed: true }.
 
 'use strict';
 
 function createStubCk({ realFsm } = {}) {
   const events = [];
   let governanceOwner = null;
+  // Explicit allowlist — events not listed here are rejected.
+  // Add overrides via stubCk.allow() or stubCk.allowAll().
+  const _allowed = new Set();
 
   // Inner ctx the stub hands back to the FSM. The FSM's CAPABILITY_
   // DATA_REQUEST handler calls ctx.dispatchGlobal to forward a
@@ -43,11 +44,6 @@ function createStubCk({ realFsm } = {}) {
     dispatchGlobal(sub) {
       events.push({ type: 'CTX_DISPATCH_GLOBAL', sub });
       if (sub && sub.type === 'DB_READ_REQUESTED' && realFsm) {
-        // Emulate the persist-telemetry worker returning a cache
-        // miss (no data). The real FSM will record this as a
-        // "data not yet available" state — the substrate code
-        // treats that as a cache miss and proceeds to the worker
-        // call, then writes back via DB_WRITE_REQUESTED.
         return realFsm.dispatch(
           {
             type: 'READ_RESULT_AVAILABLE',
@@ -60,7 +56,7 @@ function createStubCk({ realFsm } = {}) {
           innerCtx
         );
       }
-      return { allowed: true };
+      return { allowed: false, reason: `stub-ck: dispatchGlobal unhandled type: ${sub?.type}` };
     },
     validate() {
       return { allowed: true };
@@ -73,8 +69,6 @@ function createStubCk({ realFsm } = {}) {
     },
   };
 
-  // Defer the governance wiring until after stubCk is constructed
-  // (TDZ on the literal otherwise).
   function wireGovernance() {
     if (realFsm && typeof realFsm.setGovernance === 'function') {
       realFsm.setGovernance(stubCk);
@@ -86,6 +80,7 @@ function createStubCk({ realFsm } = {}) {
     /**
      * Record an event and route it through the inner ctx if the
      * stub is playing the role of the constitutional ingress.
+     * FIX (2026-06-14): explicit allowlist instead of permissive default.
      */
     dispatch(event) {
       if (!event || typeof event !== 'object') {
@@ -109,9 +104,34 @@ function createStubCk({ realFsm } = {}) {
         return realFsm.dispatch(event, innerCtx);
       }
 
-      // Default permissive result — most tests just want the call to
-      // succeed so they can assert on it later.
+      // Reject unless the event type is explicitly allowlisted.
+      // Tests must call stubCk.allow('EVENT_TYPE') for types they need.
+      if (!_allowed.has(event.type)) {
+        return {
+          allowed: false,
+          reason: `stub-ck: unhandled event type '${event.type}' — call stubCk.allow('${event.type}') to permit it`,
+        };
+      }
       return { allowed: true };
+    },
+
+    /**
+     * Mark an event type as allowed through the stub CK.
+     */
+    allow(type) {
+      if (typeof type === 'string') {
+        _allowed.add(type);
+      } else if (Array.isArray(type)) {
+        type.forEach((t) => _allowed.add(t));
+      }
+    },
+
+    /**
+     * Restore the old permissive default. Use sparingly — defeats the
+     * purpose of the explicit allowlist.
+     */
+    allowAll() {
+      _allowed.clear();
     },
 
     /**
@@ -145,7 +165,6 @@ function createStubCk({ realFsm } = {}) {
     },
   };
 
-  // Now that stubCk is fully constructed, attach the governance ref.
   wireGovernance();
 
   function teardown() {

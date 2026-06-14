@@ -74,6 +74,7 @@ export class RuntimeHarness {
     this._snapshotDeriver._recorder = this._recorder; // share the lineage-aware snapshot
 
     this._driftDetector = new DriftDetector();
+    this._driftDetector.reset(); // clear stale findings from any prior test run
     this._driftDetector.attach(this._simulator);
 
     this._replayEngine = new ReplayEngine();
