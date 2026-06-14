@@ -1,0 +1,47 @@
+[
+  {
+    "event_id": "evt-1",
+    "kind": "fsm",
+    "source": "acquisition",
+    "payload": {
+      "type": "WEBHOOK_EVENT_STAGED",
+      "intentId": "messaging-1781434269290-cad16feb",
+      "accountId": "17841405822304914",
+      "domain": "webhook:messages",
+      "at": 1781434269293,
+      "ms_since_intake": 0,
+      "eventType": "dm_echo",
+      "eventId": "m_message_001",
+      "occurredAt": 1700000000000
+    },
+    "ts": 1781434269294
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "acquisition",
+    "payload": {
+      "intent": "WEBHOOK_EVENT_RECEIVED",
+      "intentId": "messaging-1781434269290-cad16feb",
+      "accountId": "17841405822304914"
+    },
+    "ts": 1781434269295
+  },
+  {
+    "event_id": "evt-3",
+    "kind": "fsm",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "acquisition-projection-worker",
+      "targetDomain": "acquisition",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'acquisition-projection-worker' may not mutate 'acquisition'",
+      "rejectedTraceId": "fb08abb4-652b-45d0-859c-0a08ca260452",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781434269399
+  }
+]

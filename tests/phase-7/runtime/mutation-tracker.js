@@ -29,11 +29,30 @@ class MutationTracker {
    * Wire the tracker to live mutation sources.
    * Hooks are additive; existing observability hooks untouched.
    */
-  attach({ ck, lineageLedger, capabilityFsm }) {
+  attach({ ck, lineageLedger, capabilityFsm, observability }) {
     if (this._attached) return;
     this._attached = true;
 
     const self = this;
+
+    // Hook substrate mutation writes via the observability plane.
+    // onWrite fires for every DB write the substrate emits, including
+    // worker-stage projections that are not governed transitions.
+    if (observability && typeof observability.onWrite === 'function') {
+      observability.onWrite((entry) => {
+        self._record({
+          store: 'mutation-substrate',
+          op: 'write',
+          source: entry.source || entry.domain || 'mutation-substrate',
+          entry: {
+            type: entry.type || entry.eventType,
+            domain: entry.domain,
+            entityId: entry.entityId,
+            table: entry.table || entry.entity,
+          },
+        });
+      });
+    }
 
     // Hook lineage writes
     if (lineageLedger && typeof lineageLedger.onWrite === 'function') {

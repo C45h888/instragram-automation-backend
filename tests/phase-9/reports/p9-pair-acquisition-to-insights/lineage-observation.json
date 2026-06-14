@@ -1,0 +1,36 @@
+[
+  {
+    "event_id": "p9-acquisition-to-insights-1781437645744",
+    "kind": "governance",
+    "source": "acquisition",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "acquisition",
+        "to": "insights"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "insights"
+    },
+    "ts": 1781437645745
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "acquisition",
+        "to": "insights"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "insights"
+    },
+    "ts": 1781437645746
+  }
+]

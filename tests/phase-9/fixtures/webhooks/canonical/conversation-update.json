@@ -6,11 +6,12 @@
       "time": 1700000005,
       "changes": [
         {
-          "field": "conversations",
+          "field": "mentions",
           "value": {
-            "conversation_id": "CONV_001",
-            "participants": ["USER_SENDER_1", "PAGE_RECIPIENT_1"],
-            "updated_fields": ["messages"]
+            "from": { "id": "USER_MENTION_1", "name": "Mention User" },
+            "mention": { "text": "@page" },
+            "post_id": "POST_001",
+            "created_at": 1700000005
           }
         }
       ]

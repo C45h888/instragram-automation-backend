@@ -1,0 +1,20 @@
+[
+  {
+    "event_id": "p9-drift-semantic-1781437600032",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "message-created"
+    },
+    "ts": 1781437600034
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "message-created"
+    },
+    "ts": 1781437600035
+  }
+]

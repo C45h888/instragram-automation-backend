@@ -855,6 +855,12 @@ const TRANSITION_MAP = {
 
       _stageEvent(accountId, canonicalEvent);
 
+      // Seed the inference engine: the event is now staged. This is the
+      // canonical source — the FSM itself records the transition because
+      // it just staged the event. Workers do NOT dispatch through the
+      // inference engine; substrate transitions cover the pre-stage path.
+      inferenceEngine.recordTransition(accountId, intentId, 'SUBSTRATE', 'WORKER_DISPATCHED', 'STAGED');
+
       _emitSpan('WEBHOOK_EVENT_STAGED', intentId, accountId, domain, {
         eventType,
         eventId,

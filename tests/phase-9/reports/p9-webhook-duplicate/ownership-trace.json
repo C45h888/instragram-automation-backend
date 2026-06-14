@@ -1,0 +1,89 @@
+{
+  "p9-dup-1781437554373": {
+    "event_id": "p9-dup-1781437554373",
+    "ingress": {
+      "owner": "runtime/ingress",
+      "ts": 1781437554375
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-3": {
+    "event_id": "evt-3",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "phase7",
+      "ts": 1781437554378,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-4": {
+    "event_id": "evt-4",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "phase7",
+      "ts": 1781437554378,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  }
+}

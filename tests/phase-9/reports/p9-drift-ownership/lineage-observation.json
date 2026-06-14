@@ -1,0 +1,20 @@
+[
+  {
+    "event_id": "p9-drift-ownership-1781437622000",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "message-created"
+    },
+    "ts": 1781437622003
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "message-created"
+    },
+    "ts": 1781437622009
+  }
+]

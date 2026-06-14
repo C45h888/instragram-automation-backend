@@ -1,12 +1,12 @@
 {
-  "derived_at": 1781433993718,
+  "derived_at": 1781437533368,
   "events": {
     "evt-1": {
       "event_id": "evt-1",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433992717,
-      "worker_count": 0,
+      "fsm_ts": null,
+      "worker_count": 1,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
@@ -17,8 +17,8 @@
       "event_id": "evt-2",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433992717,
-      "worker_count": 0,
+      "fsm_ts": null,
+      "worker_count": 1,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
@@ -28,8 +28,8 @@
     "evt-3": {
       "event_id": "evt-3",
       "ingress_ts": null,
-      "governance_ts": null,
-      "fsm_ts": 1781433992820,
+      "governance_ts": 1781437532485,
+      "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
@@ -41,8 +41,8 @@
       "event_id": "evt-4",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433992889,
-      "worker_count": 0,
+      "fsm_ts": null,
+      "worker_count": 1,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
@@ -53,8 +53,8 @@
       "event_id": "evt-5",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433992889,
-      "worker_count": 0,
+      "fsm_ts": null,
+      "worker_count": 1,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
@@ -64,8 +64,8 @@
     "evt-6": {
       "event_id": "evt-6",
       "ingress_ts": null,
-      "governance_ts": null,
-      "fsm_ts": 1781433992995,
+      "governance_ts": 1781437532655,
+      "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
@@ -77,8 +77,8 @@
       "event_id": "evt-7",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433993059,
-      "worker_count": 0,
+      "fsm_ts": null,
+      "worker_count": 1,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
@@ -89,8 +89,8 @@
       "event_id": "evt-8",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433993059,
-      "worker_count": 0,
+      "fsm_ts": null,
+      "worker_count": 1,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
@@ -100,8 +100,8 @@
     "evt-9": {
       "event_id": "evt-9",
       "ingress_ts": null,
-      "governance_ts": null,
-      "fsm_ts": 1781433993167,
+      "governance_ts": 1781437532812,
+      "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
@@ -113,8 +113,8 @@
       "event_id": "evt-10",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433993390,
-      "worker_count": 0,
+      "fsm_ts": null,
+      "worker_count": 1,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
@@ -125,8 +125,8 @@
       "event_id": "evt-11",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433993390,
-      "worker_count": 0,
+      "fsm_ts": null,
+      "worker_count": 1,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
@@ -136,8 +136,80 @@
     "evt-12": {
       "event_id": "evt-12",
       "ingress_ts": null,
+      "governance_ts": 1781437532973,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-13": {
+      "event_id": "evt-13",
+      "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781433993494,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-14": {
+      "event_id": "evt-14",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-15": {
+      "event_id": "evt-15",
+      "ingress_ts": null,
+      "governance_ts": 1781437533141,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-16": {
+      "event_id": "evt-16",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-17": {
+      "event_id": "evt-17",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-18": {
+      "event_id": "evt-18",
+      "ingress_ts": null,
+      "governance_ts": 1781437533308,
+      "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
@@ -151,14 +223,14 @@
       "event_id": "evt-1",
       "ok": false,
       "ordering_ok": null,
-      "worker_count": 0,
+      "worker_count": 1,
       "mutation_count": 0
     },
     {
       "event_id": "evt-2",
       "ok": false,
       "ordering_ok": null,
-      "worker_count": 0,
+      "worker_count": 1,
       "mutation_count": 0
     },
     {
@@ -172,14 +244,14 @@
       "event_id": "evt-4",
       "ok": false,
       "ordering_ok": null,
-      "worker_count": 0,
+      "worker_count": 1,
       "mutation_count": 0
     },
     {
       "event_id": "evt-5",
       "ok": false,
       "ordering_ok": null,
-      "worker_count": 0,
+      "worker_count": 1,
       "mutation_count": 0
     },
     {
@@ -193,14 +265,14 @@
       "event_id": "evt-7",
       "ok": false,
       "ordering_ok": null,
-      "worker_count": 0,
+      "worker_count": 1,
       "mutation_count": 0
     },
     {
       "event_id": "evt-8",
       "ok": false,
       "ordering_ok": null,
-      "worker_count": 0,
+      "worker_count": 1,
       "mutation_count": 0
     },
     {
@@ -214,18 +286,60 @@
       "event_id": "evt-10",
       "ok": false,
       "ordering_ok": null,
-      "worker_count": 0,
+      "worker_count": 1,
       "mutation_count": 0
     },
     {
       "event_id": "evt-11",
       "ok": false,
       "ordering_ok": null,
-      "worker_count": 0,
+      "worker_count": 1,
       "mutation_count": 0
     },
     {
       "event_id": "evt-12",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-13",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-14",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-15",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-16",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-17",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-18",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,

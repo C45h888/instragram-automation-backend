@@ -1,0 +1,36 @@
+[
+  {
+    "event_id": "p9-recovery-to-acquisition-1781437665490",
+    "kind": "governance",
+    "source": "recovery",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "recovery",
+        "to": "acquisition"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "acquisition"
+    },
+    "ts": 1781437665491
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "recovery",
+        "to": "acquisition"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "acquisition"
+    },
+    "ts": 1781437665492
+  }
+]

@@ -1,0 +1,234 @@
+{
+  "p9-scenario-1781437532375": {
+    "event_id": "p9-scenario-1781437532375",
+    "ingress": {
+      "owner": "runtime/ingress",
+      "ts": 1781437532375
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "p9-scenario-1781437532375-pub": {
+    "event_id": "p9-scenario-1781437532375-pub",
+    "ingress": {
+      "owner": "graph/publishing",
+      "ts": 1781437532376
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "p9-scenario-1781437532375-ins": {
+    "event_id": "p9-scenario-1781437532375-ins",
+    "ingress": {
+      "owner": "graph/insights",
+      "ts": 1781437532376
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "p9-scenario-1781437532375-rec": {
+    "event_id": "p9-scenario-1781437532375-rec",
+    "ingress": {
+      "owner": "graph/reconciliation",
+      "ts": 1781437532377
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-5": {
+    "event_id": "evt-5",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "phase7",
+      "ts": 1781437532377,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-6": {
+    "event_id": "evt-6",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "phase7",
+      "ts": 1781437532377,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-7": {
+    "event_id": "evt-7",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "phase7",
+      "ts": 1781437532377,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-8": {
+    "event_id": "evt-8",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "phase7",
+      "ts": 1781437532377,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  }
+}

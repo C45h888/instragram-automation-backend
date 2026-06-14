@@ -1,0 +1,128 @@
+[
+  {
+    "event_id": "p9-scenario-1781437532375",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "message-created",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000000,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "USER_SENDER_1"
+                },
+                "recipient": {
+                  "id": "PAGE_RECIPIENT_1"
+                },
+                "timestamp": 1700000000000,
+                "message": {
+                  "mid": "m_message_001",
+                  "text": "hello from phase-9 canonical webhook fixture"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532375
+  },
+  {
+    "event_id": "p9-scenario-1781437532375-pub",
+    "kind": "worker",
+    "source": "graph/publishing",
+    "payload": {
+      "scenario": "message-thread",
+      "stage": "reply"
+    },
+    "ts": 1781437532376
+  },
+  {
+    "event_id": "p9-scenario-1781437532375-ins",
+    "kind": "ingress",
+    "source": "graph/insights",
+    "payload": {
+      "scenario": "message-thread",
+      "stage": "engagement"
+    },
+    "ts": 1781437532376
+  },
+  {
+    "event_id": "p9-scenario-1781437532375-rec",
+    "kind": "ingress",
+    "source": "graph/reconciliation",
+    "payload": {
+      "scenario": "message-thread",
+      "stage": "finalize"
+    },
+    "ts": 1781437532377
+  },
+  {
+    "event_id": "evt-5",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "message-created",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000000,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "USER_SENDER_1"
+                },
+                "recipient": {
+                  "id": "PAGE_RECIPIENT_1"
+                },
+                "timestamp": 1700000000000,
+                "message": {
+                  "mid": "m_message_001",
+                  "text": "hello from phase-9 canonical webhook fixture"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532377
+  },
+  {
+    "event_id": "evt-6",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "scenario": "message-thread",
+      "stage": "reply"
+    },
+    "ts": 1781437532377
+  },
+  {
+    "event_id": "evt-7",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "scenario": "message-thread",
+      "stage": "engagement"
+    },
+    "ts": 1781437532377
+  },
+  {
+    "event_id": "evt-8",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "scenario": "message-thread",
+      "stage": "finalize"
+    },
+    "ts": 1781437532377
+  }
+]

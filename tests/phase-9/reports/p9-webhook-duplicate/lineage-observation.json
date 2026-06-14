@@ -1,0 +1,42 @@
+[
+  {
+    "event_id": "p9-dup-1781437554373",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "message-created",
+      "duplicate": 1
+    },
+    "ts": 1781437554375
+  },
+  {
+    "event_id": "p9-dup-1781437554373",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "message-created",
+      "duplicate": 2
+    },
+    "ts": 1781437554375
+  },
+  {
+    "event_id": "evt-3",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "message-created",
+      "duplicate": 1
+    },
+    "ts": 1781437554378
+  },
+  {
+    "event_id": "evt-4",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "message-created",
+      "duplicate": 2
+    },
+    "ts": 1781437554378
+  }
+]

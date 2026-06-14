@@ -91,6 +91,8 @@ async function execute(rawItem, accountId, intentId, governance) {
     if (governance && typeof governance.dispatch === 'function') {
       governance.dispatch({
         type: 'WEBHOOK_EVENT_RECEIVED',
+        lineageId: `webhook:acquisition:${intentId}`,
+        lineageDomain: 'acquisition',
         accountId,
         intentId,
         domain: WORKER_DOMAIN,
@@ -145,6 +147,8 @@ function _emitFailure(rawItem, accountId, intentId, reason, governance) {
     try {
       governance.dispatch({
         type: 'WEBHOOK_EVENT_DISCARDED',
+        lineageId: `webhook:acquisition:discarded:${intentId}`,
+        lineageDomain: 'acquisition',
         accountId,
         intentId,
         domain: WORKER_DOMAIN,

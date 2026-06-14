@@ -1,0 +1,20 @@
+[
+  {
+    "event_id": "p9-recovery-1781437623578",
+    "kind": "ingress",
+    "source": "graph/recovery",
+    "payload": {
+      "kind": "token-refresh"
+    },
+    "ts": 1781437623578
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "kind": "token-refresh"
+    },
+    "ts": 1781437623580
+  }
+]

@@ -210,19 +210,21 @@ class Phase7RuntimeSimulator {
 
   _wireObservation() {
     // Event recorder hooks into observability if available
+    let observability;
     try {
-      const observability = require('../../../control-plane/observability/index.js');
+      observability = require('../../../control-plane/observability/index.js');
       this._eventRecorder.attach(observability);
       this._workerTracer.attach({ observability });
     } catch (_) {
       // observability may not be available; recorders operate in passive mode
     }
 
-    // Mutation tracker hooks into lineage ledger and CK
+    // Mutation tracker hooks into lineage ledger, CK, and substrate writes
     this._mutationTracker.attach({
       ck: CK,
       lineageLedger,
       capabilityFsm: graphCapabilityFsm,
+      observability,
     });
 
     // Governance observer wraps CK methods

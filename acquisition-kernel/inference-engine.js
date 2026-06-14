@@ -18,9 +18,6 @@ const INFERRED = Object.freeze({
   INTAKE_RECEIVED:          'INTAKE_RECEIVED',
   INTAKE_CLASSIFYING:       'INTAKE_CLASSIFYING',
   WORKER_DISPATCHED:        'WORKER_DISPATCHED',
-  WORKER_VALIDATING:        'WORKER_VALIDATING',
-  WORKER_NORMALIZING:       'WORKER_NORMALIZING',
-  WORKER_DISPATCHING:       'WORKER_DISPATCHING',
   STAGED:                   'STAGED',
   PERSIST_REQUESTED:        'PERSIST_REQUESTED',
   PERSIST_ACKNOWLEDGED:     'PERSIST_ACKNOWLEDGED',
@@ -30,9 +27,6 @@ const INFERRED = Object.freeze({
   PERSIST_FAILED_HYDRATION: 'PERSIST_FAILED_HYDRATION',
   PERSIST_FAILED_RESOLVE:   'PERSIST_FAILED_RESOLVE',
   PERSIST_FAILED:           'PERSIST_FAILED',
-  DISCARDED_VALIDATION:     'DISCARDED_VALIDATION',
-  DISCARDED_NORMALIZE:      'DISCARDED_NORMALIZE',
-  DISCARDED_DISPATCH:       'DISCARDED_DISPATCH',
 });
 
 // Terminal states — no further transitions accepted.
@@ -42,24 +36,22 @@ const TERMINAL = new Set([
   INFERRED.PERSIST_FAILED_HYDRATION,
   INFERRED.PERSIST_FAILED_RESOLVE,
   INFERRED.PERSIST_FAILED,
-  INFERRED.DISCARDED_VALIDATION,
-  INFERRED.DISCARDED_NORMALIZE,
-  INFERRED.DISCARDED_DISPATCH,
 ]);
 
 // ── Transition key ─────────────────────────────────────────────────────────
-// Two streams of transitions feed the reducer:
-//   WORKER_STATE_TRANSITION  (from any worker, via _state-machine.js)
-//   SUBSTRATE_STATE_TRANSITION (from webhook-acquisition-substrate)
+// Only SUBSTRATE_STATE_TRANSITION events feed the reducer (from the
+// webhook-acquisition-substrate). The FSM also records synthetic
+// INTERNAL transitions for its own state bookkeeping.
 //
-// Plus FSM-emitted transitions on the SAME log:
-//   SUBSTRATE_STATE_TRANSITION with from=PERSIST_REQUESTED, to=PERSIST_ACKNOWLEDGED
-//   SUBSTRATE_STATE_TRANSITION with from=PERSIST_ACKNOWLEDGED, to=DB_WRITE_DISPATCHED
+// Workers do NOT dispatch through the inference engine. The worker state
+// machine (_state-machine.js) emits WORKER_STATE_TRANSITION events, but
+// they are not routed by CK's DOMAIN_EVENT_MAP to the FSM. The inference
+// engine therefore only accepts SUBSTRATE and INTERNAL sources.
 //
-// And from the FSM's own internal-emit path, the FSM records a
-// SYNTHETIC transition:
-//   { type: 'INTERNAL', from: PERSIST_REQUESTED, to: PERSIST_ACKNOWLEDGED, at }
-//   { type: 'INTERNAL', from: PERSIST_ACKNOWLEDGED, to: DB_WRITE_DISPATCHED, at }
+// The FSM seeds the STAGED state directly in WEBHOOK_EVENT_RECEIVED's
+// buildActions via recordTransition(). This is the canonical source: the
+// FSM itself records the transition because it just staged the event.
+// This replaces the dead worker-pipeline path that was never wired.
 //
 // We normalize everything to a { source, from, to, at } tuple. The reducer
 // then uses (currentState, source, from, to) to produce the next state.
@@ -77,9 +69,6 @@ const _REDUCE_TABLE = {
     'SUBSTRATE|IDLE|PAYLOAD_INCOMING':               INFERRED.INTAKE_RECEIVED,
     'SUBSTRATE|IDLE|INTAKE_CLASSIFYING':             INFERRED.INTAKE_CLASSIFYING,  // race: intake fired first
     'SUBSTRATE|IDLE|WORKER_DISPATCHED':              INFERRED.WORKER_DISPATCHED,  // race: worker fired first
-    // A worker can fire its first transition before the substrate's
-    // PAYLOAD_INCOMING lands (race condition). Accept it from ABSENT.
-    'WORKER|IDLE|VALIDATING':                        INFERRED.WORKER_VALIDATING,
   },
   [INFERRED.INTAKE_RECEIVED]: {
     'SUBSTRATE|PAYLOAD_INCOMING|INTAKE_CLASSIFYING': INFERRED.INTAKE_CLASSIFYING,
@@ -88,22 +77,17 @@ const _REDUCE_TABLE = {
     'SUBSTRATE|INTAKE_CLASSIFYING|WORKER_DISPATCHED':INFERRED.WORKER_DISPATCHED,
   },
   [INFERRED.WORKER_DISPATCHED]: {
-    'WORKER|IDLE|VALIDATING':                        INFERRED.WORKER_VALIDATING,
-    'WORKER|IDLE|FAILED_VALIDATION':                 INFERRED.DISCARDED_VALIDATION,
-  },
-  [INFERRED.WORKER_VALIDATING]: {
-    'WORKER|VALIDATING|NORMALIZING':                 INFERRED.WORKER_NORMALIZING,
-    'WORKER|VALIDATING|FAILED_VALIDATION':           INFERRED.DISCARDED_VALIDATION,
-  },
-  [INFERRED.WORKER_NORMALIZING]: {
-    'WORKER|NORMALIZING|DISPATCHING':                INFERRED.WORKER_DISPATCHING,
-    'WORKER|NORMALIZING|FAILED_NORMALIZE':           INFERRED.DISCARDED_NORMALIZE,
-  },
-  [INFERRED.WORKER_DISPATCHING]: {
-    'WORKER|DISPATCHING|STAGED':                     INFERRED.STAGED,
-    'WORKER|DISPATCHING|FAILED_DISPATCH':            INFERRED.DISCARDED_DISPATCH,
+    // Seeded by the FSM in WEBHOOK_EVENT_RECEIVED buildActions. The FSM
+    // just staged the event and records this transition as the canonical
+    // source. Workers do NOT dispatch through the inference engine.
+    'SUBSTRATE|WORKER_DISPATCHED|STAGED':             INFERRED.STAGED,
   },
   [INFERRED.STAGED]: {
+    // Substrate's third transition: WORKER_DISPATCHED→PERSIST_REQUESTED.
+    // May arrive before or after the FSM seeds STAGED. If it arrives
+    // after, this advances STAGED→PERSIST_REQUESTED. If it arrives
+    // before (while still at WORKER_DISPATCHED), it's silently dropped
+    // and the PERSIST_STAGED_EVENT guard accepts STAGED directly.
     'SUBSTRATE|WORKER_DISPATCHED|PERSIST_REQUESTED': INFERRED.PERSIST_REQUESTED,
   },
   [INFERRED.PERSIST_REQUESTED]: {
@@ -128,9 +112,6 @@ const _REDUCE_TABLE = {
   [INFERRED.PERSIST_FAILED_GATE]: {},
   [INFERRED.PERSIST_FAILED_HYDRATION]: {},
   [INFERRED.PERSIST_FAILED_RESOLVE]: {},
-  [INFERRED.DISCARDED_VALIDATION]: {},
-  [INFERRED.DISCARDED_NORMALIZE]: {},
-  [INFERRED.DISCARDED_DISPATCH]: {},
 };
 
 // ── Transition log (per (accountId, intentId)) ────────────────────────────
@@ -192,7 +173,7 @@ function reduceInferredState(accountId, intentId) {
  *
  * @param {string} accountId
  * @param {string} intentId
- * @param {string} source  — 'WORKER' | 'SUBSTRATE' | 'INTERNAL'
+ * @param {string} source  — 'SUBSTRATE' | 'INTERNAL'
  * @param {string} from    — the from state claimed by the transition
  * @param {string} to      — the to state claimed by the transition
  * @returns {boolean}

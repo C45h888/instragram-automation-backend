@@ -1,0 +1,60 @@
+{
+  "p9-publishing-to-recovery-1781437685641": {
+    "event_id": "p9-publishing-to-recovery-1781437685641",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": "publishing",
+      "ts": 1781437685642,
+      "actor": "CROSS_KERNEL_DISPATCH"
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-2": {
+    "event_id": "evt-2",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "phase7",
+      "ts": 1781437685644,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  }
+}

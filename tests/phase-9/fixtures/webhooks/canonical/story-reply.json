@@ -6,11 +6,13 @@
       "time": 1700000003,
       "changes": [
         {
-          "field": "story_insights",
+          "field": "story_mentions",
           "value": {
+            "from": { "id": "USER_STORYREPLY_1", "name": "Story Reply User" },
             "story_id": "STORY_001",
-            "reply": { "text": "story reply from phase-9 canonical" },
-            "from": { "id": "USER_STORYREPLY_1" }
+            "message": "great story!",
+            "mention_text": "@page",
+            "created_at": 1700000003
           }
         }
       ]

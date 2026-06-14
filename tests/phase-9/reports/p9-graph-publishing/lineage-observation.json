@@ -1,0 +1,20 @@
+[
+  {
+    "event_id": "p9-publishing-1781437623536",
+    "kind": "worker",
+    "source": "graph/publishing",
+    "payload": {
+      "mediaId": "MEDIA_002"
+    },
+    "ts": 1781437623537
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "mediaId": "MEDIA_002"
+    },
+    "ts": 1781437623538
+  }
+]

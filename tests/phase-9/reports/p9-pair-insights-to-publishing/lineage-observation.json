@@ -1,0 +1,36 @@
+[
+  {
+    "event_id": "p9-insights-to-publishing-1781437667513",
+    "kind": "governance",
+    "source": "insights",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "insights",
+        "to": "publishing"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "publishing"
+    },
+    "ts": 1781437667514
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "insights",
+        "to": "publishing"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "publishing"
+    },
+    "ts": 1781437667517
+  }
+]

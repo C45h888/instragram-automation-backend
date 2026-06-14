@@ -2,7 +2,7 @@
   "suite": "webhook",
   "testName": "runtime-webhook-ingress",
   "runId": "p9-webhook-ingress",
-  "assertions": 0,
+  "assertions": 18,
   "assertionsFailed": 0,
   "extras": {}
 }

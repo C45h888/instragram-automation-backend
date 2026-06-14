@@ -1,0 +1,8 @@
+{
+  "suite": "integration",
+  "testName": "phase-9-scenario-message-thread",
+  "runId": "p9-scenario",
+  "assertions": 4,
+  "assertionsFailed": 0,
+  "extras": {}
+}

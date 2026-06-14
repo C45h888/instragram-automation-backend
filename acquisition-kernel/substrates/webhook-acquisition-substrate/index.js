@@ -142,6 +142,8 @@ function processWebhook(payload, accountId) {
           for (const intentId of intentIds) {
             const dispatchResult = _governance.dispatch({
               type: 'PERSIST_STAGED_EVENT',
+              lineageId: `webhook:acquisition:persist:${intentId}`,
+              lineageDomain: 'acquisition',
               accountId,
               intentId,
               eventId: intentId, // substrate owns both at this point

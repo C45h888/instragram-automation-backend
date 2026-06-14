@@ -1,0 +1,68 @@
+[
+  {
+    "event_id": "p9-own-story-reply-1781437553864",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "story-reply",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000003,
+            "changes": [
+              {
+                "field": "story_mentions",
+                "value": {
+                  "from": {
+                    "id": "USER_STORYREPLY_1",
+                    "name": "Story Reply User"
+                  },
+                  "story_id": "STORY_001",
+                  "message": "great story!",
+                  "mention_text": "@page",
+                  "created_at": 1700000003
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437553866
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "story-reply",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000003,
+            "changes": [
+              {
+                "field": "story_mentions",
+                "value": {
+                  "from": {
+                    "id": "USER_STORYREPLY_1",
+                    "name": "Story Reply User"
+                  },
+                  "story_id": "STORY_001",
+                  "message": "great story!",
+                  "mention_text": "@page",
+                  "created_at": 1700000003
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437553868
+  }
+]

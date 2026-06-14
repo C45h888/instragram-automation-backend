@@ -1,0 +1,36 @@
+[
+  {
+    "event_id": "p9-recovery-to-publishing-1781437687657",
+    "kind": "governance",
+    "source": "recovery",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "recovery",
+        "to": "publishing"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "publishing"
+    },
+    "ts": 1781437687658
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "recovery",
+        "to": "publishing"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "publishing"
+    },
+    "ts": 1781437687660
+  }
+]

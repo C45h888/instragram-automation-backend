@@ -122,6 +122,16 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   'AUTHORITY_TRANSFER_COMPLETE','FSM_STATE_SNAPSHOTTED','FSM_STATE_RESTORED',
   'WORKER_SPAWNED','WORKER_TERMINATED','WORKER_RESTARTED','SUBSTRATE_STARTED',
   'SUBSTRATE_STOPPED','SUBSTRATE_RECOVERED','KERNEL_BOOTSTRAP_COMPLETE',
+  // Gap A fix (2026-06-14): webhook substrate emits these without lineageId
+  // directly from setImmediate callbacks (not via ctx.invokeWorker).
+  // Adding here as a safety belt; primary fix is attaching lineageId at
+  // the substrate dispatch call sites (webhook-acquisition-substrate/index.js
+  // and messages-worker.js). The lineageId format is:
+  //   webhook:acquisition:{intentId}
+  //   webhook:acquisition:discarded:{intentId}
+  //   webhook:acquisition:persist:{intentId}
+  'WEBHOOK_EVENT_RECEIVED','WEBHOOK_EVENT_DISCARDED',
+  'PERSIST_STAGED_EVENT','WEBHOOK_EVENT_PERSISTED','WEBHOOK_EVENT_PERSIST_FAILED',
   'KERNEL_SHUTDOWN_INITIATED','KERNEL_SHUTDOWN_COMPLETE','EMERGENCY_HALT_TRIGGERED',
   // Phase C/D: graph-capability kernel lifecycle — CK-issued by bootstrap() and the cadence loop.
   // These are domain events the constitutional kernel itself emits as a canonical source
@@ -565,6 +575,7 @@ const DOMAIN_EVENT_MAP = {
   PERSIST_STAGED_EVENT: 'acquisition',
   WEBHOOK_EVENT_PERSISTED: 'acquisition',
   WEBHOOK_EVENT_PERSIST_FAILED: 'acquisition',
+  SUBSTRATE_STATE_TRANSITION: 'acquisition',
 
   // Engagement domain — circuit breaker, auth strikes, retry counting
   AUTH_FAILURE_STRIKE: 'engagement',

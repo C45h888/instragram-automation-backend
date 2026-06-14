@@ -1,0 +1,46 @@
+{
+  "derived_at": 1781437687815,
+  "events": {
+    "p9-recovery-to-publishing-1781437687657": {
+      "event_id": "p9-recovery-to-publishing-1781437687657",
+      "ingress_ts": null,
+      "governance_ts": 1781437687658,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": true,
+      "kernels_touched": [
+        "recovery"
+      ]
+    },
+    "evt-2": {
+      "event_id": "evt-2",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781437687660,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "phase7"
+      ]
+    }
+  },
+  "constitutional_paths": [
+    {
+      "event_id": "p9-recovery-to-publishing-1781437687657",
+      "ok": false,
+      "ordering_ok": true,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-2",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    }
+  ],
+  "drift_findings": []
+}

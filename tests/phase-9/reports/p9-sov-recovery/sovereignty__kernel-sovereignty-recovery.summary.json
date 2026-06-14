@@ -1,0 +1,8 @@
+{
+  "suite": "sovereignty",
+  "testName": "kernel-sovereignty-recovery",
+  "runId": "p9-sov-recovery",
+  "assertions": 1,
+  "assertionsFailed": 0,
+  "extras": {}
+}

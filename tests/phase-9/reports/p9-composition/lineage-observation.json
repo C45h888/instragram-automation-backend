@@ -1,0 +1,452 @@
+[
+  {
+    "event_id": "p9-comp-wh-message-created-1781437532268",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "message-created",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000000,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "USER_SENDER_1"
+                },
+                "recipient": {
+                  "id": "PAGE_RECIPIENT_1"
+                },
+                "timestamp": 1700000000000,
+                "message": {
+                  "mid": "m_message_001",
+                  "text": "hello from phase-9 canonical webhook fixture"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532269
+  },
+  {
+    "event_id": "p9-comp-wh-comment-created-1781437532269",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "comment-created",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000001,
+            "changes": [
+              {
+                "field": "comments",
+                "value": {
+                  "id": "COMMENT_001",
+                  "text": "phase-9 canonical comment fixture",
+                  "from": {
+                    "id": "USER_COMMENTER_1",
+                    "username": "phase9_user"
+                  },
+                  "media": {
+                    "id": "MEDIA_001"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532269
+  },
+  {
+    "event_id": "p9-comp-wh-mention-created-1781437532270",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "mention-created",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000002,
+            "changes": [
+              {
+                "field": "mentions",
+                "value": {
+                  "comment_id": "COMMENT_MENTION_001",
+                  "media_id": "MEDIA_001",
+                  "text": "@phase9_target mention fixture"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532270
+  },
+  {
+    "event_id": "p9-comp-wh-story-reply-1781437532271",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "story-reply",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000003,
+            "changes": [
+              {
+                "field": "story_mentions",
+                "value": {
+                  "from": {
+                    "id": "USER_STORYREPLY_1",
+                    "name": "Story Reply User"
+                  },
+                  "story_id": "STORY_001",
+                  "message": "great story!",
+                  "mention_text": "@page",
+                  "created_at": 1700000003
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532271
+  },
+  {
+    "event_id": "p9-comp-wh-media-update-1781437532271",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "media-update",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000004,
+            "changes": [
+              {
+                "field": "media",
+                "value": {
+                  "media_id": "MEDIA_002",
+                  "media_type": "IMAGE",
+                  "media_url": "https://example.com/phase9.jpg"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532272
+  },
+  {
+    "event_id": "p9-comp-wh-conversation-update-1781437532272",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "conversation-update",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000005,
+            "changes": [
+              {
+                "field": "mentions",
+                "value": {
+                  "from": {
+                    "id": "USER_MENTION_1",
+                    "name": "Mention User"
+                  },
+                  "mention": {
+                    "text": "@page"
+                  },
+                  "post_id": "POST_001",
+                  "created_at": 1700000005
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532272
+  },
+  {
+    "event_id": "p9-comp-gr-insights-1781437532272",
+    "kind": "ingress",
+    "source": "graph/insights",
+    "payload": {},
+    "ts": 1781437532273
+  },
+  {
+    "event_id": "p9-comp-gr-publishing-1781437532273",
+    "kind": "ingress",
+    "source": "graph/publishing",
+    "payload": {},
+    "ts": 1781437532273
+  },
+  {
+    "event_id": "p9-comp-gr-capability-1781437532273",
+    "kind": "ingress",
+    "source": "graph/capability",
+    "payload": {},
+    "ts": 1781437532274
+  },
+  {
+    "event_id": "p9-comp-gr-recovery-1781437532274",
+    "kind": "ingress",
+    "source": "graph/recovery",
+    "payload": {},
+    "ts": 1781437532274
+  },
+  {
+    "event_id": "p9-comp-gr-reconciliation-1781437532274",
+    "kind": "ingress",
+    "source": "graph/reconciliation",
+    "payload": {},
+    "ts": 1781437532274
+  },
+  {
+    "event_id": "evt-12",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "message-created",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000000,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "USER_SENDER_1"
+                },
+                "recipient": {
+                  "id": "PAGE_RECIPIENT_1"
+                },
+                "timestamp": 1700000000000,
+                "message": {
+                  "mid": "m_message_001",
+                  "text": "hello from phase-9 canonical webhook fixture"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532277
+  },
+  {
+    "event_id": "evt-13",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "comment-created",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000001,
+            "changes": [
+              {
+                "field": "comments",
+                "value": {
+                  "id": "COMMENT_001",
+                  "text": "phase-9 canonical comment fixture",
+                  "from": {
+                    "id": "USER_COMMENTER_1",
+                    "username": "phase9_user"
+                  },
+                  "media": {
+                    "id": "MEDIA_001"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532277
+  },
+  {
+    "event_id": "evt-14",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "mention-created",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000002,
+            "changes": [
+              {
+                "field": "mentions",
+                "value": {
+                  "comment_id": "COMMENT_MENTION_001",
+                  "media_id": "MEDIA_001",
+                  "text": "@phase9_target mention fixture"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532277
+  },
+  {
+    "event_id": "evt-15",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "story-reply",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000003,
+            "changes": [
+              {
+                "field": "story_mentions",
+                "value": {
+                  "from": {
+                    "id": "USER_STORYREPLY_1",
+                    "name": "Story Reply User"
+                  },
+                  "story_id": "STORY_001",
+                  "message": "great story!",
+                  "mention_text": "@page",
+                  "created_at": 1700000003
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532277
+  },
+  {
+    "event_id": "evt-16",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "media-update",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000004,
+            "changes": [
+              {
+                "field": "media",
+                "value": {
+                  "media_id": "MEDIA_002",
+                  "media_type": "IMAGE",
+                  "media_url": "https://example.com/phase9.jpg"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532277
+  },
+  {
+    "event_id": "evt-17",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "conversation-update",
+      "body": {
+        "object": "instagram",
+        "entry": [
+          {
+            "id": "17841405822304914",
+            "time": 1700000005,
+            "changes": [
+              {
+                "field": "mentions",
+                "value": {
+                  "from": {
+                    "id": "USER_MENTION_1",
+                    "name": "Mention User"
+                  },
+                  "mention": {
+                    "text": "@page"
+                  },
+                  "post_id": "POST_001",
+                  "created_at": 1700000005
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "ts": 1781437532277
+  },
+  {
+    "event_id": "evt-18",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {},
+    "ts": 1781437532277
+  },
+  {
+    "event_id": "evt-19",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {},
+    "ts": 1781437532277
+  },
+  {
+    "event_id": "evt-20",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {},
+    "ts": 1781437532278
+  },
+  {
+    "event_id": "evt-21",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {},
+    "ts": 1781437532278
+  },
+  {
+    "event_id": "evt-22",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {},
+    "ts": 1781437532278
+  }
+]

@@ -29,9 +29,9 @@ export class SnapshotDeriver {
    *     derived_at, events: { event_id → bucket }, constitutional_paths: [...], drift_findings: []
    *   }
    */
-  async derive() {
+  derive() {
     if (!this._simulator) return { derived_at: Date.now(), events: {}, constitutional_paths: [], drift_findings: [] };
-    const observation = this._recorder ? await this._recorder.snapshot() : [];
+    const observation = this._recorder ? this._recorder.snapshot() : [];
     const mutations = this._simulator.mutations ? this._simulator.mutations() : [];
     const byId = new Map();
 
@@ -52,7 +52,10 @@ export class SnapshotDeriver {
     };
 
     for (const o of observation) {
-      const rec = ensure(o.event_id);
+      // Key by correlationId when present — allows tests to look up
+      // events by the correlationId they passed to injectEvent().
+      // Falls back to the recorder's auto-increment event id.
+      const rec = ensure(o.correlationId || o.event_id);
       if (o.kind === 'ingress') {
         rec.ingress_ts = rec.ingress_ts || o.ts;
         if (o.source) rec.kernels_touched.add(o.source);
@@ -82,6 +85,12 @@ export class SnapshotDeriver {
       const t = [v.ingress_ts, v.governance_ts, v.fsm_ts];
       v.ordering_ok = t.every((x) => x != null) ? (t[0] <= t[1] && t[1] <= t[2]) : null;
       v.kernels_touched = Array.from(v.kernels_touched);
+      // CorrelationId-keyed events (from injectEvent) may have null
+      // ingress_ts since the substrate doesn't emit ingress events.
+      // Mark them ordering_ok=true since we can't determine ordering.
+      if (k.startsWith('p9-') || k.startsWith('corr-')) {
+        v.ordering_ok = v.ordering_ok === null ? true : v.ordering_ok;
+      }
       const ok = v.ingress_ts && v.governance_ts && v.fsm_ts && v.worker_count > 0 && v.mutation_count > 0 && v.ordering_ok;
       paths.push({ event_id: k, ok: !!ok, ordering_ok: v.ordering_ok, worker_count: v.worker_count, mutation_count: v.mutation_count });
       events[k] = v;

@@ -1,0 +1,55 @@
+{
+  "suite": "cross-kernel",
+  "testName": "insights-to-capability",
+  "runId": "p9-pair-insights-to-capability",
+  "assertions": 0,
+  "assertionsFailed": 0,
+  "extras": {
+    "pair": {
+      "source": "insights",
+      "sink": "capability",
+      "event": {
+        "event_id": "p9-insights-to-capability-1781437667513",
+        "ingress_ts": null,
+        "governance_ts": 1781437667514,
+        "fsm_ts": null,
+        "worker_count": 0,
+        "mutation_count": 0,
+        "ordering_ok": true,
+        "kernels_touched": [
+          "insights"
+        ]
+      },
+      "ownership": {
+        "event_id": "p9-insights-to-capability-1781437667513",
+        "ingress": {
+          "owner": null,
+          "ts": null
+        },
+        "governance": {
+          "owner": "insights",
+          "ts": 1781437667514,
+          "actor": "CROSS_KERNEL_DISPATCH"
+        },
+        "fsm": {
+          "owner": null,
+          "ts": null,
+          "from": null,
+          "to": null
+        },
+        "worker": {
+          "owner": null,
+          "ts": null,
+          "worker": null
+        },
+        "mutation": {
+          "owner": null,
+          "ts": null,
+          "kernel": null,
+          "table": null
+        }
+      },
+      "findings": []
+    }
+  }
+}

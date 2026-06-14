@@ -1,0 +1,46 @@
+{
+  "derived_at": 1781437643383,
+  "events": {
+    "p9-acquisition-to-publishing-1781437643226": {
+      "event_id": "p9-acquisition-to-publishing-1781437643226",
+      "ingress_ts": null,
+      "governance_ts": 1781437643227,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": true,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-2": {
+      "event_id": "evt-2",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781437643229,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "phase7"
+      ]
+    }
+  },
+  "constitutional_paths": [
+    {
+      "event_id": "p9-acquisition-to-publishing-1781437643226",
+      "ok": false,
+      "ordering_ok": true,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-2",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    }
+  ],
+  "drift_findings": []
+}

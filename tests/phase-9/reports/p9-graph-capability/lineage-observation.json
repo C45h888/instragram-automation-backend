@@ -1,0 +1,20 @@
+[
+  {
+    "event_id": "p9-capability-1781437623531",
+    "kind": "ingress",
+    "source": "graph/capability",
+    "payload": {
+      "accountId": "acc-1"
+    },
+    "ts": 1781437623533
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "accountId": "acc-1"
+    },
+    "ts": 1781437623535
+  }
+]

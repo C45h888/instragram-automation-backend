@@ -1,0 +1,8 @@
+{
+  "suite": "integration",
+  "testName": "phase-9-runtime-composition",
+  "runId": "p9-composition",
+  "assertions": 1,
+  "assertionsFailed": 0,
+  "extras": {}
+}

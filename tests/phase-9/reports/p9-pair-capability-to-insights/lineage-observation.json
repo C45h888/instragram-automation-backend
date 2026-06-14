@@ -1,0 +1,36 @@
+[
+  {
+    "event_id": "p9-capability-to-insights-1781437666455",
+    "kind": "governance",
+    "source": "capability",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "capability",
+        "to": "insights"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "insights"
+    },
+    "ts": 1781437666455
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "capability",
+        "to": "insights"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "insights"
+    },
+    "ts": 1781437666456
+  }
+]

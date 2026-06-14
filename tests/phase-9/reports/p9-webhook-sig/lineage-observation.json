@@ -1,0 +1,22 @@
+[
+  {
+    "event_id": "p9-sig-1781437577515",
+    "kind": "ingress",
+    "source": "runtime/ingress",
+    "payload": {
+      "fixture": "message-created",
+      "signature": "invalid-hmac"
+    },
+    "ts": 1781437577517
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "fixture": "message-created",
+      "signature": "invalid-hmac"
+    },
+    "ts": 1781437577522
+  }
+]

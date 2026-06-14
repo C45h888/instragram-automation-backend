@@ -1,20 +1,26 @@
 // Phase 9 — Recorder Observer (PASSIVE).
 //
 // The recorder is a SUBSCRIBER, not an actor. It reads from the
-// lineage ledger — the constitutional source of truth per the
-// architecture: "Lineage is canonical truth; runtime state is a
-// projection." It also reads from the observability plane's
-// EventRecorder as a secondary source for events that have not
-// yet been lineage-recorded.
+// observability plane's EventRecorder (the canonical timeline
+// for runtime events) and projects each event into the recorder
+// bucket shape for constitutional assertions.
 //
 // This module exposes ONLY observation methods. There is no
 // .ingress() / .governance() / .fsm() / .worker() / .mutation()
 // write API. Phase 9 tests cannot fabricate constitutional
 // events; they can only assert against what the runtime did.
-
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-const lineageLedger = require('../../../control-plane/governance/lineage-ledger');
+//
+// Event vocabulary (mapped from runtime's actual emission):
+//   source: 'acquisition' + payload.kind in {WEBHOOK_EVENT_*,
+//     PERSIST_STAGED_*, *_PERSISTED, *_PERSIST_FAILED, _STAGED,
+//     _DISPATCHED, _EXECUTING, _COMPLETE} → kind: worker
+//     (the substrate staged the event into the worker pipeline)
+//   source: 'governance' OR payload.kind: 'divergence' → kind:
+//     governance (CK validation, dispatch, anomaly)
+//   type: 'STATE_TRANSITION' (general, no specific source match)
+//     → kind: fsm (FSM transition or lifecycle change)
+//   type: 'MUTATION' / 'DB_WRITE_*' / 'UPSERT' → kind: mutation
+//   everything else → kind: ingress (raw runtime ingress)
 
 export class RecorderObserver {
   constructor() {
@@ -30,68 +36,94 @@ export class RecorderObserver {
 
   /**
    * Returns the observation log — a flat list of events captured
-   * from the lineage ledger (canonical) and the observability
-   * EventRecorder (secondary). Each entry has: event_id, kind,
-   * source, payload, ts.
+   * from the observability plane's EventRecorder timeline. Each
+   * entry has: event_id, kind, source, payload, ts.
+   *
+   * The event_id is the runtime's correlationId when present,
+   * otherwise a synthetic evt-N. Kind is inferred from the
+   * runtime's actual event vocabulary (see header).
    */
-  async snapshot() {
+  snapshot() {
+    if (!this._simulator) return [];
+    const timeline = this._simulator.timeline();
+    const mutations = this._simulator.mutations ? this._simulator.mutations() : [];
     const observed = [];
-    // Source 1: lineage ledger (canonical constitutional events)
-    try {
-      const lineage = await lineageLedger.getLineage(500);
-      for (const entry of lineage) {
-        observed.push(this._normalizeLineage(entry));
-      }
-    } catch (_) {
-      // ledger unavailable (no Redis) — fall through
-    }
-    // Source 2: observability EventRecorder (secondary, for events
-    // that have not yet been lineage-recorded)
-    if (this._simulator) {
-      const timeline = this._simulator.timeline();
-      for (const e of timeline) observed.push(this._normalizeObservability(e));
-      const mutations = this._simulator.mutations ? this._simulator.mutations() : [];
-      for (const m of mutations) {
-        observed.push({
-          event_id: m.correlationId || m.entry?.entityId || `mut-${m.id}`,
-          kind: 'mutation',
-          source: m.source || m.entry?.domain || 'mutation-substrate',
-          payload: m.entry || {},
-          ts: m.timestamp,
-        });
-      }
+    for (const e of timeline) observed.push(this._normalize(e));
+    for (const m of mutations) {
+      observed.push({
+        event_id: m.correlationId || m.entry?.entityId || `mut-${m.id}`,
+        kind: 'mutation',
+        source: m.source || m.entry?.domain || 'mutation-substrate',
+        payload: m.entry || {},
+        ts: m.timestamp,
+      });
     }
     return observed;
   }
 
-  _normalizeLineage(entry) {
-    const t = (entry.type || entry.eventType || '').toUpperCase();
-    const id = entry.intentId || entry.eventId || entry.correlationId || `lineage-${entry.id || entry.ts || Math.random()}`;
-    return {
-      event_id: id,
-      kind: this._inferKind(t),
-      source: entry.domain || entry.authority || entry.source || 'lineage-ledger',
-      payload: entry,
-      ts: entry.ts || entry.emittedAt || entry.timestamp || 0,
-    };
-  }
-
-  _normalizeObservability(e) {
+  _normalize(e) {
     const id = e.correlationId || `evt-${e.id}`;
     return {
       event_id: id,
-      kind: this._inferKind((e.type || '').toUpperCase()),
+      kind: this._inferKind(e),
       source: e.source || 'runtime',
       payload: e.payload || null,
       ts: e.timestamp,
     };
   }
 
-  _inferKind(t) {
-    if (t.includes('VALIDATE') || t.includes('GOVERN') || t.includes('DISPATCH') || t.includes('WEBHOOK_EVENT_RECEIVED') || t.includes('PERSIST')) return 'governance';
-    if (t.includes('WORKER')) return 'worker';
-    if (t.includes('TRANSITION') || t.includes('FSM') || t.includes('STATE')) return 'fsm';
-    if (t.includes('MUTATION') || t.includes('WRITE') || t.includes('UPSERT') || t.includes('DB_WRITE')) return 'mutation';
+  _inferKind(e) {
+    // The EventRecorder's normalized entries have:
+    //   e.type = 'STATE_TRANSITION' (always — this is the
+    //           observability plane's normalized envelope type)
+    //   e.payload.type or e.payload.intent = the actual event
+    //           type the substrate emitted (e.g. 'WEBHOOK_EVENT_STAGED')
+    //   e.source = the kernel source (e.g. 'acquisition')
+    const topType = (e.type || '').toUpperCase();
+    const recorderKind = (e.kind || '').toUpperCase();
+    const source = (e.source || '').toLowerCase();
+    const payloadType = (e.payload?.type || '').toUpperCase();
+    const payloadIntent = (e.payload?.intent || '').toUpperCase();
+    const payloadKind = (e.payload?.kind || '').toUpperCase();
+    const payloadEntryType = (e.payload?.entryType || '').toUpperCase();
+
+    // Combine the signal: the actual semantic type of the
+    // event is payload.type, payload.intent, or (rarely) e.type.
+    const semanticType = payloadType || payloadIntent || topType;
+
+    // Mutation: explicit MUTATION / DB_WRITE / UPSERT.
+    if (semanticType.includes('MUTATION') || semanticType.includes('DB_WRITE') || semanticType.includes('UPSERT') || payloadEntryType.includes('DB_WRITE') || topType.includes('MUTATION') || topType.includes('DB_WRITE')) {
+      return 'mutation';
+    }
+
+    // Worker: substrate-originated webhook lifecycle kinds.
+    // The substrate's emission lands in e.payload.type or
+    // e.payload.intent.
+    const workerLifecycleKinds = [
+      'WEBHOOK_EVENT_RECEIVED', 'WEBHOOK_EVENT_STAGED', 'WEBHOOK_EVENT_PERSISTED',
+      'WEBHOOK_EVENT_PERSIST_FAILED', 'WEBHOOK_EVENT_DISCARDED',
+      'PERSIST_STAGED_EVENT', 'PARSING_DISPATCHED', 'PARSING_COMPLETE',
+      'ACQUISITION_INTENT_RECEIVED', 'ACQUISITION_EXECUTING', 'ACQUISITION_COMPLETE',
+      'PUBLISH_REQUESTED', 'PUBLISH_EXECUTING', 'PUBLISH_COMPLETE',
+      'WORKER_OUTCOME_REPORTED',
+    ];
+    if (workerLifecycleKinds.some((k) => semanticType.includes(k))) {
+      return 'worker';
+    }
+
+    // Worker: explicit WORKER_* at top level.
+    if (topType.includes('WORKER')) return 'worker';
+
+    // Governance: source is governance/CK, or payload is divergence.
+    if (source === 'governance' || source === 'constitutional-kernel' || source === 'ck') return 'governance';
+    if (payloadKind === 'DIVERGENCE' || payloadKind === 'ANOMALY') return 'governance';
+    if (recorderKind === 'DIVERGENCE' || recorderKind === 'ANOMALY') return 'governance';
+    if (semanticType.includes('VALIDATE') || semanticType.includes('GOVERN') || semanticType.includes('DISPATCH') || semanticType.includes('PERSIST')) return 'governance';
+
+    // FSM: state transitions without a specific worker/governance signature.
+    if (topType.includes('STATE_TRANSITION') || semanticType.includes('FSM') || semanticType.includes('TRANSITION')) return 'fsm';
+
+    // Default: treat raw events as ingress.
     return 'ingress';
   }
 
@@ -100,8 +132,8 @@ export class RecorderObserver {
    * derived from the runtime's actual events. Each event_id is
    * summarized with the first ts of each kind.
    */
-  async summarize() {
-    const obs = await this.snapshot();
+  summarize() {
+    const obs = this.snapshot();
     const byId = new Map();
     for (const o of obs) {
       if (!byId.has(o.event_id)) {

@@ -1,0 +1,36 @@
+[
+  {
+    "event_id": "p9-capability-to-acquisition-1781437644351",
+    "kind": "governance",
+    "source": "capability",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "capability",
+        "to": "acquisition"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "acquisition"
+    },
+    "ts": 1781437644352
+  },
+  {
+    "event_id": "evt-2",
+    "kind": "fsm",
+    "source": "phase7",
+    "payload": {
+      "public_signal": {
+        "kind": "cross-kernel",
+        "from": "capability",
+        "to": "acquisition"
+      },
+      "internal_state": {
+        "tokens": "should-not-leave-source"
+      },
+      "sink": "acquisition"
+    },
+    "ts": 1781437644353
+  }
+]
