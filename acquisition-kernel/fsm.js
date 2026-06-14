@@ -1320,10 +1320,31 @@ const TRANSITION_MAP = {
  * @param {{ validate: Function, dispatchGlobal: Function, getGlobalState: Function }} ctx — constitutional kernel context
  * @returns {{ allowed: boolean, from?: string, to?: string, actions?: Array, reason?: string }}
  */
+async function _syncProjectionState() {
+  try {
+    const { getRedisClient } = require('../config/redis');
+    const redis = getRedisClient();
+    if (redis && redis.status === 'ready') {
+      const raw = await redis.get('lineage:projection:domain:acquisition');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.projection && parsed.projection.state) {
+          if (typeof _localState !== 'undefined') {
+            _localState = parsed.projection.state;
+          }
+        }
+      }
+    }
+  } catch (_) {}
+}
+
 async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
+
+  // Sync with lineage-projected namespace state before processing event
+  await _syncProjectionState();
 
   // Fall back to the bound governance ref (set by setGovernance at boot)
   // when the caller does not pass an explicit ctx. This keeps the existing

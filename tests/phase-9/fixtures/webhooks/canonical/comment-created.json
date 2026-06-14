@@ -1,0 +1,20 @@
+{
+  "object": "instagram",
+  "entry": [
+    {
+      "id": "17841405822304914",
+      "time": 1700000001,
+      "changes": [
+        {
+          "field": "comments",
+          "value": {
+            "id": "COMMENT_001",
+            "text": "phase-9 canonical comment fixture",
+            "from": { "id": "USER_COMMENTER_1", "username": "phase9_user" },
+            "media": { "id": "MEDIA_001" }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1167,10 +1167,30 @@ function _recordRejection(intent, violations) {
 // 5. Dispatch
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function dispatch(event, ctx) {
+async function _syncProjectionState() {
+  try {
+    const { getRedisClient } = require('../config/redis');
+    const redis = getRedisClient();
+    if (redis && redis.status === 'ready') {
+      const raw = await redis.get('lineage:projection:domain:telemetry');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.projection && parsed.projection.state) {
+          if (typeof _localState !== 'undefined') {
+            _localState = parsed.projection.state;
+          }
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+async function dispatch(event, ctx) {
   if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
     return { allowed: false, reason: `event must be { type: string }, got ${typeof event}` };
   }
+
+  await _syncProjectionState();
 
   const txn = TRANSITION_MAP[event.type];
   if (!txn) {

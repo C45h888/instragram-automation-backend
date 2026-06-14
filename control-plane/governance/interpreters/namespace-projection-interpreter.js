@@ -324,13 +324,16 @@ function interpret(action) {
   _computeDomainProjection(domain, entry);
 
   // Persist aggregate projection snapshot to Redis (all namespaces)
-  lineageLedger.persistWorkerProjection({
+  const persistPromise = lineageLedger.persistWorkerProjection({
     updatedAt: Date.now(),
     entryLedgerId: action.ledgerId,
     projections: _projections,
-  }).catch(err => {
-    console.error('[namespace-projection-interpreter] Persist error:', err.message);
   });
+  if (persistPromise && typeof persistPromise.catch === 'function') {
+    persistPromise.catch(err => {
+      console.error('[namespace-projection-interpreter] Persist error:', err.message);
+    });
+  }
 
   // Persist namespace-specific projection to lineage domain key so the FSM
   // can read its own projection state from lineage:projection:domain:{domain}.

@@ -460,7 +460,11 @@ class BaseProjectionWorker {
       this._unsubscribeOnWrite = observability.onWrite((transition) => {
         // Only react to entries landing in this worker's domain
         if (transition.domain !== domain) return;
-        this._scheduleTick(interval);
+        // Event-driven trigger: fire within 100ms, not the full pollIntervalMs.
+        // This eliminates the ~30s latency between a transition being written
+        // and the projection worker reading it. The poll interval only applies
+        // to the fallback setInterval path and the initial tick baseline.
+        this._scheduleTick(100);
       });
     } catch (err) {
       console.error(`[${this.workerName}] Failed to subscribe to onWrite, falling back to polling:`, err.message);

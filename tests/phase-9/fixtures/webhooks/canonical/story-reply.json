@@ -1,0 +1,19 @@
+{
+  "object": "instagram",
+  "entry": [
+    {
+      "id": "17841405822304914",
+      "time": 1700000003,
+      "changes": [
+        {
+          "field": "story_insights",
+          "value": {
+            "story_id": "STORY_001",
+            "reply": { "text": "story reply from phase-9 canonical" },
+            "from": { "id": "USER_STORYREPLY_1" }
+          }
+        }
+      ]
+    }
+  ]
+}
