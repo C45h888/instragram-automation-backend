@@ -93,6 +93,15 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   'INTENT_BUFFER_SATURATED','INTENT_BUFFER_DRAINED','COORDINATION_QUEUED','COORDINATION_DEQUEUED',
   'DOMAIN_STATE_SYNCED','GLOBAL_STATE_SYNCED','LINEAGE_PROBE','LINEAGE_PROBE_ACK',
   'WORKER_LAG_DETECTED','WORKER_LAG_CLEARED','INGRESS_LAG_DETECTED','INGRESS_LAG_CLEARED',
+  // Gap 2 fix (2026-06-14): worker-emitted substrate events + CK authority-vector path
+  // These are issued WITHOUT lineageId by retry workers and CK's GLOBAL_TRANSITION_MAP
+  // handler. They are in DOMAIN_EVENT_MAP but blocked at the canonical source gate
+  // unless listed here. Adding them unblocks:
+  //   INSIGHTS_POLL_FAILURE → CK → CAPABILITY_CHECK → GCK → decision chain
+  //   PARSING_DISPATCHED   → acquisition FSM
+  //   WORKER_OUTCOME_REPORTED → engagement FSM
+  //   CAPABILITY_CHECK     → graph-capability FSM (CK authority-vector path)
+  'INSIGHTS_POLL_FAILURE','PARSING_DISPATCHED','WORKER_OUTCOME_REPORTED','CAPABILITY_CHECK',
   'CADENCE_LOOP_STARTED','CADENCE_LOOP_STOPPED','CADENCE_CYCLE_COMPLETED','CADENCE_CYCLE_FAILED',
   'CADENCE_TICK',
   'LIFECYCLE_REFRESHED','SAFETY_CHECK_COMPLETE','WORKER_METRICS_REPORTED',
@@ -444,7 +453,7 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   // Phase 8: CK authority-vector events — CK dispatches these from
   // GLOBAL_TRANSITION_MAP handlers during cross-kernel orchestration.
   // No lineageId required; CK IS the canonical source.
-  'RETRY_REQUESTED','ACQUISITION_DEFER',
+  'RETRY_REQUESTED','ACQUISITION_DEFER','CAPABILITY_CHECK',
   'IMMEDIATE_TOKEN_REFRESH',
 ]);
 
@@ -498,8 +507,8 @@ const SIGNAL_CLASS = {
 
 /**
  * Emit a membrane bypass anomaly into the constitutional observability plane.
- * Routes through: CK → observability.transition() → lineage worker → ledger.
- * Constitutional topology preserved — worker remains sole writer.
+ * Routes through: CK → observability.transition() → transition writers → ledger.
+ * Constitutional topology preserved — transition writers are the sole ledger writers.
  *
  * @param {object} rejectedEntry — the normalized transition that was rejected
  * @param {string} reason — CK rejection reason string
@@ -1279,7 +1288,7 @@ let _legacyActionSubscriber = null;
  * Emit an observability transition for constitutional-layer events.
  * Centralizes the fire-and-forget observability call used across dispatch paths.
  * Gap 4 fix: All dispatch outcomes (including blocked/null-target) now emit
- * observability transitions so the lineage worker has a complete consumption feed.
+ * observability transitions so the transition writers have a complete consumption feed.
  *
  * @param {string} from — prior global state
  * @param {string} to — resultant (or same if blocked/no-change)
@@ -1502,6 +1511,12 @@ function getWorkerRegistry() {
   return _workerRegistry;
 }
 
+// ── Worker invocation context tracking ────────────────────────────────────────
+// Set during ctx.invokeWorker() execution. Cleared after the worker returns.
+// Enables the canonical source gate to recognise events dispatched by workers
+// as legitimate — the worker was invoked by CK, so CK vouches for its events.
+let _currentWorkerContext = null;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 8. Dispatch — single entry point for ALL governance events
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1536,7 +1551,8 @@ function dispatch(event) {
   if (domainName) {
     const isInternalDomainEvent = INTERNAL_DOMAIN_EVENTS.has(event.type);
     const hasCanonicalLineage = event.lineageId && typeof event.lineageId === 'string';
-    if (!hasCanonicalLineage && !isInternalDomainEvent) {
+    const isWorkerIssued = !!_currentWorkerContext;
+    if (!hasCanonicalLineage && !isInternalDomainEvent && !isWorkerIssued) {
       return {
         allowed: false,
         reason: `canonical source required: event '${event.type}' must be issued through ` +
@@ -1626,8 +1642,14 @@ function dispatch(event) {
             `[CK:gate] Worker '${workerName}' blocked by sanity check: ${check.reason}`
           );
         }
-        // Gate passed — invoke
-        return worker.execute(params);
+        // Gate passed — invoke with context tracking
+        const prevCtx = _currentWorkerContext;
+        _currentWorkerContext = { fsmName: domainName, workerName };
+        try {
+          return await worker.execute(params);
+        } finally {
+          _currentWorkerContext = prevCtx;
+        }
       },
     };
 
@@ -1655,7 +1677,7 @@ function dispatch(event) {
       _emitActions(result.actions);
     }
 
-    // Domain event lineage is written by the lineage worker (consuming from observability plane).
+    // Domain event lineage is written by the transition writers (consuming from observability plane).
     // CK no longer appends domain events directly to the lineage ledger.
     // Constitutional layer events (global state transitions) are still written by CK.
 
@@ -2599,10 +2621,10 @@ function queryMetrics(queryType, params = {}, timeoutMs = 5000) {
 // checkpoint gate, and worker orchestration.
 // See: reconciliation-substrate.js and reconciliation-worker.js
 
-// Rehydration is called explicitly by the orchestrator AFTER the lineage worker
-// has started. This ensures CK reads from a ledger populated by the worker
+// Rehydration is called explicitly by the orchestrator AFTER the transition writers
+// have started. This ensures CK reads from a ledger populated by the writers
 // rather than rehydrating from an empty/potentially-stale Redis key.
-// Boot order: orchestrator → observability.init() → worker.start() → CK.rehydrate()
+// Boot order: orchestrator → observability.init() → transition-writer.start() → CK.rehydrate()
 
 /**
  * CK's own sanity check — central authority vector for operational

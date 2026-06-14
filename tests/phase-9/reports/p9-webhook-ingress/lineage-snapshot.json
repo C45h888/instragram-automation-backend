@@ -1,0 +1,236 @@
+{
+  "derived_at": 1781433993718,
+  "events": {
+    "evt-1": {
+      "event_id": "evt-1",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433992717,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-2": {
+      "event_id": "evt-2",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433992717,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-3": {
+      "event_id": "evt-3",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433992820,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-4": {
+      "event_id": "evt-4",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433992889,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-5": {
+      "event_id": "evt-5",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433992889,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-6": {
+      "event_id": "evt-6",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433992995,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-7": {
+      "event_id": "evt-7",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433993059,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-8": {
+      "event_id": "evt-8",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433993059,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-9": {
+      "event_id": "evt-9",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433993167,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-10": {
+      "event_id": "evt-10",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433993390,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-11": {
+      "event_id": "evt-11",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433993390,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-12": {
+      "event_id": "evt-12",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": 1781433993494,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    }
+  },
+  "constitutional_paths": [
+    {
+      "event_id": "evt-1",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-2",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-3",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-4",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-5",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-6",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-7",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-8",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-9",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-10",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-11",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-12",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    }
+  ],
+  "drift_findings": []
+}

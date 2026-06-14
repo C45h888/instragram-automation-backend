@@ -441,7 +441,7 @@ function _resolveSanityCheck(ctx, action) {
 // 4. Dispatch
 //
 // Domain FSMs emit state transitions through the observability plane.
-// Lineage authority is held by the lineage worker (Phase 2).
+// Lineage authority is held by the transition writers (Phase 2).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function _syncProjectionState() {

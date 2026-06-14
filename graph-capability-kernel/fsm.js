@@ -18,9 +18,9 @@
 //   read adapter that asks the FSM.
 //
 // Domain FSMs emit state transitions through the observability plane.
-// The lineage worker consumes from the observability plane and writes
-// to the canonical lineage ledger. FSMs do NOT write to the lineage
-// ledger directly.
+// Transition writers consume from the observability plane and write to the
+// canonical lineage ledger via lineageLedger.recordWorkerEntry().
+// FSMs do NOT write to the lineage ledger directly.
 //
 // ── Post-strengthening model (2026-06-07) ──────────────────────────────────
 // The FSM reads the SHAPE of the observation envelope (which slots are

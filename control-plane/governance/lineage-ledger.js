@@ -60,12 +60,12 @@ function _getRedis() {
 // Redis keys for worker-produced canonical ledger
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Single canonical ledger — all entries written by lineage worker via recordWorkerEntry()
+// Single canonical ledger — all entries written by transition writers via recordWorkerEntry()
 const REDIS_KEY_WORKER = 'lineage:ledger:entries';
 
 // Domain-partitioned keys — materialized projections of the canonical ledger.
-// Each key is a chronological Redis list for a single domain. The lineage worker
-// writes to BOTH the global key AND the domain-specific key in the same tick.
+// Each key is a chronological Redis list for a single domain. Transition writers
+// write to BOTH the global key AND the domain-specific key in the same tick.
 // The global list remains the canonical source of truth; domain keys are read-
 // optimized projections that preserve bounded authority isolation.
 const DOMAIN_KEYS = {
@@ -152,8 +152,8 @@ async function getLineage(n) {
 }
 
 /**
- * Returns the last N lineage entries from the worker-produced canonical ledger.
- * Used by the lineage worker for buffer rehydration on boot.
+ * Returns the last N lineage entries from the canonical ledger.
+ * Used by transition writers for buffer rehydration on boot.
  * Returns entries in chronological order (oldest first).
  *
  * @param {number} n — number of recent entries to return
@@ -324,13 +324,13 @@ async function getLineageWithHash() {
 // Domain-Partitioned Lineage — bounded authority reads
 //
 // Domain keys are materialized projections of the canonical global ledger.
-// The lineage worker writes to both simultaneously. Domain-specific reads
+// Transition writers write to both simultaneously. Domain-specific reads
 // are isolated from other domains — cross-domain coupling is eliminated.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * Record a lineage entry to a domain-specific key.
- * Called by the lineage worker alongside recordWorkerEntry().
+ * Called by transition writers alongside recordWorkerEntry().
  * Domain keys are materialized projections — the global list remains canonical.
  *
  * @param {string} domainName — constitutional domain name
@@ -448,7 +448,7 @@ async function getLastReconciliationTickTs(domainName) {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEST ONLY — REMOVE AFTER GAP TESTS COMPLETE
-// Direct ledger write for test injection (bypasses lineage worker)
+// Direct ledger write for test injection (bypasses transition writers)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function injectTestEntry(entry) {
@@ -518,11 +518,11 @@ async function rehydrate() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Record a lineage entry produced by the lineage worker.
- * Writes to the worker's dedicated Redis key: lineage:ledger:entries.
+ * Record a lineage entry produced by transition writers.
+ * Writes to the canonical Redis key: lineage:ledger:entries.
  * Async — must be awaited by the caller to guarantee persistence.
  *
- * @param {object} entry — canonical ledger entry from the lineage worker
+ * @param {object} entry — canonical ledger entry from the transition writers
  * @returns {Promise<{ id: string, ts: number }>}
  */
 async function recordWorkerEntry(entry) {
@@ -537,7 +537,7 @@ async function recordWorkerEntry(entry) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Worker delegation — ledger-owned persistence for lineage worker state
+// Worker delegation — ledger-owned persistence for transition writer state
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -620,7 +620,7 @@ function persistWorkerDivergences(divergences, ttlSeconds = 90) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Deprecated stubs — all write authority now routes via lineage worker
+// Deprecated stubs — all write authority now routes via transition writers
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════════════

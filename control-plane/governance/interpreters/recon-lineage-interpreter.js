@@ -53,7 +53,7 @@ async function getConstitutionalHash() {
 
 /**
  * Get divergence entries for reconciliation analysis.
- * These are structural anomalies recorded by the lineage worker.
+ * These are structural anomalies recorded by transition writers.
  *
  * @param {number} [n] — optional limit
  * @returns {Promise<Array<object>>} divergence entries

@@ -26,8 +26,9 @@
 //                  FSM emits validated transitions back through observability
 //
 // Domain FSMs emit state transitions through the observability plane.
-// The lineage worker consumes from the observability plane and writes to the
-// canonical lineage ledger. FSMs do NOT write to the lineage ledger directly.
+// Transition writers consume from the observability plane and write to the
+// canonical lineage ledger via lineageLedger.recordWorkerEntry().
+// FSMs do NOT write to the lineage ledger directly.
 //
 // Telemetry workers no longer emit SEMANTIC_PROJECTION_TRANSITION directly.
 // They emit PROJECTION_INTENT. This FSM is the sole serializer that validates,
@@ -38,7 +39,7 @@
 //                                                   ↓
 //   CK cadence → FSM reads intents → validates → orders → serializes
 //                                                   ↓
-//            SEMANTIC_PROJECTION_TRANSITION → observability → lineage worker → ledger
+//            SEMANTIC_PROJECTION_TRANSITION → observability → transition-writer → ledger
 //
 // Local states:
 //   IDLE         — no coordination cycle in progress
@@ -944,7 +945,7 @@ function _validateSignalOwnership(payload, namespace, violations) {
       if (isLineageOwned) {
         violations.push({
           field: signalPath,
-          reason: `Signal '${signalPath}' is ledger-derivable (owned by lineage-worker) — must not appear in telemetry projection payloads`,
+          reason: `Signal '${signalPath}' is ledger-derivable (owned by transition writers) — must not appear in telemetry projection payloads`,
         });
       }
     }

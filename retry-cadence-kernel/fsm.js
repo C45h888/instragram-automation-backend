@@ -18,8 +18,9 @@
 //                  FSM governs lifecycle meaning, substrates perform mechanics
 //
 // Domain FSMs emit state transitions through the observability plane.
-// The lineage worker consumes from the observability plane and writes to the
-// canonical lineage ledger. FSMs do NOT write to the lineage ledger directly.
+// Transition writers consume from the observability plane and write to the
+// canonical lineage ledger via lineageLedger.recordWorkerEntry().
+// FSMs do NOT write to the lineage ledger directly.
 //
 // Local states:
 //   IDLE            — no active circuit breakers, no auth strikes, no retry exhaustion

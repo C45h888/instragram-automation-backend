@@ -18,8 +18,9 @@
 //                  FSM governs lifecycle meaning, substrate performs mechanics
 //
 // Domain FSMs emit state transitions through the observability plane.
-// The lineage worker consumes from the observability plane and writes to the
-// canonical lineage ledger. FSMs do NOT write to the lineage ledger directly.
+// Transition writers consume from the observability plane and write to the
+// canonical lineage ledger via lineageLedger.recordWorkerEntry().
+// FSMs do NOT write to the lineage ledger directly.
 //
 // Local states:
 //   IDLE   — no dedup batch in progress, no active evaluation window
@@ -704,7 +705,7 @@ function _resolveSanityCheck(ctx, action) {
 // 4. Dispatch — process event, ask constitutional for validation, transition
 //
 // Domain FSMs emit through observability plane (not lineage ledger).
-// The lineage worker consumes these transitions and writes to canonical ledger.
+// Transition writers consume these transitions and write to canonical ledger.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -777,7 +778,7 @@ async function dispatch(event, ctx) {
 
   // 5. Emit observability transition for domain FSM state change
   // Fire-and-forget — observability failures never affect domain FSM behavior.
-  // The lineage worker consumes this transition and writes to the canonical ledger.
+  // Transition writers consume this transition and write to the canonical ledger.
   try {
     const obs = _obs();
     if (obs) {

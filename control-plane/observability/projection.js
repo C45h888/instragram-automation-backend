@@ -46,7 +46,7 @@ const _transitionLog = []; // Array<normalized transition>
 const _entityLog = new Map(); // "domain:entity:entityId" → Array<transition>
 
 // ── Consumer cursor registry (Gap 3: truncation protection) ───────────────────
-// Registered consumers (e.g., lineage worker) track their read position.
+// Registered consumers (e.g., transition writers) track their read position.
 // Before truncating old log entries, the projection checks that no consumer's
 // cursor lags behind the truncation point. If a consumer is behind, truncation
 // is skipped and a stall warning is emitted.
@@ -506,7 +506,7 @@ function _getMinConsumerCursor() {
  * On first registration, initializes cursor from Redis for crash survival.
  * Subsequent registrations reuse the in-memory cursor.
  *
- * @param {string} name — unique consumer name, e.g. 'lineage-worker'
+ * @param {string} name — unique consumer name, e.g. 'transition-writer'
  */
 async function registerConsumer(name) {
   if (!name || typeof name !== 'string') {

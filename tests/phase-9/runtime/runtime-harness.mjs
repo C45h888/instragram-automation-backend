@@ -71,6 +71,7 @@ export class RuntimeHarness {
 
     this._snapshotDeriver = new SnapshotDeriver();
     this._snapshotDeriver.attach(this._simulator);
+    this._snapshotDeriver._recorder = this._recorder; // share the lineage-aware snapshot
 
     this._driftDetector = new DriftDetector();
     this._driftDetector.attach(this._simulator);
@@ -123,9 +124,9 @@ export class RuntimeHarness {
    * by tests that want to inspect mid-run.
    */
   async _flushArtifacts() {
-    const observation = this._recorder ? this._recorder.snapshot() : [];
+    const observation = this._recorder ? await this._recorder.snapshot() : [];
     const ownership = this._ownershipTracer ? this._ownershipTracer.snapshot() : {};
-    const snapshot = this._snapshotDeriver ? this._snapshotDeriver.derive() : {};
+    const snapshot = this._snapshotDeriver ? await this._snapshotDeriver.derive() : {};
     const drift = this._driftDetector ? this._driftDetector.snapshot() : [];
     const replay = this._replayEngine ? await this._replayEngine.replay() : { diverged_keys: [], missing_observations: [] };
 

@@ -132,7 +132,7 @@ function getSnapshot() {
 
 /**
  * Return transition log entries from a given index onward.
- * Enables the lineage worker to consume entries sequentially from a cursor.
+ * Enables transition writers to consume entries sequentially from a cursor.
  *
  * @param {number} includeIndex — 0-based index to start reading from
  * @returns {{ entries: Array<object>, nextCursor: number, totalSize: number }}

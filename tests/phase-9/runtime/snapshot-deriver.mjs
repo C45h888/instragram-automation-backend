@@ -29,9 +29,9 @@ export class SnapshotDeriver {
    *     derived_at, events: { event_id → bucket }, constitutional_paths: [...], drift_findings: []
    *   }
    */
-  derive() {
+  async derive() {
     if (!this._simulator) return { derived_at: Date.now(), events: {}, constitutional_paths: [], drift_findings: [] };
-    const timeline = this._simulator.timeline();
+    const observation = this._recorder ? await this._recorder.snapshot() : [];
     const mutations = this._simulator.mutations ? this._simulator.mutations() : [];
     const byId = new Map();
 
@@ -51,22 +51,23 @@ export class SnapshotDeriver {
       return byId.get(id);
     };
 
-    for (const e of timeline) {
-      const id = e.correlationId || `evt-${e.id}`;
-      const t = (e.type || '').toUpperCase();
-      const rec = ensure(id);
-      if (t.includes('VALIDATE') || t.includes('GOVERN') || t.includes('DISPATCH')) {
-        rec.governance_ts = rec.governance_ts || e.timestamp;
-        if (e.source) rec.kernels_touched.add(e.source);
-      } else if (t.includes('WORKER')) {
+    for (const o of observation) {
+      const rec = ensure(o.event_id);
+      if (o.kind === 'ingress') {
+        rec.ingress_ts = rec.ingress_ts || o.ts;
+        if (o.source) rec.kernels_touched.add(o.source);
+      } else if (o.kind === 'governance') {
+        rec.governance_ts = rec.governance_ts || o.ts;
+        if (o.source) rec.kernels_touched.add(o.source);
+      } else if (o.kind === 'fsm') {
+        rec.fsm_ts = rec.fsm_ts || o.ts;
+        if (o.source) rec.kernels_touched.add(o.source);
+      } else if (o.kind === 'worker') {
         rec.worker_count += 1;
-        if (e.source) rec.kernels_touched.add(e.source);
-      } else if (t.includes('TRANSITION') || t.includes('FSM') || t.includes('STATE')) {
-        rec.fsm_ts = rec.fsm_ts || e.timestamp;
-        if (e.source) rec.kernels_touched.add(e.source);
-      } else {
-        rec.ingress_ts = rec.ingress_ts || e.timestamp;
-        if (e.source) rec.kernels_touched.add(e.source);
+        if (o.source) rec.kernels_touched.add(o.source);
+      } else if (o.kind === 'mutation') {
+        rec.mutation_count += 1;
+        if (o.source) rec.kernels_touched.add(o.source);
       }
     }
     for (const m of mutations) {

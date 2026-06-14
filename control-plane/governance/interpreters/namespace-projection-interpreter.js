@@ -9,7 +9,7 @@
 //               ledger persistence, semantic interpretation of raw telemetry.
 //
 // Architectural identity:
-//   This interpreter absorbs the lineage worker's Layer B (_projections).
+//   This interpreter absorbs the transition writers' projection output.
 //   It is dispatched by CK ONLY for ACCEPTED entries — never for PENDING or REJECTED.
 //   It is a PURE FUNCTION of immutable ledger entries — replay-deterministic.
 //
@@ -20,7 +20,7 @@
 const lineageLedger = require('../lineage-ledger');
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Domain projection state (mirrors lineage-worker.js Layer B structure)
+// Domain projection state (mirrors transition writers' Layer B output structure)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const _projections = {

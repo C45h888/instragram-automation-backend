@@ -1,14 +1,20 @@
 // Phase 9 — Recorder Observer (PASSIVE).
 //
 // The recorder is a SUBSCRIBER, not an actor. It reads from the
-// underlying Phase7RuntimeSimulator's EventRecorder timeline —
-// which captures what the runtime actually did — and projects it
-// into the phase-8 bucket shape for backward compatibility.
+// lineage ledger — the constitutional source of truth per the
+// architecture: "Lineage is canonical truth; runtime state is a
+// projection." It also reads from the observability plane's
+// EventRecorder as a secondary source for events that have not
+// yet been lineage-recorded.
 //
 // This module exposes ONLY observation methods. There is no
 // .ingress() / .governance() / .fsm() / .worker() / .mutation()
 // write API. Phase 9 tests cannot fabricate constitutional
 // events; they can only assert against what the runtime did.
+
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const lineageLedger = require('../../../control-plane/governance/lineage-ledger');
 
 export class RecorderObserver {
   constructor() {
@@ -24,60 +30,68 @@ export class RecorderObserver {
 
   /**
    * Returns the observation log — a flat list of events captured
-   * by the runtime, normalized into the recorder bucket shape.
-   * Each entry has: event_id, kind, source, payload, ts.
-   *
-   * The "event_id" is derived from the runtime's correlationId
-   * (the simulator sets one on every injected event). The "kind"
-   * is inferred from the runtime's event type:
-   *   - events with type containing GOVERNANCE/VALIDATE → governance
-   *   - events with type containing WORKER → worker
-   *   - events with type containing TRANSITION/FSM → fsm
-   *   - mutation events are derived from the mutation tracker
-   *   - everything else from a phase-9 ingress path → ingress
+   * from the lineage ledger (canonical) and the observability
+   * EventRecorder (secondary). Each entry has: event_id, kind,
+   * source, payload, ts.
    */
-  snapshot() {
-    if (!this._simulator) return [];
-    const timeline = this._simulator.timeline();
-    const mutations = this._simulator.mutations ? this._simulator.mutations() : [];
+  async snapshot() {
     const observed = [];
-    for (const e of timeline) {
-      observed.push(this._normalize(e));
+    // Source 1: lineage ledger (canonical constitutional events)
+    try {
+      const lineage = await lineageLedger.getLineage(500);
+      for (const entry of lineage) {
+        observed.push(this._normalizeLineage(entry));
+      }
+    } catch (_) {
+      // ledger unavailable (no Redis) — fall through
     }
-    // Append mutation events that the timeline didn't surface as
-    // their own type. The mutation tracker in phase-7 hooks the
-    // lineage ledger directly, so they live there.
-    for (const m of mutations) {
-      const id = m.correlationId || m.entry?.entityId || `mut-${m.id}`;
-      observed.push({
-        event_id: id,
-        kind: 'mutation',
-        source: m.source || m.entry?.domain || 'mutation-substrate',
-        payload: m.entry || {},
-        ts: m.timestamp,
-      });
+    // Source 2: observability EventRecorder (secondary, for events
+    // that have not yet been lineage-recorded)
+    if (this._simulator) {
+      const timeline = this._simulator.timeline();
+      for (const e of timeline) observed.push(this._normalizeObservability(e));
+      const mutations = this._simulator.mutations ? this._simulator.mutations() : [];
+      for (const m of mutations) {
+        observed.push({
+          event_id: m.correlationId || m.entry?.entityId || `mut-${m.id}`,
+          kind: 'mutation',
+          source: m.source || m.entry?.domain || 'mutation-substrate',
+          payload: m.entry || {},
+          ts: m.timestamp,
+        });
+      }
     }
     return observed;
   }
 
-  _normalize(e) {
-    const id = e.correlationId || `evt-${e.id}`;
-    const kind = this._inferKind(e);
+  _normalizeLineage(entry) {
+    const t = (entry.type || entry.eventType || '').toUpperCase();
+    const id = entry.intentId || entry.eventId || entry.correlationId || `lineage-${entry.id || entry.ts || Math.random()}`;
     return {
       event_id: id,
-      kind,
+      kind: this._inferKind(t),
+      source: entry.domain || entry.authority || entry.source || 'lineage-ledger',
+      payload: entry,
+      ts: entry.ts || entry.emittedAt || entry.timestamp || 0,
+    };
+  }
+
+  _normalizeObservability(e) {
+    const id = e.correlationId || `evt-${e.id}`;
+    return {
+      event_id: id,
+      kind: this._inferKind((e.type || '').toUpperCase()),
       source: e.source || 'runtime',
       payload: e.payload || null,
       ts: e.timestamp,
     };
   }
 
-  _inferKind(e) {
-    const t = (e.type || '').toUpperCase();
-    if (t.includes('VALIDATE') || t.includes('GOVERN') || t.includes('DISPATCH')) return 'governance';
+  _inferKind(t) {
+    if (t.includes('VALIDATE') || t.includes('GOVERN') || t.includes('DISPATCH') || t.includes('WEBHOOK_EVENT_RECEIVED') || t.includes('PERSIST')) return 'governance';
     if (t.includes('WORKER')) return 'worker';
     if (t.includes('TRANSITION') || t.includes('FSM') || t.includes('STATE')) return 'fsm';
-    if (t.includes('MUTATION') || t.includes('WRITE') || t.includes('UPSERT')) return 'mutation';
+    if (t.includes('MUTATION') || t.includes('WRITE') || t.includes('UPSERT') || t.includes('DB_WRITE')) return 'mutation';
     return 'ingress';
   }
 
@@ -86,8 +100,8 @@ export class RecorderObserver {
    * derived from the runtime's actual events. Each event_id is
    * summarized with the first ts of each kind.
    */
-  summarize() {
-    const obs = this.snapshot();
+  async summarize() {
+    const obs = await this.snapshot();
     const byId = new Map();
     for (const o of obs) {
       if (!byId.has(o.event_id)) {

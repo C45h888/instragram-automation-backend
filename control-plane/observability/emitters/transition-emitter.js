@@ -37,8 +37,8 @@ function _getCK() {
 
 /**
  * Emit a structural anomaly for a membrane bypass detection.
- * Routes through: CK → observability.transition() → lineage worker → ledger.
- * Constitutional topology preserved — worker remains sole writer.
+ * Routes through: CK → observability.transition() → transition writers → ledger.
+ * Constitutional topology preserved — transition writers are the sole ledger writers.
  *
  * Fire-and-forget — anomaly emission never blocks transition flow.
  * Errors are propagated (not swallowed) for constitutional visibility.

@@ -13,7 +13,7 @@
 //                                                      ↓
 //                              Projection Workers (semantic synthesis layer)
 //                                                      ↓
-//                              Lineage Worker (Layer A — persists)
+//                              Transition Writers (Layer A — persists)
 //
 // The adapter is a bounded telemetry normalizer. It ONLY:
 //   - polls raw substrate state
