@@ -1,8 +1,0 @@
-{
-  "suite": "ownership",
-  "testName": "ownership-trace-media",
-  "runId": "p9-ownership-media",
-  "assertions": 0,
-  "assertionsFailed": 0,
-  "extras": {}
-}

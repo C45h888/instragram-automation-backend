@@ -1,8 +1,0 @@
-{
-  "suite": "graph",
-  "testName": "runtime-graph-capability",
-  "runId": "p9-graph-capability",
-  "assertions": 1,
-  "assertionsFailed": 0,
-  "extras": {}
-}

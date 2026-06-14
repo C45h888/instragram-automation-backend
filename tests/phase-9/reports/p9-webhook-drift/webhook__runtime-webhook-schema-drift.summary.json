@@ -1,8 +1,0 @@
-{
-  "suite": "webhook",
-  "testName": "runtime-webhook-schema-drift",
-  "runId": "p9-webhook-drift",
-  "assertions": 2,
-  "assertionsFailed": 0,
-  "extras": {}
-}

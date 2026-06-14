@@ -1,8 +1,0 @@
-{
-  "suite": "drift",
-  "testName": "semantic-drift",
-  "runId": "p9-drift-semantic",
-  "assertions": 1,
-  "assertionsFailed": 0,
-  "extras": {}
-}

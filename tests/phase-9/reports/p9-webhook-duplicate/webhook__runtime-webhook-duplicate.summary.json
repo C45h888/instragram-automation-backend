@@ -1,8 +1,0 @@
-{
-  "suite": "webhook",
-  "testName": "runtime-webhook-duplicate",
-  "runId": "p9-webhook-duplicate",
-  "assertions": 2,
-  "assertionsFailed": 0,
-  "extras": {}
-}

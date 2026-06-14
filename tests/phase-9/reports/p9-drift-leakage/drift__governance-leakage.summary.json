@@ -1,8 +1,0 @@
-{
-  "suite": "drift",
-  "testName": "governance-leakage",
-  "runId": "p9-drift-leakage",
-  "assertions": 1,
-  "assertionsFailed": 0,
-  "extras": {}
-}

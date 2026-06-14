@@ -1,8 +1,0 @@
-{
-  "suite": "drift",
-  "testName": "fsm-ownership",
-  "runId": "p9-drift-fsm",
-  "assertions": 1,
-  "assertionsFailed": 0,
-  "extras": {}
-}

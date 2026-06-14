@@ -1,8 +1,0 @@
-{
-  "suite": "ownership",
-  "testName": "ownership-trace-comment",
-  "runId": "p9-ownership-comment",
-  "assertions": 0,
-  "assertionsFailed": 0,
-  "extras": {}
-}

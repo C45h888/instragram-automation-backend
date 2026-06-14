@@ -1,8 +1,0 @@
-{
-  "suite": "sovereignty",
-  "testName": "kernel-sovereignty-publishing",
-  "runId": "p9-sov-publishing",
-  "assertions": 1,
-  "assertionsFailed": 0,
-  "extras": {}
-}

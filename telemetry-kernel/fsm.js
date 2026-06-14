@@ -171,7 +171,12 @@ const STATE_REGISTRY = {
   },
 };
 
-const INTENT_NAMESPACES = Object.freeze(['runtime', 'integrity', 'authority', 'health', 'systemic', 'persist-telemetry', 'reconciliation', 'scheduling', 'dedup', 'publishing', 'acquisition']);
+// All projection workers now emit PROJECTION_INTENT into domain 'projection'
+// (base-projection-worker._emitProjectionTransition uses domain: 'projection').
+// This single partition replaces the per-namespace domain partitions to prevent
+// telemetry-plane entries from polluting operational domain partitions and to
+// eliminate the self-triggering feedback loop.
+const INTENT_NAMESPACES = Object.freeze(['projection']);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. Domain Transition Map — event → target + guard + action builder

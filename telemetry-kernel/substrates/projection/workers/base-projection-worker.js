@@ -392,8 +392,15 @@ class BaseProjectionWorker {
     try {
       // eslint-disable-next-line global-require
       const observability = require('../../../../control-plane/observability/emitters/transition-emitter');
+      // PROJECTION_INTENT entries MUST land in the projection domain — NOT the
+      // operational domain (e.g. 'acquisition', 'publishing'). Writing into the
+      // operational domain partition creates a self-triggering feedback loop
+      // (the worker's own onWrite fires on its PROJECTION_INTENT emissions)
+      // and pollutes the operational partition with telemetry-plane entries.
+      // The operational namespace is preserved in raw.projectionNamespace for
+      // the FSM to route to the correct transition writer.
       await observability.transition({
-        domain: this._domain,
+        domain: 'projection',
         entity: 'projection_intent',
         entityId: this._projectType,
         previousState: this._lastProjectionTs ? `${this._projectType}:intent` : null,
