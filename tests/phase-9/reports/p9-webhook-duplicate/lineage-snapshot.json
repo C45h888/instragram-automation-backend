@@ -1,23 +1,24 @@
 {
-  "derived_at": 1781437554539,
+  "derived_at": 1781453755473,
   "events": {
-    "p9-dup-1781437554373": {
-      "event_id": "p9-dup-1781437554373",
-      "ingress_ts": 1781437554375,
+    "p9-dup-1781453755316": {
+      "event_id": "p9-dup-1781453755316",
+      "ingress_ts": 1781453755317,
       "governance_ts": null,
       "fsm_ts": null,
       "worker_count": 0,
-      "mutation_count": 0,
+      "mutation_count": 4,
       "ordering_ok": true,
       "kernels_touched": [
-        "runtime/ingress"
+        "runtime/ingress",
+        "phase7"
       ]
     },
     "evt-3": {
       "event_id": "evt-3",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781437554378,
+      "fsm_ts": 1781453755317,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
@@ -29,22 +30,94 @@
       "event_id": "evt-4",
       "ingress_ts": null,
       "governance_ts": null,
-      "fsm_ts": 1781437554378,
+      "fsm_ts": 1781453755317,
       "worker_count": 0,
       "mutation_count": 0,
       "ordering_ok": null,
       "kernels_touched": [
         "phase7"
       ]
+    },
+    "evt-5": {
+      "event_id": "evt-5",
+      "ingress_ts": null,
+      "governance_ts": 1781453755317,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-6": {
+      "event_id": "evt-6",
+      "ingress_ts": null,
+      "governance_ts": 1781453755368,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-7": {
+      "event_id": "evt-7",
+      "ingress_ts": null,
+      "governance_ts": 1781453755419,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "871e4440-a42b-461f-a519-21b637446126": {
+      "event_id": "871e4440-a42b-461f-a519-21b637446126",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "68736a3e-1d2a-4ebf-be9b-6678dbfdf168": {
+      "event_id": "68736a3e-1d2a-4ebf-be9b-6678dbfdf168",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "24636d99-9bcd-4592-941f-94b11a305d40": {
+      "event_id": "24636d99-9bcd-4592-941f-94b11a305d40",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
     }
   },
   "constitutional_paths": [
     {
-      "event_id": "p9-dup-1781437554373",
+      "event_id": "p9-dup-1781453755316",
       "ok": false,
       "ordering_ok": true,
       "worker_count": 0,
-      "mutation_count": 0
+      "mutation_count": 4
     },
     {
       "event_id": "evt-3",
@@ -59,6 +132,48 @@
       "ordering_ok": null,
       "worker_count": 0,
       "mutation_count": 0
+    },
+    {
+      "event_id": "evt-5",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-6",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-7",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "871e4440-a42b-461f-a519-21b637446126",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "68736a3e-1d2a-4ebf-be9b-6678dbfdf168",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "24636d99-9bcd-4592-941f-94b11a305d40",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
     }
   ],
   "drift_findings": []

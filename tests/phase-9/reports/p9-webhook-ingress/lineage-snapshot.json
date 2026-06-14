@@ -1,5 +1,5 @@
 {
-  "derived_at": 1781453014310,
+  "derived_at": 1781453756268,
   "events": {
     "evt-1": {
       "event_id": "evt-1",
@@ -28,7 +28,7 @@
     "evt-3": {
       "event_id": "evt-3",
       "ingress_ts": null,
-      "governance_ts": 1781453014155,
+      "governance_ts": 1781453755327,
       "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
@@ -40,7 +40,7 @@
     "evt-4": {
       "event_id": "evt-4",
       "ingress_ts": null,
-      "governance_ts": 1781453014207,
+      "governance_ts": 1781453755378,
       "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
@@ -52,7 +52,7 @@
     "evt-5": {
       "event_id": "evt-5",
       "ingress_ts": null,
-      "governance_ts": 1781453014255,
+      "governance_ts": 1781453755427,
       "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
@@ -64,7 +64,7 @@
     "evt-6": {
       "event_id": "evt-6",
       "ingress_ts": null,
-      "governance_ts": 1781453014257,
+      "governance_ts": 1781453755430,
       "fsm_ts": null,
       "worker_count": 0,
       "mutation_count": 0,
@@ -73,8 +73,368 @@
         "governance"
       ]
     },
-    "messaging-1781453014150-d772c232": {
-      "event_id": "messaging-1781453014150-d772c232",
+    "evt-7": {
+      "event_id": "evt-7",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-8": {
+      "event_id": "evt-8",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-9": {
+      "event_id": "evt-9",
+      "ingress_ts": null,
+      "governance_ts": 1781453755483,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-10": {
+      "event_id": "evt-10",
+      "ingress_ts": null,
+      "governance_ts": 1781453755534,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-11": {
+      "event_id": "evt-11",
+      "ingress_ts": null,
+      "governance_ts": 1781453755583,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-12": {
+      "event_id": "evt-12",
+      "ingress_ts": null,
+      "governance_ts": 1781453755584,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-13": {
+      "event_id": "evt-13",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-14": {
+      "event_id": "evt-14",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-15": {
+      "event_id": "evt-15",
+      "ingress_ts": null,
+      "governance_ts": 1781453755641,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-16": {
+      "event_id": "evt-16",
+      "ingress_ts": null,
+      "governance_ts": 1781453755694,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-17": {
+      "event_id": "evt-17",
+      "ingress_ts": null,
+      "governance_ts": 1781453755741,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-18": {
+      "event_id": "evt-18",
+      "ingress_ts": null,
+      "governance_ts": 1781453755744,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-19": {
+      "event_id": "evt-19",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-20": {
+      "event_id": "evt-20",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-21": {
+      "event_id": "evt-21",
+      "ingress_ts": null,
+      "governance_ts": 1781453755797,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-22": {
+      "event_id": "evt-22",
+      "ingress_ts": null,
+      "governance_ts": 1781453755848,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-23": {
+      "event_id": "evt-23",
+      "ingress_ts": null,
+      "governance_ts": 1781453755897,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-24": {
+      "event_id": "evt-24",
+      "ingress_ts": null,
+      "governance_ts": 1781453755897,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-25": {
+      "event_id": "evt-25",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-26": {
+      "event_id": "evt-26",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-27": {
+      "event_id": "evt-27",
+      "ingress_ts": null,
+      "governance_ts": 1781453755954,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-28": {
+      "event_id": "evt-28",
+      "ingress_ts": null,
+      "governance_ts": 1781453756006,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-29": {
+      "event_id": "evt-29",
+      "ingress_ts": null,
+      "governance_ts": 1781453756054,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-30": {
+      "event_id": "evt-30",
+      "ingress_ts": null,
+      "governance_ts": 1781453756057,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-31": {
+      "event_id": "evt-31",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-32": {
+      "event_id": "evt-32",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 1,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "evt-33": {
+      "event_id": "evt-33",
+      "ingress_ts": null,
+      "governance_ts": 1781453756112,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-34": {
+      "event_id": "evt-34",
+      "ingress_ts": null,
+      "governance_ts": 1781453756164,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-35": {
+      "event_id": "evt-35",
+      "ingress_ts": null,
+      "governance_ts": 1781453756214,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "evt-36": {
+      "event_id": "evt-36",
+      "ingress_ts": null,
+      "governance_ts": 1781453756214,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 0,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "messaging-1781453755325-40bf532f": {
+      "event_id": "messaging-1781453755325-40bf532f",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
@@ -91,14 +451,74 @@
       "governance_ts": null,
       "fsm_ts": null,
       "worker_count": 0,
+      "mutation_count": 12,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "cfda2ca1-1bff-4269-8c48-fb8360b489c1": {
+      "event_id": "cfda2ca1-1bff-4269-8c48-fb8360b489c1",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "64ecb673-694f-42ba-8280-2a4334a4eba8": {
+      "event_id": "64ecb673-694f-42ba-8280-2a4334a4eba8",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "aa504c29-8d06-480e-a9c3-a83aba384ad2": {
+      "event_id": "aa504c29-8d06-480e-a9c3-a83aba384ad2",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "b40781a0-5fff-41e2-b545-452d93073d46": {
+      "event_id": "b40781a0-5fff-41e2-b545-452d93073d46",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "comments-1781453755482-62a9dfff": {
+      "event_id": "comments-1781453755482-62a9dfff",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
       "mutation_count": 2,
       "ordering_ok": null,
       "kernels_touched": [
         "acquisition"
       ]
     },
-    "d0b555e6-4ecf-4d53-b6f8-6954b6eca276": {
-      "event_id": "d0b555e6-4ecf-4d53-b6f8-6954b6eca276",
+    "f5cda9bb-dad6-4a82-af50-97cc0ffc886f": {
+      "event_id": "f5cda9bb-dad6-4a82-af50-97cc0ffc886f",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
@@ -109,8 +529,8 @@
         "governance"
       ]
     },
-    "b52d71a0-68dc-4299-a6aa-21e7f6bb3694": {
-      "event_id": "b52d71a0-68dc-4299-a6aa-21e7f6bb3694",
+    "8bf523d9-7b08-4229-98a7-55e72fabef37": {
+      "event_id": "8bf523d9-7b08-4229-98a7-55e72fabef37",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
@@ -121,8 +541,8 @@
         "governance"
       ]
     },
-    "fe6b29f2-28e4-456c-9d9e-9fd8a80d281c": {
-      "event_id": "fe6b29f2-28e4-456c-9d9e-9fd8a80d281c",
+    "b94f1e13-1132-4784-8f08-a885677f179d": {
+      "event_id": "b94f1e13-1132-4784-8f08-a885677f179d",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
@@ -133,8 +553,248 @@
         "governance"
       ]
     },
-    "db26f7de-8c6f-4124-8d53-11188ec9730f": {
-      "event_id": "db26f7de-8c6f-4124-8d53-11188ec9730f",
+    "cba12b88-02f4-42fa-980e-033bb672d404": {
+      "event_id": "cba12b88-02f4-42fa-980e-033bb672d404",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "mentions-1781453755637-b094732c": {
+      "event_id": "mentions-1781453755637-b094732c",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "31dc7b71-021c-459d-afc1-e9aac2623732": {
+      "event_id": "31dc7b71-021c-459d-afc1-e9aac2623732",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "837319df-9807-4118-9fd0-d9e3c6020a00": {
+      "event_id": "837319df-9807-4118-9fd0-d9e3c6020a00",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "b0d96bdb-a403-46cb-811a-ccd1b270742e": {
+      "event_id": "b0d96bdb-a403-46cb-811a-ccd1b270742e",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "655a51cc-5edb-4fbd-9b57-b5ccfed92469": {
+      "event_id": "655a51cc-5edb-4fbd-9b57-b5ccfed92469",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "story_mentions-1781453755796-0637f21e": {
+      "event_id": "story_mentions-1781453755796-0637f21e",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "d41ebd79-4d49-4d08-b64f-828cf9fdde33": {
+      "event_id": "d41ebd79-4d49-4d08-b64f-828cf9fdde33",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "ee441d9b-3d59-42fe-8153-87bc7d671704": {
+      "event_id": "ee441d9b-3d59-42fe-8153-87bc7d671704",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "c2f50ec3-00c0-4bb9-aae2-22042273a86a": {
+      "event_id": "c2f50ec3-00c0-4bb9-aae2-22042273a86a",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "bec164b4-7fa7-4d82-a86f-92fd1b3746ac": {
+      "event_id": "bec164b4-7fa7-4d82-a86f-92fd1b3746ac",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "media-1781453755951-53be2b35": {
+      "event_id": "media-1781453755951-53be2b35",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "05195d32-6be9-4eb7-973f-953a9a45bb23": {
+      "event_id": "05195d32-6be9-4eb7-973f-953a9a45bb23",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "8228aa22-baef-497d-b5b0-f7efef66e2fd": {
+      "event_id": "8228aa22-baef-497d-b5b0-f7efef66e2fd",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "24b8778a-f219-4941-b638-2f423b53546a": {
+      "event_id": "24b8778a-f219-4941-b638-2f423b53546a",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "19269d69-7eeb-4a0f-8bd3-64661df31b75": {
+      "event_id": "19269d69-7eeb-4a0f-8bd3-64661df31b75",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "mentions-1781453756110-9d6638db": {
+      "event_id": "mentions-1781453756110-9d6638db",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "acquisition"
+      ]
+    },
+    "1f1901bd-6fc8-41d9-a86e-6aff96f51197": {
+      "event_id": "1f1901bd-6fc8-41d9-a86e-6aff96f51197",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "0e980e6a-cb2c-48b9-9d9d-e1dbc01b1e2b": {
+      "event_id": "0e980e6a-cb2c-48b9-9d9d-e1dbc01b1e2b",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "32bb4e1a-f751-45cf-b0db-fc78d5a8e862": {
+      "event_id": "32bb4e1a-f751-45cf-b0db-fc78d5a8e862",
+      "ingress_ts": null,
+      "governance_ts": null,
+      "fsm_ts": null,
+      "worker_count": 0,
+      "mutation_count": 2,
+      "ordering_ok": null,
+      "kernels_touched": [
+        "governance"
+      ]
+    },
+    "826d373d-b4db-439c-a0a9-93357d36b516": {
+      "event_id": "826d373d-b4db-439c-a0a9-93357d36b516",
       "ingress_ts": null,
       "governance_ts": null,
       "fsm_ts": null,
@@ -190,7 +850,217 @@
       "mutation_count": 0
     },
     {
-      "event_id": "messaging-1781453014150-d772c232",
+      "event_id": "evt-7",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-8",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-9",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-10",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-11",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-12",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-13",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-14",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-15",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-16",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-17",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-18",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-19",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-20",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-21",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-22",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-23",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-24",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-25",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-26",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-27",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-28",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-29",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-30",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-31",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-32",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 1,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-33",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-34",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-35",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "evt-36",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 0
+    },
+    {
+      "event_id": "messaging-1781453755325-40bf532f",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,
@@ -201,31 +1071,206 @@
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,
-      "mutation_count": 2
+      "mutation_count": 12
     },
     {
-      "event_id": "d0b555e6-4ecf-4d53-b6f8-6954b6eca276",
+      "event_id": "cfda2ca1-1bff-4269-8c48-fb8360b489c1",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,
       "mutation_count": 2
     },
     {
-      "event_id": "b52d71a0-68dc-4299-a6aa-21e7f6bb3694",
+      "event_id": "64ecb673-694f-42ba-8280-2a4334a4eba8",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,
       "mutation_count": 2
     },
     {
-      "event_id": "fe6b29f2-28e4-456c-9d9e-9fd8a80d281c",
+      "event_id": "aa504c29-8d06-480e-a9c3-a83aba384ad2",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,
       "mutation_count": 2
     },
     {
-      "event_id": "db26f7de-8c6f-4124-8d53-11188ec9730f",
+      "event_id": "b40781a0-5fff-41e2-b545-452d93073d46",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "comments-1781453755482-62a9dfff",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "f5cda9bb-dad6-4a82-af50-97cc0ffc886f",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "8bf523d9-7b08-4229-98a7-55e72fabef37",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "b94f1e13-1132-4784-8f08-a885677f179d",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "cba12b88-02f4-42fa-980e-033bb672d404",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "mentions-1781453755637-b094732c",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "31dc7b71-021c-459d-afc1-e9aac2623732",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "837319df-9807-4118-9fd0-d9e3c6020a00",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "b0d96bdb-a403-46cb-811a-ccd1b270742e",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "655a51cc-5edb-4fbd-9b57-b5ccfed92469",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "story_mentions-1781453755796-0637f21e",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "d41ebd79-4d49-4d08-b64f-828cf9fdde33",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "ee441d9b-3d59-42fe-8153-87bc7d671704",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "c2f50ec3-00c0-4bb9-aae2-22042273a86a",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "bec164b4-7fa7-4d82-a86f-92fd1b3746ac",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "media-1781453755951-53be2b35",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "05195d32-6be9-4eb7-973f-953a9a45bb23",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "8228aa22-baef-497d-b5b0-f7efef66e2fd",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "24b8778a-f219-4941-b638-2f423b53546a",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "19269d69-7eeb-4a0f-8bd3-64661df31b75",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "mentions-1781453756110-9d6638db",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "1f1901bd-6fc8-41d9-a86e-6aff96f51197",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "0e980e6a-cb2c-48b9-9d9d-e1dbc01b1e2b",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "32bb4e1a-f751-45cf-b0db-fc78d5a8e862",
+      "ok": false,
+      "ordering_ok": null,
+      "worker_count": 0,
+      "mutation_count": 2
+    },
+    {
+      "event_id": "826d373d-b4db-439c-a0a9-93357d36b516",
       "ok": false,
       "ordering_ok": null,
       "worker_count": 0,

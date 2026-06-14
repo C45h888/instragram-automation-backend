@@ -5,16 +5,16 @@
     "source": "acquisition",
     "payload": {
       "type": "WEBHOOK_EVENT_STAGED",
-      "intentId": "messaging-1781453014150-d772c232",
+      "intentId": "messaging-1781453755325-40bf532f",
       "accountId": "17841405822304914",
       "domain": "webhook:messages",
-      "at": 1781453014153,
+      "at": 1781453755326,
       "ms_since_intake": 0,
       "eventType": "dm_echo",
       "eventId": "m_message_001",
       "occurredAt": 1700000000000
     },
-    "ts": 1781453014153
+    "ts": 1781453755327
   },
   {
     "event_id": "evt-2",
@@ -22,10 +22,10 @@
     "source": "acquisition",
     "payload": {
       "intent": "WEBHOOK_EVENT_RECEIVED",
-      "intentId": "messaging-1781453014150-d772c232",
+      "intentId": "messaging-1781453755325-40bf532f",
       "accountId": "17841405822304914"
     },
-    "ts": 1781453014154
+    "ts": 1781453755327
   },
   {
     "event_id": "evt-3",
@@ -37,12 +37,12 @@
       "bypassedAuthority": "cadence-accelerator",
       "targetDomain": "scheduling",
       "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
-      "rejectedTraceId": "5080b83e-1a92-44e7-8f65-24b504696bbe",
+      "rejectedTraceId": "69e8843a-cf29-44d3-89d8-5d122072e227",
       "rejectedCorrelationId": null,
       "projectionVersion": "1.0.0",
       "lineageVersion": "1.0.0"
     },
-    "ts": 1781453014155
+    "ts": 1781453755327
   },
   {
     "event_id": "evt-4",
@@ -54,12 +54,12 @@
       "bypassedAuthority": "cadence-accelerator",
       "targetDomain": "scheduling",
       "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
-      "rejectedTraceId": "7db50b47-3fa2-4591-b2ce-a5a95ac80e54",
+      "rejectedTraceId": "4349da4e-c9c3-4ca6-acd7-c60cd97e55f1",
       "rejectedCorrelationId": null,
       "projectionVersion": "1.0.0",
       "lineageVersion": "1.0.0"
     },
-    "ts": 1781453014207
+    "ts": 1781453755378
   },
   {
     "event_id": "evt-5",
@@ -71,12 +71,12 @@
       "bypassedAuthority": "acquisition-projection-worker",
       "targetDomain": "acquisition",
       "reason": "MEMBRANE_BYPASS: foreign authority 'acquisition-projection-worker' may not mutate 'acquisition'",
-      "rejectedTraceId": "4f19a3fd-45f8-49a3-bf10-ce19317bab47",
+      "rejectedTraceId": "98ebc839-8b78-48e3-9ff8-d794064fc616",
       "rejectedCorrelationId": null,
       "projectionVersion": "1.0.0",
       "lineageVersion": "1.0.0"
     },
-    "ts": 1781453014255
+    "ts": 1781453755427
   },
   {
     "event_id": "evt-6",
@@ -88,24 +88,504 @@
       "bypassedAuthority": "cadence-accelerator",
       "targetDomain": "scheduling",
       "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
-      "rejectedTraceId": "bd7284e1-d722-401c-8c82-2ff83a823ab6",
+      "rejectedTraceId": "e788e2f6-1154-4000-b248-d6dd9a5878a1",
       "rejectedCorrelationId": null,
       "projectionVersion": "1.0.0",
       "lineageVersion": "1.0.0"
     },
-    "ts": 1781453014257
+    "ts": 1781453755430
   },
   {
-    "event_id": "messaging-1781453014150-d772c232",
+    "event_id": "evt-7",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "type": "WEBHOOK_EVENT_STAGED",
+      "intentId": "comments-1781453755482-62a9dfff",
+      "accountId": "17841405822304914",
+      "domain": "webhook:comments",
+      "at": 1781453755483,
+      "ms_since_intake": 0,
+      "eventType": "comment",
+      "eventId": "COMMENT_001",
+      "occurredAt": 1781453755482
+    },
+    "ts": 1781453755483
+  },
+  {
+    "event_id": "evt-8",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "intent": "WEBHOOK_EVENT_RECEIVED",
+      "intentId": "comments-1781453755482-62a9dfff",
+      "accountId": "17841405822304914"
+    },
+    "ts": 1781453755483
+  },
+  {
+    "event_id": "evt-9",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "ccc64b3b-a09e-449b-8014-9b16d89187aa",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755483
+  },
+  {
+    "event_id": "evt-10",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "2326e0ba-00ea-4745-91a6-9fd5b8633062",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755534
+  },
+  {
+    "event_id": "evt-11",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "acquisition-projection-worker",
+      "targetDomain": "acquisition",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'acquisition-projection-worker' may not mutate 'acquisition'",
+      "rejectedTraceId": "73c0f8dc-c4bf-432e-8959-f5a5ad0d33c6",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755583
+  },
+  {
+    "event_id": "evt-12",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "8389abc7-0a18-490b-a294-016609c1f23d",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755584
+  },
+  {
+    "event_id": "evt-13",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "type": "WEBHOOK_EVENT_DISCARDED",
+      "intentId": "mentions-1781453755637-b094732c",
+      "accountId": "17841405822304914",
+      "domain": "webhook:mentions",
+      "at": 1781453755641,
+      "ms_since_intake": 0,
+      "eventType": "mention",
+      "reason": "missing_mention_id",
+      "recommendationCount": 2
+    },
+    "ts": 1781453755641
+  },
+  {
+    "event_id": "evt-14",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "intent": "WEBHOOK_EVENT_DISCARDED",
+      "intentId": "mentions-1781453755637-b094732c",
+      "accountId": "17841405822304914"
+    },
+    "ts": 1781453755641
+  },
+  {
+    "event_id": "evt-15",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "6c2252a3-7b75-4fd1-86a5-c9ade166e017",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755641
+  },
+  {
+    "event_id": "evt-16",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "9600060f-c5dc-4298-b866-5bf0203e23fa",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755694
+  },
+  {
+    "event_id": "evt-17",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "acquisition-projection-worker",
+      "targetDomain": "acquisition",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'acquisition-projection-worker' may not mutate 'acquisition'",
+      "rejectedTraceId": "7b20d905-39bd-40f2-9daa-6c0ecd11eb4e",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755741
+  },
+  {
+    "event_id": "evt-18",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "a3f2ee04-c70b-47b4-aec2-6bb65d1a5a2f",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755744
+  },
+  {
+    "event_id": "evt-19",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "type": "WEBHOOK_EVENT_DISCARDED",
+      "intentId": "story_mentions-1781453755796-0637f21e",
+      "accountId": "17841405822304914",
+      "domain": "webhook:story-mentions",
+      "at": 1781453755797,
+      "ms_since_intake": 0,
+      "eventType": "story_mention",
+      "reason": "missing_story_mention_id",
+      "recommendationCount": 2
+    },
+    "ts": 1781453755797
+  },
+  {
+    "event_id": "evt-20",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "intent": "WEBHOOK_EVENT_DISCARDED",
+      "intentId": "story_mentions-1781453755796-0637f21e",
+      "accountId": "17841405822304914"
+    },
+    "ts": 1781453755797
+  },
+  {
+    "event_id": "evt-21",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "fae3165b-a300-43d5-ad9f-84b718ea142b",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755797
+  },
+  {
+    "event_id": "evt-22",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "7f807245-1bfa-47dd-b825-17a04bcb4039",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755848
+  },
+  {
+    "event_id": "evt-23",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "acquisition-projection-worker",
+      "targetDomain": "acquisition",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'acquisition-projection-worker' may not mutate 'acquisition'",
+      "rejectedTraceId": "743f0315-709e-4581-9211-13065c59ea58",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755897
+  },
+  {
+    "event_id": "evt-24",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "63662237-a13e-499d-9f2b-ee2e2da9b821",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755897
+  },
+  {
+    "event_id": "evt-25",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "type": "WEBHOOK_EVENT_STAGED",
+      "intentId": "media-1781453755951-53be2b35",
+      "accountId": "17841405822304914",
+      "domain": "webhook:media-publish",
+      "at": 1781453755953,
+      "ms_since_intake": 0,
+      "eventType": "media_publish",
+      "eventId": "MEDIA_002",
+      "occurredAt": 1781453755952
+    },
+    "ts": 1781453755953
+  },
+  {
+    "event_id": "evt-26",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "intent": "WEBHOOK_EVENT_RECEIVED",
+      "intentId": "media-1781453755951-53be2b35",
+      "accountId": "17841405822304914"
+    },
+    "ts": 1781453755953
+  },
+  {
+    "event_id": "evt-27",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "2c81b479-d07f-4737-be65-d79dfcddacbf",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453755954
+  },
+  {
+    "event_id": "evt-28",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "d484807f-4923-43b2-819b-82d92ecc4c0c",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453756006
+  },
+  {
+    "event_id": "evt-29",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "acquisition-projection-worker",
+      "targetDomain": "acquisition",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'acquisition-projection-worker' may not mutate 'acquisition'",
+      "rejectedTraceId": "e060475f-5880-4207-bc63-c19c67b8b092",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453756054
+  },
+  {
+    "event_id": "evt-30",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "56856b92-a3ad-41ae-93db-3898bf52b76b",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453756057
+  },
+  {
+    "event_id": "evt-31",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "type": "WEBHOOK_EVENT_DISCARDED",
+      "intentId": "mentions-1781453756110-9d6638db",
+      "accountId": "17841405822304914",
+      "domain": "webhook:mentions",
+      "at": 1781453756111,
+      "ms_since_intake": 0,
+      "eventType": "mention",
+      "reason": "missing_mention_id",
+      "recommendationCount": 2
+    },
+    "ts": 1781453756111
+  },
+  {
+    "event_id": "evt-32",
+    "kind": "worker",
+    "source": "acquisition",
+    "payload": {
+      "intent": "WEBHOOK_EVENT_DISCARDED",
+      "intentId": "mentions-1781453756110-9d6638db",
+      "accountId": "17841405822304914"
+    },
+    "ts": 1781453756111
+  },
+  {
+    "event_id": "evt-33",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "ff1c28b2-2c5f-41ab-8b02-80e7090ec0ee",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453756112
+  },
+  {
+    "event_id": "evt-34",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "cc835b8b-ab6e-410f-beaf-85bd4ebaedd9",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453756164
+  },
+  {
+    "event_id": "evt-35",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "acquisition-projection-worker",
+      "targetDomain": "acquisition",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'acquisition-projection-worker' may not mutate 'acquisition'",
+      "rejectedTraceId": "c4b904ee-f25f-40be-90fa-ef68052fb211",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453756214
+  },
+  {
+    "event_id": "evt-36",
+    "kind": "governance",
+    "source": "governance",
+    "payload": {
+      "entryType": "divergence",
+      "divergenceCategory": "membrane_authority_violation",
+      "bypassedAuthority": "cadence-accelerator",
+      "targetDomain": "scheduling",
+      "reason": "MEMBRANE_BYPASS: foreign authority 'cadence-accelerator' may not mutate 'scheduling'",
+      "rejectedTraceId": "fe818819-c5a6-4fee-906b-b510a6e39fc1",
+      "rejectedCorrelationId": null,
+      "projectionVersion": "1.0.0",
+      "lineageVersion": "1.0.0"
+    },
+    "ts": 1781453756214
+  },
+  {
+    "event_id": "messaging-1781453755325-40bf532f",
     "kind": "mutation",
     "source": "acquisition",
     "payload": {
       "type": "STATE_TRANSITION",
       "domain": "acquisition",
-      "entityId": "messaging-1781453014150-d772c232",
+      "entityId": "messaging-1781453755325-40bf532f",
       "table": "intent-span"
     },
-    "ts": 1781453014153
+    "ts": 1781453755327
   },
   {
     "event_id": "acquisition-fsm",
@@ -117,54 +597,414 @@
       "entityId": "acquisition-fsm",
       "table": "fsm"
     },
-    "ts": 1781453014154
+    "ts": 1781453755327
   },
   {
-    "event_id": "d0b555e6-4ecf-4d53-b6f8-6954b6eca276",
+    "event_id": "cfda2ca1-1bff-4269-8c48-fb8360b489c1",
     "kind": "mutation",
     "source": "governance",
     "payload": {
       "type": "STATE_TRANSITION",
       "domain": "governance",
-      "entityId": "d0b555e6-4ecf-4d53-b6f8-6954b6eca276",
+      "entityId": "cfda2ca1-1bff-4269-8c48-fb8360b489c1",
       "table": "membrane"
     },
-    "ts": 1781453014155
+    "ts": 1781453755327
   },
   {
-    "event_id": "b52d71a0-68dc-4299-a6aa-21e7f6bb3694",
+    "event_id": "64ecb673-694f-42ba-8280-2a4334a4eba8",
     "kind": "mutation",
     "source": "governance",
     "payload": {
       "type": "STATE_TRANSITION",
       "domain": "governance",
-      "entityId": "b52d71a0-68dc-4299-a6aa-21e7f6bb3694",
+      "entityId": "64ecb673-694f-42ba-8280-2a4334a4eba8",
       "table": "membrane"
     },
-    "ts": 1781453014207
+    "ts": 1781453755378
   },
   {
-    "event_id": "fe6b29f2-28e4-456c-9d9e-9fd8a80d281c",
+    "event_id": "aa504c29-8d06-480e-a9c3-a83aba384ad2",
     "kind": "mutation",
     "source": "governance",
     "payload": {
       "type": "STATE_TRANSITION",
       "domain": "governance",
-      "entityId": "fe6b29f2-28e4-456c-9d9e-9fd8a80d281c",
+      "entityId": "aa504c29-8d06-480e-a9c3-a83aba384ad2",
       "table": "membrane"
     },
-    "ts": 1781453014255
+    "ts": 1781453755427
   },
   {
-    "event_id": "db26f7de-8c6f-4124-8d53-11188ec9730f",
+    "event_id": "b40781a0-5fff-41e2-b545-452d93073d46",
     "kind": "mutation",
     "source": "governance",
     "payload": {
       "type": "STATE_TRANSITION",
       "domain": "governance",
-      "entityId": "db26f7de-8c6f-4124-8d53-11188ec9730f",
+      "entityId": "b40781a0-5fff-41e2-b545-452d93073d46",
       "table": "membrane"
     },
-    "ts": 1781453014257
+    "ts": 1781453755430
+  },
+  {
+    "event_id": "comments-1781453755482-62a9dfff",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "comments-1781453755482-62a9dfff",
+      "table": "intent-span"
+    },
+    "ts": 1781453755483
+  },
+  {
+    "event_id": "acquisition-fsm",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "acquisition-fsm",
+      "table": "fsm"
+    },
+    "ts": 1781453755483
+  },
+  {
+    "event_id": "f5cda9bb-dad6-4a82-af50-97cc0ffc886f",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "f5cda9bb-dad6-4a82-af50-97cc0ffc886f",
+      "table": "membrane"
+    },
+    "ts": 1781453755483
+  },
+  {
+    "event_id": "8bf523d9-7b08-4229-98a7-55e72fabef37",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "8bf523d9-7b08-4229-98a7-55e72fabef37",
+      "table": "membrane"
+    },
+    "ts": 1781453755534
+  },
+  {
+    "event_id": "b94f1e13-1132-4784-8f08-a885677f179d",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "b94f1e13-1132-4784-8f08-a885677f179d",
+      "table": "membrane"
+    },
+    "ts": 1781453755583
+  },
+  {
+    "event_id": "cba12b88-02f4-42fa-980e-033bb672d404",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "cba12b88-02f4-42fa-980e-033bb672d404",
+      "table": "membrane"
+    },
+    "ts": 1781453755584
+  },
+  {
+    "event_id": "mentions-1781453755637-b094732c",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "mentions-1781453755637-b094732c",
+      "table": "intent-span"
+    },
+    "ts": 1781453755641
+  },
+  {
+    "event_id": "acquisition-fsm",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "acquisition-fsm",
+      "table": "fsm"
+    },
+    "ts": 1781453755641
+  },
+  {
+    "event_id": "31dc7b71-021c-459d-afc1-e9aac2623732",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "31dc7b71-021c-459d-afc1-e9aac2623732",
+      "table": "membrane"
+    },
+    "ts": 1781453755641
+  },
+  {
+    "event_id": "837319df-9807-4118-9fd0-d9e3c6020a00",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "837319df-9807-4118-9fd0-d9e3c6020a00",
+      "table": "membrane"
+    },
+    "ts": 1781453755694
+  },
+  {
+    "event_id": "b0d96bdb-a403-46cb-811a-ccd1b270742e",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "b0d96bdb-a403-46cb-811a-ccd1b270742e",
+      "table": "membrane"
+    },
+    "ts": 1781453755741
+  },
+  {
+    "event_id": "655a51cc-5edb-4fbd-9b57-b5ccfed92469",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "655a51cc-5edb-4fbd-9b57-b5ccfed92469",
+      "table": "membrane"
+    },
+    "ts": 1781453755744
+  },
+  {
+    "event_id": "story_mentions-1781453755796-0637f21e",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "story_mentions-1781453755796-0637f21e",
+      "table": "intent-span"
+    },
+    "ts": 1781453755797
+  },
+  {
+    "event_id": "acquisition-fsm",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "acquisition-fsm",
+      "table": "fsm"
+    },
+    "ts": 1781453755797
+  },
+  {
+    "event_id": "d41ebd79-4d49-4d08-b64f-828cf9fdde33",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "d41ebd79-4d49-4d08-b64f-828cf9fdde33",
+      "table": "membrane"
+    },
+    "ts": 1781453755797
+  },
+  {
+    "event_id": "ee441d9b-3d59-42fe-8153-87bc7d671704",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "ee441d9b-3d59-42fe-8153-87bc7d671704",
+      "table": "membrane"
+    },
+    "ts": 1781453755848
+  },
+  {
+    "event_id": "c2f50ec3-00c0-4bb9-aae2-22042273a86a",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "c2f50ec3-00c0-4bb9-aae2-22042273a86a",
+      "table": "membrane"
+    },
+    "ts": 1781453755897
+  },
+  {
+    "event_id": "bec164b4-7fa7-4d82-a86f-92fd1b3746ac",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "bec164b4-7fa7-4d82-a86f-92fd1b3746ac",
+      "table": "membrane"
+    },
+    "ts": 1781453755897
+  },
+  {
+    "event_id": "media-1781453755951-53be2b35",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "media-1781453755951-53be2b35",
+      "table": "intent-span"
+    },
+    "ts": 1781453755953
+  },
+  {
+    "event_id": "acquisition-fsm",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "acquisition-fsm",
+      "table": "fsm"
+    },
+    "ts": 1781453755953
+  },
+  {
+    "event_id": "05195d32-6be9-4eb7-973f-953a9a45bb23",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "05195d32-6be9-4eb7-973f-953a9a45bb23",
+      "table": "membrane"
+    },
+    "ts": 1781453755954
+  },
+  {
+    "event_id": "8228aa22-baef-497d-b5b0-f7efef66e2fd",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "8228aa22-baef-497d-b5b0-f7efef66e2fd",
+      "table": "membrane"
+    },
+    "ts": 1781453756006
+  },
+  {
+    "event_id": "24b8778a-f219-4941-b638-2f423b53546a",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "24b8778a-f219-4941-b638-2f423b53546a",
+      "table": "membrane"
+    },
+    "ts": 1781453756054
+  },
+  {
+    "event_id": "19269d69-7eeb-4a0f-8bd3-64661df31b75",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "19269d69-7eeb-4a0f-8bd3-64661df31b75",
+      "table": "membrane"
+    },
+    "ts": 1781453756057
+  },
+  {
+    "event_id": "mentions-1781453756110-9d6638db",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "mentions-1781453756110-9d6638db",
+      "table": "intent-span"
+    },
+    "ts": 1781453756111
+  },
+  {
+    "event_id": "acquisition-fsm",
+    "kind": "mutation",
+    "source": "acquisition",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "acquisition",
+      "entityId": "acquisition-fsm",
+      "table": "fsm"
+    },
+    "ts": 1781453756111
+  },
+  {
+    "event_id": "1f1901bd-6fc8-41d9-a86e-6aff96f51197",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "1f1901bd-6fc8-41d9-a86e-6aff96f51197",
+      "table": "membrane"
+    },
+    "ts": 1781453756112
+  },
+  {
+    "event_id": "0e980e6a-cb2c-48b9-9d9d-e1dbc01b1e2b",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "0e980e6a-cb2c-48b9-9d9d-e1dbc01b1e2b",
+      "table": "membrane"
+    },
+    "ts": 1781453756164
+  },
+  {
+    "event_id": "32bb4e1a-f751-45cf-b0db-fc78d5a8e862",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "32bb4e1a-f751-45cf-b0db-fc78d5a8e862",
+      "table": "membrane"
+    },
+    "ts": 1781453756214
+  },
+  {
+    "event_id": "826d373d-b4db-439c-a0a9-93357d36b516",
+    "kind": "mutation",
+    "source": "governance",
+    "payload": {
+      "type": "STATE_TRANSITION",
+      "domain": "governance",
+      "entityId": "826d373d-b4db-439c-a0a9-93357d36b516",
+      "table": "membrane"
+    },
+    "ts": 1781453756214
   }
 ]

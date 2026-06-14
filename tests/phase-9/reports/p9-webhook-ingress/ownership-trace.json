@@ -12,7 +12,7 @@
     },
     "fsm": {
       "owner": "acquisition",
-      "ts": 1781453014153,
+      "ts": 1781453755327,
       "from": null,
       "to": "STATE_TRANSITION"
     },
@@ -41,7 +41,7 @@
     },
     "fsm": {
       "owner": "acquisition",
-      "ts": 1781453014154,
+      "ts": 1781453755327,
       "from": null,
       "to": "STATE_TRANSITION"
     },
@@ -70,7 +70,7 @@
     },
     "fsm": {
       "owner": "governance",
-      "ts": 1781453014155,
+      "ts": 1781453755327,
       "from": null,
       "to": "STATE_TRANSITION"
     },
@@ -99,7 +99,7 @@
     },
     "fsm": {
       "owner": "governance",
-      "ts": 1781453014207,
+      "ts": 1781453755378,
       "from": null,
       "to": "STATE_TRANSITION"
     },
@@ -128,7 +128,7 @@
     },
     "fsm": {
       "owner": "governance",
-      "ts": 1781453014255,
+      "ts": 1781453755427,
       "from": null,
       "to": "STATE_TRANSITION"
     },
@@ -157,7 +157,7 @@
     },
     "fsm": {
       "owner": "governance",
-      "ts": 1781453014257,
+      "ts": 1781453755430,
       "from": null,
       "to": "STATE_TRANSITION"
     },
@@ -173,8 +173,878 @@
       "table": null
     }
   },
-  "messaging-1781453014150-d772c232": {
-    "event_id": "messaging-1781453014150-d772c232",
+  "evt-7": {
+    "event_id": "evt-7",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453755483,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-8": {
+    "event_id": "evt-8",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453755483,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-9": {
+    "event_id": "evt-9",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755483,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-10": {
+    "event_id": "evt-10",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755534,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-11": {
+    "event_id": "evt-11",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755583,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-12": {
+    "event_id": "evt-12",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755584,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-13": {
+    "event_id": "evt-13",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453755641,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-14": {
+    "event_id": "evt-14",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453755641,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-15": {
+    "event_id": "evt-15",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755641,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-16": {
+    "event_id": "evt-16",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755694,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-17": {
+    "event_id": "evt-17",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755741,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-18": {
+    "event_id": "evt-18",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755744,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-19": {
+    "event_id": "evt-19",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453755797,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-20": {
+    "event_id": "evt-20",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453755797,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-21": {
+    "event_id": "evt-21",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755797,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-22": {
+    "event_id": "evt-22",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755848,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-23": {
+    "event_id": "evt-23",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755897,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-24": {
+    "event_id": "evt-24",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755897,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-25": {
+    "event_id": "evt-25",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453755953,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-26": {
+    "event_id": "evt-26",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453755953,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-27": {
+    "event_id": "evt-27",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453755954,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-28": {
+    "event_id": "evt-28",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453756006,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-29": {
+    "event_id": "evt-29",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453756054,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-30": {
+    "event_id": "evt-30",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453756057,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-31": {
+    "event_id": "evt-31",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453756111,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-32": {
+    "event_id": "evt-32",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "acquisition",
+      "ts": 1781453756111,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-33": {
+    "event_id": "evt-33",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453756112,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-34": {
+    "event_id": "evt-34",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453756164,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-35": {
+    "event_id": "evt-35",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453756214,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "evt-36": {
+    "event_id": "evt-36",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": "governance",
+      "ts": 1781453756214,
+      "from": null,
+      "to": "STATE_TRANSITION"
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": null,
+      "ts": null,
+      "kernel": null,
+      "table": null
+    }
+  },
+  "messaging-1781453755325-40bf532f": {
+    "event_id": "messaging-1781453755325-40bf532f",
     "ingress": {
       "owner": null,
       "ts": null
@@ -197,7 +1067,7 @@
     },
     "mutation": {
       "owner": "mutation-substrate",
-      "ts": 1781453014153,
+      "ts": 1781453755327,
       "kernel": "acquisition",
       "table": "intent-span"
     }
@@ -226,13 +1096,13 @@
     },
     "mutation": {
       "owner": "mutation-substrate",
-      "ts": 1781453014154,
+      "ts": 1781453756111,
       "kernel": "acquisition",
       "table": "fsm"
     }
   },
-  "d0b555e6-4ecf-4d53-b6f8-6954b6eca276": {
-    "event_id": "d0b555e6-4ecf-4d53-b6f8-6954b6eca276",
+  "cfda2ca1-1bff-4269-8c48-fb8360b489c1": {
+    "event_id": "cfda2ca1-1bff-4269-8c48-fb8360b489c1",
     "ingress": {
       "owner": null,
       "ts": null
@@ -255,13 +1125,13 @@
     },
     "mutation": {
       "owner": "mutation-substrate",
-      "ts": 1781453014155,
+      "ts": 1781453755327,
       "kernel": "governance",
       "table": "membrane"
     }
   },
-  "b52d71a0-68dc-4299-a6aa-21e7f6bb3694": {
-    "event_id": "b52d71a0-68dc-4299-a6aa-21e7f6bb3694",
+  "64ecb673-694f-42ba-8280-2a4334a4eba8": {
+    "event_id": "64ecb673-694f-42ba-8280-2a4334a4eba8",
     "ingress": {
       "owner": null,
       "ts": null
@@ -284,13 +1154,13 @@
     },
     "mutation": {
       "owner": "mutation-substrate",
-      "ts": 1781453014207,
+      "ts": 1781453755378,
       "kernel": "governance",
       "table": "membrane"
     }
   },
-  "fe6b29f2-28e4-456c-9d9e-9fd8a80d281c": {
-    "event_id": "fe6b29f2-28e4-456c-9d9e-9fd8a80d281c",
+  "aa504c29-8d06-480e-a9c3-a83aba384ad2": {
+    "event_id": "aa504c29-8d06-480e-a9c3-a83aba384ad2",
     "ingress": {
       "owner": null,
       "ts": null
@@ -313,13 +1183,13 @@
     },
     "mutation": {
       "owner": "mutation-substrate",
-      "ts": 1781453014255,
+      "ts": 1781453755427,
       "kernel": "governance",
       "table": "membrane"
     }
   },
-  "db26f7de-8c6f-4124-8d53-11188ec9730f": {
-    "event_id": "db26f7de-8c6f-4124-8d53-11188ec9730f",
+  "b40781a0-5fff-41e2-b545-452d93073d46": {
+    "event_id": "b40781a0-5fff-41e2-b545-452d93073d46",
     "ingress": {
       "owner": null,
       "ts": null
@@ -342,7 +1212,732 @@
     },
     "mutation": {
       "owner": "mutation-substrate",
-      "ts": 1781453014257,
+      "ts": 1781453755430,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "comments-1781453755482-62a9dfff": {
+    "event_id": "comments-1781453755482-62a9dfff",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755483,
+      "kernel": "acquisition",
+      "table": "intent-span"
+    }
+  },
+  "f5cda9bb-dad6-4a82-af50-97cc0ffc886f": {
+    "event_id": "f5cda9bb-dad6-4a82-af50-97cc0ffc886f",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755483,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "8bf523d9-7b08-4229-98a7-55e72fabef37": {
+    "event_id": "8bf523d9-7b08-4229-98a7-55e72fabef37",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755534,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "b94f1e13-1132-4784-8f08-a885677f179d": {
+    "event_id": "b94f1e13-1132-4784-8f08-a885677f179d",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755583,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "cba12b88-02f4-42fa-980e-033bb672d404": {
+    "event_id": "cba12b88-02f4-42fa-980e-033bb672d404",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755584,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "mentions-1781453755637-b094732c": {
+    "event_id": "mentions-1781453755637-b094732c",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755641,
+      "kernel": "acquisition",
+      "table": "intent-span"
+    }
+  },
+  "31dc7b71-021c-459d-afc1-e9aac2623732": {
+    "event_id": "31dc7b71-021c-459d-afc1-e9aac2623732",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755641,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "837319df-9807-4118-9fd0-d9e3c6020a00": {
+    "event_id": "837319df-9807-4118-9fd0-d9e3c6020a00",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755694,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "b0d96bdb-a403-46cb-811a-ccd1b270742e": {
+    "event_id": "b0d96bdb-a403-46cb-811a-ccd1b270742e",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755741,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "655a51cc-5edb-4fbd-9b57-b5ccfed92469": {
+    "event_id": "655a51cc-5edb-4fbd-9b57-b5ccfed92469",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755744,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "story_mentions-1781453755796-0637f21e": {
+    "event_id": "story_mentions-1781453755796-0637f21e",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755797,
+      "kernel": "acquisition",
+      "table": "intent-span"
+    }
+  },
+  "d41ebd79-4d49-4d08-b64f-828cf9fdde33": {
+    "event_id": "d41ebd79-4d49-4d08-b64f-828cf9fdde33",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755797,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "ee441d9b-3d59-42fe-8153-87bc7d671704": {
+    "event_id": "ee441d9b-3d59-42fe-8153-87bc7d671704",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755848,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "c2f50ec3-00c0-4bb9-aae2-22042273a86a": {
+    "event_id": "c2f50ec3-00c0-4bb9-aae2-22042273a86a",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755897,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "bec164b4-7fa7-4d82-a86f-92fd1b3746ac": {
+    "event_id": "bec164b4-7fa7-4d82-a86f-92fd1b3746ac",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755897,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "media-1781453755951-53be2b35": {
+    "event_id": "media-1781453755951-53be2b35",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755953,
+      "kernel": "acquisition",
+      "table": "intent-span"
+    }
+  },
+  "05195d32-6be9-4eb7-973f-953a9a45bb23": {
+    "event_id": "05195d32-6be9-4eb7-973f-953a9a45bb23",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453755954,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "8228aa22-baef-497d-b5b0-f7efef66e2fd": {
+    "event_id": "8228aa22-baef-497d-b5b0-f7efef66e2fd",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453756006,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "24b8778a-f219-4941-b638-2f423b53546a": {
+    "event_id": "24b8778a-f219-4941-b638-2f423b53546a",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453756054,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "19269d69-7eeb-4a0f-8bd3-64661df31b75": {
+    "event_id": "19269d69-7eeb-4a0f-8bd3-64661df31b75",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453756057,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "mentions-1781453756110-9d6638db": {
+    "event_id": "mentions-1781453756110-9d6638db",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453756111,
+      "kernel": "acquisition",
+      "table": "intent-span"
+    }
+  },
+  "1f1901bd-6fc8-41d9-a86e-6aff96f51197": {
+    "event_id": "1f1901bd-6fc8-41d9-a86e-6aff96f51197",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453756112,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "0e980e6a-cb2c-48b9-9d9d-e1dbc01b1e2b": {
+    "event_id": "0e980e6a-cb2c-48b9-9d9d-e1dbc01b1e2b",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453756164,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "32bb4e1a-f751-45cf-b0db-fc78d5a8e862": {
+    "event_id": "32bb4e1a-f751-45cf-b0db-fc78d5a8e862",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453756214,
+      "kernel": "governance",
+      "table": "membrane"
+    }
+  },
+  "826d373d-b4db-439c-a0a9-93357d36b516": {
+    "event_id": "826d373d-b4db-439c-a0a9-93357d36b516",
+    "ingress": {
+      "owner": null,
+      "ts": null
+    },
+    "governance": {
+      "owner": null,
+      "ts": null,
+      "actor": null
+    },
+    "fsm": {
+      "owner": null,
+      "ts": null,
+      "from": null,
+      "to": null
+    },
+    "worker": {
+      "owner": null,
+      "ts": null,
+      "worker": null
+    },
+    "mutation": {
+      "owner": "mutation-substrate",
+      "ts": 1781453756214,
       "kernel": "governance",
       "table": "membrane"
     }
