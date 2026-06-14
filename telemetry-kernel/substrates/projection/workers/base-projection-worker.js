@@ -467,6 +467,11 @@ class BaseProjectionWorker {
       this._unsubscribeOnWrite = observability.onWrite((transition) => {
         // Only react to entries landing in this worker's domain
         if (transition.domain !== domain) return;
+        // Never self-trigger on our own PROJECTION_INTENT emissions.
+        // Defense-in-depth: the emission domain is now 'projection' (not the
+        // operational domain), so this guard is secondary — but it prevents
+        // re-triggering if emission domain ever changes back.
+        if (transition.entity === 'projection_intent') return;
         // Event-driven trigger: fire within 100ms, not the full pollIntervalMs.
         // This eliminates the ~30s latency between a transition being written
         // and the projection worker reading it. The poll interval only applies

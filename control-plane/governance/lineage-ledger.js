@@ -99,6 +99,7 @@ const REDIS_KEY_TRANSITION_LOG = 'lineage:transitionLog:entries';
 // Namespace exists here as a partition/filter key — not a write target.
 // Writers use domain to select their bounded slice, then write to the canonical ledger.
 const TRANSITION_LOG_DOMAIN_KEYS = {
+  projection: 'lineage:transitionLog:domain:projection',
   runtime: 'lineage:transitionLog:domain:runtime',
   integrity: 'lineage:transitionLog:domain:integrity',
   authority: 'lineage:transitionLog:domain:authority',

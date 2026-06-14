@@ -662,11 +662,7 @@ let _lastCycleStartedAt = null;
 let _lastCycleFinishedAt = null;
 
 let _intentCursors = {
-  runtime: 0,
-  integrity: 0,
-  authority: 0,
-  health: 0,
-  systemic: 0,
+  projection: 0,
 };
 
 // ── Cycle counters
@@ -1407,11 +1403,7 @@ function getIngressRetryState() {
 
 function _emptyIntentCursors() {
   return {
-    runtime: 0,
-    integrity: 0,
-    authority: 0,
-    health: 0,
-    systemic: 0,
+    projection: 0,
   };
 }
 
