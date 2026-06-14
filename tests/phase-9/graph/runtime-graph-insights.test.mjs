@@ -24,7 +24,7 @@ describe('graph/runtime-graph-insights — Tier 2', () => {
   it('insights worker executes against the graph and mutates state', async () => {
     const correlationId = `p9-insights-${Date.now()}`;
     harness.injectEvent({
-      type: 'INSIGHTS_FETCH_REQUESTED',
+      type: 'INSIGHTS_POLL_FAILURE',
       source: 'graph/insights',
       payload: { mediaId: 'MEDIA_001' },
       correlationId,

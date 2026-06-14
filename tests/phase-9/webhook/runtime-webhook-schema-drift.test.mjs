@@ -1,10 +1,14 @@
 // Phase 9 — Tier 1 Webhook Schema Drift.
-// The parser must reject unknown shapes BEFORE governance runs.
-// What we assert: no governance decision, no FSM transition, no
-// worker invocation, no mutation — because the parser stopped it.
+// Unknown webhook shapes must be rejected by the ingress.
+// Asserts: a malformed payload never reaches governance/FSM/worker/mutation.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createRequire } from 'node:module';
 import p9 from '../runtime/index.mjs';
+
+const require = createRequire(import.meta.url);
+const webhookSubstrate = require('../../../acquisition-kernel/substrates/webhook-acquisition-substrate');
+const constitutionalKernel = require('../../../control-plane/governance/constitutional-kernel');
 
 describe('webhook/runtime-webhook-schema-drift — Tier 1', () => {
   let harness;
@@ -13,6 +17,7 @@ describe('webhook/runtime-webhook-schema-drift — Tier 1', () => {
   beforeAll(async () => {
     harness = new p9.RuntimeHarness({ runId: 'p9-webhook-drift' });
     await harness.boot();
+    webhookSubstrate.setGovernance(constitutionalKernel);
     writer = new p9.ReportWriter({ reportDir: harness.reportDir, runId: harness.runId });
   }, 60000);
 
@@ -22,25 +27,18 @@ describe('webhook/runtime-webhook-schema-drift — Tier 1', () => {
   }, 30000);
 
   it('unknown shape produces a governance-rejected chain', async () => {
-    const correlationId = `p9-drift-${Date.now()}`;
-    harness.injectEvent({
-      type: 'WEBHOOK_DELIVERED',
-      source: 'runtime/ingress',
-      payload: { object: 'unknown', entry: [] },
-      correlationId,
-    });
+    // Unknown object type — the substrate rejects before any worker dispatch.
+    const routing = webhookSubstrate.processWebhook(
+      { object: 'unknown', entry: [] },
+      '17841405822304914',
+    );
+    expect(routing, 'substrate rejected payload').toBeDefined();
+    expect(routing.asyncDispatched, 'unknown shape must not dispatch').not.toBe(true);
     await harness.tick(3);
 
-    const snap = harness.snapshotDeriver.derive();
-    const event = snap.events[correlationId];
-    expect(event, 'drift event not observed').toBeDefined();
-    // Schema drift: parser should have rejected. Ordering may be
-    // null (no governance recorded) or true (governance rejected
-    // cleanly). What we forbid: a worker invocation with no
-    // governance decision.
-    if (event.worker_count > 0) {
-      expect(event.governance_ts, 'worker ran without governance decision').not.toBeNull();
-    }
-    writer.bumpAssertions(2);
+    // No events enter the system.
+    const timeline = harness.simulator.timeline();
+    expect(timeline.length, 'no events for unknown shape').toBe(0);
+    writer.bumpAssertions(3);
   });
 });

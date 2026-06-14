@@ -668,8 +668,8 @@ const DOMAIN_EVENT_MAP = {
   CAPABILITY_BOOTSTRAP: 'graph-capability',
   CAPABILITY_CADENCE_TICK: 'graph-capability',
   API_RATE_LIMIT_CHECK: 'graph-capability',
-  CAPABILITY_CHECK: 'graph-capability',  // Publishing FSM → GC kernel capability check (2026-06-11)  // Phase C: routed to graph-capability FSM by constitutional-kernel's cadence loop
-  IMMEDIATE_TOKEN_REFRESH: 'graph-capability',  // Phase 8: CK-ordered ungated token recovery
+  CAPABILITY_CHECK: 'graph-capability',
+  IMMEDIATE_TOKEN_REFRESH: 'graph-capability',
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',

@@ -1,16 +1,28 @@
-// Phase 9 — Drift: ownership
-// no foreign-table mutations
+// Phase 9 — Drift: ownership-drift
+// Drives processWebhook() with a real fixture and asserts zero drift findings.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createRequire } from 'node:module';
 import p9 from '../runtime/index.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = path.join(__dirname, '..', 'fixtures', 'webhooks', 'canonical', 'message-created.json');
+
+const require = createRequire(import.meta.url);
+const webhookSubstrate = require('../../../acquisition-kernel/substrates/webhook-acquisition-substrate');
+const constitutionalKernel = require('../../../control-plane/governance/constitutional-kernel');
 
 describe('drift/ownership-drift', () => {
   let harness;
   let writer;
 
   beforeAll(async () => {
-    harness = new p9.RuntimeHarness({ runId: 'p9-drift-ownership' });
+    harness = new p9.RuntimeHarness({ runId: 'p9-drift-ownership-drift' });
     await harness.boot();
+    webhookSubstrate.setGovernance(constitutionalKernel);
     writer = new p9.ReportWriter({ reportDir: harness.reportDir, runId: harness.runId });
   }, 60000);
 
@@ -19,20 +31,18 @@ describe('drift/ownership-drift', () => {
     if (harness) await harness.shutdown();
   }, 30000);
 
-  it('no ownership drift detected in a clean run', async () => {
-    // Run a small chain through the runtime.
-    const correlationId = `p9-drift-ownership-${Date.now()}`;
-    harness.injectEvent({
-      type: 'WEBHOOK_DELIVERED',
-      source: 'runtime/ingress',
-      payload: { fixture: 'message-created' },
-      correlationId,
-    });
+  it('no drift detected in a clean run', async () => {
+    const body = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));
+    const accountId = body.entry?.[0]?.id || '17841405822304914';
+
+    const routing = webhookSubstrate.processWebhook(body, accountId);
+    expect(routing.asyncDispatched, 'substrate must dispatch').toBe(true);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
     await harness.tick(3);
 
     const findings = harness.driftDetector.snapshot();
-    const relevant = findings.filter((d) => d.event_id === correlationId);
-    expect(relevant, JSON.stringify(relevant)).toEqual([]);
-    writer.bumpAssertions(1);
+    expect(findings, JSON.stringify(findings)).toEqual([]);
+    writer.bumpAssertions(2);
   });
 });

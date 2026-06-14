@@ -236,33 +236,47 @@ class Phase7RuntimeSimulator {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Inject an event into the runtime via the observability plane.
-   * Bypasses no authority — the event is governed normally.
+   * Inject an event into the runtime through the constitutional path.
+   * Routes through CK.dispatch() → DOMAIN_EVENT_MAP → domain FSM →
+   * worker → mutation. This is the constitutional ingress seam.
+   *
+   * Events carry a synthetic lineageId ('test:phase9:...') so the
+   * canonical source gate passes. The event type MUST be in CK's
+   * DOMAIN_EVENT_MAP for routing to work; unrecognised types return
+   * { allowed: false } from CK.dispatch() and are recorded but
+   * never reach a domain FSM.
    */
-  injectEvent({ type, payload = {}, source = 'phase7-test', correlationId = null, ...rest }) {
+  injectEvent({ type, payload = {}, source = 'phase9-test', correlationId = null, ...rest }) {
     this._assertionsRun++;
     try {
-      const observability = require('../../../control-plane/observability/index.js');
-      observability.dispatch
-        ? observability.dispatch({ type, payload, source, correlationId, ...rest })
-        : observability.transition
-        ? observability.transition({
-            domain: (payload && payload.domain) || 'phase7',
-            entity: (payload && payload.entity) || 'injected',
-            entityId: (payload && payload.entityId) || correlationId || `inj-${Date.now()}`,
-            previousState: null,
-            nextState: type,
-            authority: source,
-            raw: payload,
-          })
-        : null;
+      const CK = require('../../../control-plane/governance/constitutional-kernel');
+      const lineageId = correlationId || `test:phase9:${type}:${Date.now()}`;
+
+      // Route through the constitutional kernel — this exercises the
+      // full path: CK canonical source gate → DOMAIN_EVENT_MAP →
+      // domain FSM guard + buildActions → worker → mutation.
+      // CK.dispatch() is synchronous; it returns immediately with
+      // { allowed, from, to, lineageId, actionsEmitted, reason }.
+      const result = CK.dispatch({
+        type,
+        payload,
+        source,
+        correlationId,
+        lineageId,
+        // lineageDomain intentionally omitted — test harness is not a
+        // registered domain citizen. Omitting skips the cross-domain
+        // veto check while lineageId still satisfies the canonical
+        // source gate.
+        ...rest,
+      });
 
       this._eventRecorder.record({
         type,
         source,
-        destination: 'observability',
+        destination: 'constitutional-kernel',
         payload,
         correlationId,
+        ckResult: result,
       });
     } catch (e) {
       this._assertionsFailed++;

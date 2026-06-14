@@ -20,7 +20,7 @@ describe('graph/runtime-graph-reconciliation — Tier 2', () => {
   it('reconciliation worker executes and the chain is constitutional', async () => {
     const correlationId = `p9-recon-${Date.now()}`;
     harness.injectEvent({
-      type: 'RECONCILIATION_REQUESTED',
+      type: 'RECONCILIATION_TICK',
       source: 'graph/reconciliation',
       payload: { scope: 'all' },
       correlationId,

@@ -20,7 +20,7 @@ describe('graph/runtime-graph-capability — Tier 2', () => {
   it('capability worker executes and the chain is constitutional', async () => {
     const correlationId = `p9-capability-${Date.now()}`;
     harness.injectEvent({
-      type: 'CAPABILITY_FETCH_REQUESTED',
+      type: 'CAPABILITY_EVALUATE',
       source: 'graph/capability',
       payload: { accountId: 'acc-1' },
       correlationId,

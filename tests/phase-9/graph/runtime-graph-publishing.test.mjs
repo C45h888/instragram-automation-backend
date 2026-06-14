@@ -20,7 +20,7 @@ describe('graph/runtime-graph-publishing — Tier 2', () => {
   it('publishing worker executes and the chain is constitutional', async () => {
     const correlationId = `p9-publishing-${Date.now()}`;
     harness.injectEvent({
-      type: 'PUBLISH_REQUESTED',
+      type: 'PUBLISHING_DATA_AVAILABLE',
       source: 'graph/publishing',
       payload: { mediaId: 'MEDIA_002' },
       correlationId,

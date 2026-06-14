@@ -20,7 +20,7 @@ describe('graph/runtime-graph-recovery — Tier 2', () => {
   it('recovery worker executes and the chain is constitutional', async () => {
     const correlationId = `p9-recovery-${Date.now()}`;
     harness.injectEvent({
-      type: 'RECOVERY_REQUESTED',
+      type: 'CIRCUIT_BREAKER_CHECK',
       source: 'graph/recovery',
       payload: { kind: 'token-refresh' },
       correlationId,

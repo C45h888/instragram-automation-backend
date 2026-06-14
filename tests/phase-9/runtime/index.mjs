@@ -4,7 +4,7 @@
 //   import p9 from '../runtime/index.mjs';
 //   const harness = new p9.RuntimeHarness({ runId: 'my-test' });
 //   await harness.boot();
-//   harness.injectEvent({ type: 'WEBHOOK_DELIVERED', payload: body, correlationId: 'msg-1' });
+//   harness.injectEvent({ type: 'WEBHOOK_EVENT_RECEIVED', payload: body, correlationId: 'msg-1' });
 //   await harness.tick(3);
 //   const snap = harness.recorder.snapshot();
 
