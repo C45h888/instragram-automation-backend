@@ -2,3 +2,5 @@ node_modules
 .env
 .factory
 .hermes 
+tests/phase-8/reports
+tests/phase-9/reports
