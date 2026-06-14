@@ -55,7 +55,7 @@ describe('integration/phase-9-multi-tick-survival', () => {
       harness.injectEvent({
         type: CANONICAL_EVENT[w],
         source: `graph/${w}`,
-        payload: { tick: t },
+        payload: { accountId: 'test-acc-001', intentId: `tick-${t}`, domain: 'cross', error: 'simulated', tick: t },
         correlationId: `p9-mt-gr-${t}`,
       });
       await harness.tick(1);

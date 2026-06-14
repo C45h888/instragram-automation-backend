@@ -55,7 +55,7 @@ describe('integration/phase-9-scenario-message-thread', () => {
     harness.injectEvent({
       type: 'INSIGHTS_POLL_FAILURE',
       source: 'graph/insights',
-      payload: { scenario: 'message-thread', stage: 'engagement' },
+      payload: { accountId: 'test-acc-001', intentId: 'int-${Date.now()}', domain: 'test', error: 'simulated' },
       correlationId: `${corr}-ins`,
     });
     harness.injectEvent({

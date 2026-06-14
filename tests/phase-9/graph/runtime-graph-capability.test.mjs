@@ -23,7 +23,7 @@ describe('graph/runtime-graph-capability — Tier 2', () => {
       type: 'CAPABILITY_EVALUATE',
       source: 'graph/capability',
       payload: { accountId: 'acc-1' },
-      correlationId,
+      payload: { businessAccountId: 'test-acc-001' }, correlationId,
     });
     await harness.tick(3);
 

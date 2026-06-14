@@ -63,7 +63,7 @@ describe('integration/phase-9-runtime-composition', () => {
       harness.injectEvent({
         type: CANONICAL_EVENT[w],
         source: `graph/${w}`,
-        payload: {},
+        payload: { accountId: 'test-acc-001', intentId: 'int-${Date.now()}', domain: 'test', error: 'simulated' },
         correlationId,
       });
     }

@@ -57,7 +57,7 @@ describe('integration/phase-9-long-running-integrity', () => {
         harness.injectEvent({
           type: CANONICAL_EVENT[w],
           source: `graph/${w}`,
-          payload: { tick: t + i },
+          payload: { accountId: 'test-acc-001', intentId: `tick-${t + i}`, domain: 'cross', error: 'simulated', tick: t + i },
           correlationId: `p9-int-gr-${t + i}`,
         });
       }

@@ -26,7 +26,7 @@ describe('graph/runtime-graph-insights — Tier 2', () => {
     harness.injectEvent({
       type: 'INSIGHTS_POLL_FAILURE',
       source: 'graph/insights',
-      payload: { mediaId: 'MEDIA_001' },
+      payload: { accountId: 'test-acc-001', intentId: 'test-intent-001', domain: 'test', error: 'simulated_poll_failure' },
       correlationId,
     });
     await harness.tick(3);

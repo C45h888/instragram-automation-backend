@@ -23,7 +23,7 @@ describe('graph/runtime-graph-recovery — Tier 2', () => {
       type: 'CIRCUIT_BREAKER_CHECK',
       source: 'graph/recovery',
       payload: { kind: 'token-refresh' },
-      correlationId,
+      payload: { accountId: 'test-acc-001', reason: 'test_recovery' }, correlationId,
     });
     await harness.tick(3);
 
