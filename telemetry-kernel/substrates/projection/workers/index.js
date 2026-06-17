@@ -28,7 +28,7 @@ const workers = {
   acquisition: new AcquisitionProjectionWorker(),
 };
 
-const workerRecorder = new WorkerRecorderWorker();
+const workerRecorder = WorkerRecorderWorker;
 
 async function startAll(pollIntervalMs) {
   const order = ['systemic', 'health', 'integrity', 'authority', 'runtime', 'reconciliation', 'capability', 'persistTelemetry', 'scheduling', 'dedup', 'publishing', 'acquisition'];
