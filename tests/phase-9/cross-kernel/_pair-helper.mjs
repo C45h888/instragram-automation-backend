@@ -66,6 +66,8 @@ const CROSS_KERNEL_EVENT = {
   // capability→recovery: no engagement FSM — use capability check as proxy
   'capability→recovery':    { type: 'CAPABILITY_CHECK',
     payload: { businessAccountId: 'test-acc-001' }},
+  'capability→publishing':  { type: 'DB_WRITE_REQUESTED',
+    payload: { domain: 'publishing', accountId: 'test-acc-001', table: 'test', operation: 'insert', rows: [] }},
   'capability→insights':    { type: 'CAPABILITY_EVALUATE',
     payload: { businessAccountId: 'test-acc-001' }},
 

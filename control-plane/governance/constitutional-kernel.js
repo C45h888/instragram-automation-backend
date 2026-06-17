@@ -1657,7 +1657,33 @@ function dispatch(event) {
         const prevCtx = _currentWorkerContext;
         _currentWorkerContext = { fsmName: domainName, workerName };
         try {
-          return await worker.execute(params);
+          const _result = await worker.execute(params);
+          // Emit WORKER_EXECUTED — records every FSM-invoked worker into
+          // the observability plane. The worker-recorder-worker consumes
+          // these entries and writes to lineage:worker:entries so the
+          // snapshot deriver can count real worker invocations.
+          try {
+            const obs = _getObservabilityTransition();
+            if (obs) {
+              obs.transition({
+                domain: domainName,
+                entity: 'worker_execution',
+                entityId: `${domainName}:${workerName}`,
+                previousState: null,
+                nextState: 'WORKER_EXECUTED',
+                authority: 'constitutional-kernel',
+                raw: {
+                  workerName,
+                  domain: domainName,
+                  accountId: params?.accountId || null,
+                  intentId: params?.intentId || null,
+                  outcome: _result?.status || 'completed',
+                  invokedAt: Date.now(),
+                },
+              });
+            }
+          } catch (_) { /* worker emission is non-critical */ }
+          return _result;
         } finally {
           _currentWorkerContext = prevCtx;
         }

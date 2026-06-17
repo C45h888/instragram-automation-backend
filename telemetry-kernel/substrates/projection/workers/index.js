@@ -11,6 +11,7 @@ const SchedulingProjectionWorker = require('./scheduling-projection-worker');
 const DedupProjectionWorker = require('./dedup-projection-worker');
 const PublishingProjectionWorker = require('./publishing-projection-worker');
 const AcquisitionProjectionWorker = require('./acquisition-projection-worker');
+const WorkerRecorderWorker = require('./worker-recorder-worker');
 
 const workers = {
   runtime: new RuntimeProjectionWorker(),
@@ -27,16 +28,20 @@ const workers = {
   acquisition: new AcquisitionProjectionWorker(),
 };
 
+const workerRecorder = new WorkerRecorderWorker();
+
 async function startAll(pollIntervalMs) {
   const order = ['systemic', 'health', 'integrity', 'authority', 'runtime', 'reconciliation', 'capability', 'persistTelemetry', 'scheduling', 'dedup', 'publishing', 'acquisition'];
   for (const key of order) { await workers[key].start(pollIntervalMs); }
-  console.log('[telemetry-kernel/projection-workers] All 12 projection workers started');
+  await workerRecorder.start();
+  console.log('[telemetry-kernel/projection-workers] All 12 projection workers + worker-recorder started');
 }
 
 async function stopAll() {
   const order = ['acquisition', 'publishing', 'dedup', 'scheduling', 'persistTelemetry', 'capability', 'reconciliation', 'runtime', 'authority', 'integrity', 'health', 'systemic'];
   for (const key of order) { await workers[key].stop(); }
-  console.log('[telemetry-kernel/projection-workers] All 12 projection workers stopped');
+  await workerRecorder.stop();
+  console.log('[telemetry-kernel/projection-workers] All 12 projection workers + worker-recorder stopped');
 }
 
 function getAllHealth() {
@@ -51,4 +56,4 @@ function getAllProjections() {
   return result;
 }
 
-module.exports = { workers, startAll, stopAll, getAllHealth, getAllProjections };
+module.exports = { workers, startAll, stopAll, getAllHealth, getAllProjections, workerRecorder };
