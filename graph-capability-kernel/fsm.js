@@ -643,7 +643,18 @@ const TRANSITION_MAP = {
     target: 'DEGRADED',
     guard: (event) => {
       const cred = _resolveCred(event);
-      if (!cred) return { allowed: true }; // degradation can fire from any state
+      if (!cred) return { allowed: true };
+      // Re-entry guard: if already DEGRADED, reject the transition.
+      // This breaks the loop:
+      //   CAPABILITY_DEGRADED → CAPABILITY_DEGRADATION_DETECTED
+      //     → HSM filter dispatchGlobal(CAPABILITY_DEGRADED) → GC FSM → LOOP.
+      // Without this guard, fixing Issue 2 (adding CAPABILITY_DEGRADED to CK
+      // routing) would create infinite recursion because the CK-routed event
+      // reaches this handler again, re-emits CAPABILITY_DEGRADATION_DETECTED,
+      // and the HSM filter re-dispatches CAPABILITY_DEGRADED indefinitely.
+      if (cred.state === 'DEGRADED') {
+        return { allowed: false, reason: 'CAPABILITY_DEGRADED rejected: already DEGRADED' };
+      }
       return { allowed: true };
     },
     buildActions: (event) => [{

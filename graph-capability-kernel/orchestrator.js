@@ -22,6 +22,7 @@
 //         → CK routes to FSM via DOMAIN_EVENT_MAP
 
 const capabilityCheckSubstrate = require('./substrates/capability-check-substrate');
+const evaluationWorker = require('./substrates/workers/evaluation-worker');
 
 /**
  * Wire this orchestrator to the governance kernel.
@@ -61,6 +62,11 @@ function wire(governance) {
       });
     }
   });
+
+  // Wire the evaluation worker — subscribes to CAPABILITY_EVALUATION_STARTED
+  // to trigger re-inference when vault state changes. The orchestrator owns
+  // the semantic authority; the worker is passed through it.
+  evaluationWorker.start(governance);
 
   console.log('[graph-capability-orchestrator] Wired — subscribed to CAPABILITY_CHECK');
 }

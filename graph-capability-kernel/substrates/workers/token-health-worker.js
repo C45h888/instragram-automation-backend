@@ -157,6 +157,30 @@ class TokenHealthWorker {
     }
   }
 
+  // ── Emit TOKEN_REFRESH_RESULT through CK GLOBAL_TRANSITION_MAP ─────────
+  // Called after _dispatchCompletion in executeImmediateRecovery.
+  // Cannot rely on FSM handler's ctx.dispatchGlobal (which receives
+  // undefined ctx when invoked directly from the worker), so the
+  // worker emits the result event itself through governance.dispatch().
+  // CK's GLOBAL_TRANSITION_MAP handler produces deterministic output:
+  //   success=true  → RETRY_REQUESTED (engagement FSM)
+  //   success=false → ACQUISITION_DEFER (acquisition FSM)
+  // @param {boolean} success — true if token healthy or recovered
+  // @param {string} businessAccountId
+  // @param {string} [capabilityState='UNKNOWN'] — FSM state after recovery
+  _emitTokenRefreshResult(success, businessAccountId, capabilityState) {
+    if (!this._governance) return;
+    this._governance.dispatch({
+      type: 'TOKEN_REFRESH_RESULT',
+      sourceDomain: 'graph-capability',
+      businessAccountId,
+      success,
+      capabilityState: capabilityState || (success ? 'AUTHORIZED' : 'UNAUTHORIZED'),
+      lastObservedAt: Date.now(),
+      consecutiveFailures: success ? 0 : undefined,
+    });
+  }
+
   // ── Recovery: UAT→PAT silent recovery (absorbed from recovery-worker) ───
 
   /**
@@ -265,8 +289,10 @@ class TokenHealthWorker {
   // CK-ordered ungated token recovery for a single account. Runs
   // _recoverPatViaUat() immediately — no cadence gate, no scan loop.
   // Used by the acquisition→CK→GCK cross-kernel failure recovery flow.
-  // On completion, dispatches CAPABILITY_HEALTH_CHECK_COMPLETED so the
-  // GC FSM can emit TOKEN_REFRESH_RESULT back to CK.
+  // On completion:
+  //   1. Calls _dispatchCompletion to update FSM timestamps (local state only)
+  //   2. Calls _emitTokenRefreshResult to emit TOKEN_REFRESH_RESULT through
+  //      CK's GLOBAL_TRANSITION_MAP directly (bypasses FSM ctx dependency)
   async executeImmediateRecovery(businessAccountId) {
     console.log(`[token-health] executeImmediateRecovery for account ${businessAccountId}`);
     const startTime = Date.now();
@@ -288,6 +314,7 @@ class TokenHealthWorker {
       if (creds.length === 0) {
         console.log(`[token-health] No active credential for account ${businessAccountId}`);
         this._dispatchCompletion('token_health', [businessAccountId]);
+        this._emitTokenRefreshResult(false, businessAccountId, 'UNKNOWN');
         return { success: false, recovered: false, error: 'no_credential' };
       }
 
@@ -303,6 +330,7 @@ class TokenHealthWorker {
       } catch (err) {
         console.warn(`[token-health] Token validation failed for account ${baId}: ${err.message}`);
         this._dispatchCompletion('token_health', [baId]);
+        this._emitTokenRefreshResult(false, baId, 'UNAUTHORIZED');
         return { success: false, recovered: false, error: 'token_validation_failed' };
       }
 
@@ -316,6 +344,7 @@ class TokenHealthWorker {
         signalDispatch.emitEnvelope({ envelope: healthyEnv });
         signalDispatch.emitEvaluate({ businessAccountId: baId, userId, source: 'health.immediate' });
         this._dispatchCompletion('token_health', [baId]);
+        this._emitTokenRefreshResult(true, baId, 'AUTHORIZED');
         return { success: true, recovered: false, state: 'healthy' };
       }
 
@@ -338,6 +367,7 @@ class TokenHealthWorker {
           credentialId: cred.id, debugTokenChecked: true, businessAccountId: baId,
         });
         this._dispatchCompletion('token_health', [baId]);
+        this._emitTokenRefreshResult(true, baId, 'AUTHORIZED');
         return { success: true, recovered: true, state: 'recovered' };
       }
 
@@ -347,10 +377,12 @@ class TokenHealthWorker {
       signalDispatch.emitEnvelope({ envelope: failedEnv });
       console.warn(`[token-health] Immediate recovery failed for account ${baId}: ${recoveryResult.error}`);
       this._dispatchCompletion('token_health', [baId]);
+      this._emitTokenRefreshResult(false, baId, 'UNAUTHORIZED');
       return { success: false, recovered: false, error: recoveryResult.error || 'recovery_failed' };
     } catch (err) {
       console.error('[token-health] executeImmediateRecovery fatal:', err.message);
       this._dispatchCompletion('token_health', [businessAccountId]);
+      this._emitTokenRefreshResult(false, businessAccountId, 'UNKNOWN');
       return { success: false, recovered: false, error: err.message };
     }
   }

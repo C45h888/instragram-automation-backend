@@ -926,6 +926,86 @@ const GLOBAL_TRANSITION_MAP = {
       return [];
     },
   },
+
+  // ── CAPABILITY_AUTH_FAILURE — GC FSM reports UNAUTHORIZED capability ──────
+  // Dispatched by GC FSM via ctx.dispatchGlobal when a cred transitions to
+  // UNAUTHORIZED. CK translates to AUTH_FAILURE_STRIKE and routes to the
+  // retry-cadence-kernel (engagement domain) for circuit breaker tracking.
+  // Engagement FSM handles the strike lifecycle (strike counting → alerts →
+  // DISCONNECT_ACCOUNT at max strikes). CK does not change global state.
+  CAPABILITY_AUTH_FAILURE: {
+    target: () => null,
+    guard: (event, ctx) => {
+      if (!event.businessAccountId) {
+        return { allowed: false, reason: 'CAPABILITY_AUTH_FAILURE requires businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      dispatch({
+        type: 'AUTH_FAILURE_STRIKE',
+        accountId: event.businessAccountId,
+        error: event.reason || 'capability_auth_failure',
+        metadata: { source: 'ck.capability_auth_failure', evidence: event.evidence || null },
+      });
+      return [];
+    },
+  },
+
+  // ── CAPABILITY_DEGRADED — GC FSM reports degraded capability ──────────────
+  // Dispatched by GC FSM via ctx.dispatchGlobal when a cred transitions to
+  // DEGRADED. CK transitions global runtime state to DEGRADED so constitutional
+  // guards can restrict domain operations during degradation.
+  // Follows the same pattern as BACKPRESSURE_DETECTED and RETRY_PRESSURE_DETECTED.
+  // Re-entry is blocked by the CAPABILITY_DEGRADED guard in GC FSM (fsm.js
+  // line 652) which rejects transitions from already-DEGRADED state, preventing
+  // the loop: CAPABILITY_DEGRADED → CAPABILITY_DEGRADATION_DETECTED
+  // → dispatchGlobal(CAPABILITY_DEGRADED) → GC FSM → guard rejects.
+  CAPABILITY_DEGRADED: {
+    target: 'DEGRADED',
+    guard: (event, ctx) => {
+      if (ctx.state !== 'HEALTHY' && ctx.state !== 'DEGRADED') {
+        return { allowed: false, reason: `Capability degradation only from HEALTHY or DEGRADED, got ${ctx.state}` };
+      }
+      if (!event.businessAccountId) {
+        return { allowed: false, reason: 'CAPABILITY_DEGRADED requires businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => [{
+      type: 'LOG_DEGRADED',
+      substate: 'CAPABILITY_DEGRADED',
+      reason: event.reason || 'Capability state degraded',
+      accountId: event.businessAccountId,
+      metadata: { evidence: event.evidence || null },
+    }],
+  },
+
+  // ── CAPABILITY_RECOVERED — GC FSM reports restored capability ────────────
+  // Dispatched by GC FSM via ctx.dispatchGlobal when a cred recovers from
+  // UNAUTHORIZED or DEGRADED to AUTHORIZED. CK translates to AUTH_STRIKES_RESET
+  // and routes to retry-cadence-kernel (engagement domain) to clear auth strikes
+  // and return the account to operational state.
+  // CK does not change global state — recovery from global DEGRADED is handled
+  // by PRESSURE_CLEARED or other CK-level recovery signals.
+  CAPABILITY_RECOVERED: {
+    target: () => null,
+    guard: (event, ctx) => {
+      if (!event.businessAccountId) {
+        return { allowed: false, reason: 'CAPABILITY_RECOVERED requires businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      dispatch({
+        type: 'AUTH_STRIKES_RESET',
+        accountId: event.businessAccountId,
+        reason: event.reason || 'capability_recovered',
+        source: 'ck.capability_recovered',
+      });
+      return [];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
