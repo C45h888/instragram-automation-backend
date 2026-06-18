@@ -427,10 +427,17 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── CAPABILITY_CHECK (2026-06-11): Publishing FSM requests capability
-  //     analysis after a publication timeout. GC FSM reads its own per-cred
-  //     state (canonical capability truth) and QuotaIntelligenceWorker state.
-  //     Returns CAPABILITY_CHECK_RESULT via ctx.dispatchGlobal → CK.
+  // ── CAPABILITY_CHECK (2026-06-18): Publishing FSM requests capability
+  //     analysis after a publication timeout. GC FSM emits CAPABILITY_CHECK as a
+  //     domain action. CK routes it to the orchestrator via DOMAIN_EVENT_MAP.
+  //     The orchestrator (graph-capability/orchestrator.js) subscribes via
+  //     governance.subscribeAction('CAPABILITY_CHECK') — it owns the subscription,
+  //     not the substrate. The orchestrator calls the capability-check substrate
+  //     (execute only — no membrane) and dispatches CAPABILITY_CHECK_COMPLETE
+  //     (or CAPABILITY_CHECK_FAILED) back through CK → FSM.
+  //
+  //     This handler returns zero actions — the result flows back asynchronously
+  //     via CAPABILITY_CHECK_COMPLETE / CAPABILITY_CHECK_FAILED.
   CAPABILITY_CHECK: {
     target: null,
     guard: (event) => {
@@ -439,50 +446,109 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event, ctx) => {
-      const baId = event.businessAccountId;
-      const cred = _byCred.get(baId);
-      const capabilityState = cred ? cred.state : 'UNKNOWN';
-      const lastObservedAt = cred ? cred.lastObservedAt : null;
-      const freshnessMs = lastObservedAt ? (Date.now() - lastObservedAt) : null;
-      const consecutiveFailures = cred ? cred.consecutiveFailures : 0;
+    buildActions: (event) => {
+      // Emit the domain action. CK routes it to the orchestrator subscriber.
+      // The orchestrator dispatches the result event back through CK → FSM.
+      return [];
+    },
+  },
 
-      let quotaState = 'NONE';
-      const qEntry = _membranes.get('quota-intelligence');
-      if (qEntry && qEntry.wired && qEntry.substrate) {
-        quotaState = qEntry.substrate._state || 'NONE';
+  // ── Result from capability-check substrate (Phase 9) ───────────────────
+  // The orchestrator's governance.subscribeAction intercepted CAPABILITY_CHECK,
+  // ran the substrate workers, and dispatched this event back through CK.
+  //
+  // Cross-kernel result path (publishing kernel):
+  //   publishing-fsm → ctx.dispatchGlobal(CAPABILITY_CHECK) → CK → GC orchestrator
+  //     → capability-check substrate → CAPABILITY_CHECK_COMPLETE → CK
+  //       → GC FSM (here) → ctx.dispatchGlobal(CAPABILITY_CHECK_RESULT)
+  //         → CK → publishing-fsm CAPABILITY_CHECK_RESULT handler.
+  //   The original sourceDomain is preserved as sourceDomain2 by the publishing FSM.
+  //
+  //   When sourceDomain2 === 'publishing', emit CAPABILITY_CHECK_RESULT back
+  //   via dispatchGlobal so CK routes it to the publishing FSM. The publishing
+  //   FSM does NOT have CAPABILITY_CHECK_COMPLETE in its TRANSITION_MAP.
+  CAPABILITY_CHECK_COMPLETE: {
+    target: null,
+    guard: (event) => {
+      if (!event.businessAccountId) {
+        return { allowed: false, reason: 'CAPABILITY_CHECK_COMPLETE requires businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const baId = event.businessAccountId;
+      let cred = _byCred.get(baId);
+      if (!cred) {
+        cred = {
+          state: 'UNKNOWN',
+          evidence: [],
+          lastObservedAt: null,
+          lastTransitionedAt: null,
+          consecutiveFailures: 0,
+        };
+        _byCred.set(baId, cred);
+      }
+      cred.lastObservedAt = Date.now();
+
+      // Cross-kernel result path: notify the publishing FSM via dispatchGlobal.
+      // sourceDomain2 carries the original sourceDomain from the publishing FSM's
+      // CAPABILITY_CHECK dispatch, so we know this is a cross-kernel call.
+      if (ctx && ctx.dispatchGlobal && event.sourceDomain2 === 'publishing') {
+        ctx.dispatchGlobal({
+          type: 'CAPABILITY_CHECK_RESULT',
+          sourceDomain: 'graph-capability',
+          businessAccountId: baId,
+          correlationId: event.correlationId || null,
+          capabilityState: event.capabilityState || 'UNKNOWN',
+          quotaState: event.quotaState || 'NONE',
+          freshnessMs: event.freshnessMs || null,
+          consecutiveFailures: event.consecutiveFailures || 0,
+        });
       }
 
-      if (ctx && ctx.dispatchGlobal) {
-        // Phase 8: when sourceDomain is 'acquisition', the query is from CK's
-        // authority-vector orchestration (INSIGHTS_POLL_FAILURE path). Route
-        // the result through a CK-level event so CK's GLOBAL_TRANSITION_MAP
-        // can process the decision chain (retry vs defer vs refresh).
-        // Publishing callers still use CAPABILITY_CHECK_RESULT → 'publishing'.
-        if (event.sourceDomain === 'acquisition') {
-          ctx.dispatchGlobal({
-            type: 'CK_CAPABILITY_CHECK_RESULT',
-            sourceDomain: 'graph-capability',
-            businessAccountId: baId,
-            correlationId: event.correlationId,
-            capabilityState,
-            quotaState,
-            freshnessMs,
-            consecutiveFailures,
-          });
-        } else {
-          ctx.dispatchGlobal({
-            type: 'CAPABILITY_CHECK_RESULT',
-            sourceDomain: 'graph-capability',
-            targetDomain: 'publishing',
-            businessAccountId: baId,
-            correlationId: event.correlationId,
-            capabilityState,
-            quotaState,
-            freshnessMs,
-            consecutiveFailures,
-          });
-        }
+      return [];
+    },
+  },
+
+  // ── Capability check failure — cross-kernel path ─────────────────────────
+  // Same result path as CAPABILITY_CHECK_COMPLETE, but with UNAUTHORIZED state.
+  // The publishing FSM's CAPABILITY_CHECK_RESULT guard handles UNAUTHORIZED/UNKNOWN
+  // by emitting AUTH_FAILURE_STRIKE + PUBLISH_FAILURE and transitioning to IDLE.
+  CAPABILITY_CHECK_FAILED: {
+    target: null,
+    guard: (event) => {
+      if (!event.businessAccountId) {
+        return { allowed: false, reason: 'CAPABILITY_CHECK_FAILED requires businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: async (event, ctx) => {
+      const baId = event.businessAccountId;
+      let cred = _byCred.get(baId);
+      if (!cred) {
+        cred = {
+          state: 'UNKNOWN',
+          evidence: [],
+          lastObservedAt: null,
+          lastTransitionedAt: null,
+          consecutiveFailures: 0,
+        };
+        _byCred.set(baId, cred);
+      }
+      cred.consecutiveFailures = (cred.consecutiveFailures || 0) + 1;
+
+      // Cross-kernel result path: notify the publishing FSM via dispatchGlobal.
+      if (ctx && ctx.dispatchGlobal && event.sourceDomain2 === 'publishing') {
+        ctx.dispatchGlobal({
+          type: 'CAPABILITY_CHECK_RESULT',
+          sourceDomain: 'graph-capability',
+          businessAccountId: baId,
+          correlationId: event.correlationId || null,
+          capabilityState: 'UNAUTHORIZED',
+          quotaState: event.quotaState || 'NONE',
+          freshnessMs: null,
+          consecutiveFailures: cred.consecutiveFailures,
+        });
       }
 
       return [];
@@ -996,6 +1062,17 @@ const TRANSITION_MAP = {
       escalationType: event.escalationType,
     }],
   },
+
+  // ── WORKER_RESULT — observability-only (no workers registered) ──────────
+  // Graph-capability FSM does not register or invoke workers through
+  // ctx.invokeWorker(). This handler exists for completeness so that
+  // the domain's lineage partition can accept WORKER_RESULT events
+  // if workers are ever registered.
+  WORKER_RESULT: {
+    target: null,
+    guard: () => ({ allowed: true }),
+    buildActions: () => [],
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1262,7 +1339,12 @@ function init(rehydratedState) {
 function getState(businessAccountId) {
   const baId = businessAccountId || '__global__';
   const cred = _byCred.get(baId);
-  return cred ? cred.state : 'UNKNOWN';
+  if (!cred) return { state: 'UNKNOWN', cred: null };
+  return { state: cred.state, cred };
+}
+
+function getMembraneEntry(name) {
+  return _membranes.get(name) || null;
 }
 
 /**
@@ -1706,6 +1788,7 @@ module.exports = {
   // Membrane orchestration — FSM wires substrates during CAPABILITY_BOOTSTRAP
   setMembrane,
   resetMembrane,
+  getMembraneEntry,
   // Cross-domain dispatch — credential store via constitutional flow
   requestCredentialStore,
   // Cross-domain dispatch — generic DB write (alerts, lifecycle events, credential status)

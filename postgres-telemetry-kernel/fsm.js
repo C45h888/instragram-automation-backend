@@ -632,6 +632,16 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
+
+  // ── WORKER_RESULT — observability-only (no workers registered) ──────────
+  // Persist-telemetry FSM does not register or invoke workers through
+  // ctx.invokeWorker(). DB writes and reads are handled directly through
+  // CK's GLOBAL_TRANSITION_MAP. This handler exists for completeness.
+  WORKER_RESULT: {
+    target: null,
+    guard: () => ({ allowed: true }),
+    buildActions: () => [],
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

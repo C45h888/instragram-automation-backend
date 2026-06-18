@@ -26,6 +26,7 @@ const wiring = require('./substrates/graph-capability/wiring');
 const fsm = require('./fsm');
 const signalDispatch = require('./substrates/vault/signal-dispatch');
 const healthSubstrate = require('./substrates/health-substrate');
+const orchestrator = require('./orchestrator');
 
 // Worker imports (Pass 2)
 const QuotaIntelligenceWorker = require('./substrates/workers/quota-intelligence-worker');
@@ -131,7 +132,10 @@ function install({ ck } = {}) {
   fsm.setMembrane('account-sync', { substrate: _accountSyncWorker });
   fsm.setMembrane('escalation', { substrate: _escalationWorker });
 
-  // 5. Start the graph-capability substrate (binding only)
+  // 5. Wire the capability-check orchestrator to CK (subscribes to CAPABILITY_CHECK)
+  orchestrator.wire(ck);
+
+  // 6. Start the graph-capability substrate (binding only)
   const result = wiring.install({ ck });
   _started = result.started;
   _installed = true;
@@ -148,6 +152,7 @@ function uninstall() {
   fsm.setDispatchCtx(null);
   fsm.setGovernance(null);
   fsm.resetMembrane();
+  orchestrator.stop?.();
   _quotaWorker = null;
   _webhookWorker = null;
   _dependencyWorker = null;

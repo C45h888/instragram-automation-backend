@@ -385,6 +385,8 @@ const DOMAIN_EVENT_MAP = {
   CAPABILITY_CADENCE_TICK: 'graph-capability',
   API_RATE_LIMIT_CHECK: 'graph-capability',
   CAPABILITY_CHECK: 'graph-capability',
+  CAPABILITY_CHECK_COMPLETE: 'graph-capability',
+  CAPABILITY_CHECK_FAILED: 'graph-capability',
   IMMEDIATE_TOKEN_REFRESH: 'graph-capability',
 
   // Persist-Telemetry domain — governs all DB write + read operations
@@ -974,7 +976,6 @@ function runGeneralGuards(currentState, targetState) {
 
 let _currentState = 'BOOTING';
 let _stateEnteredAt = Date.now();
-let _loopInterval = null;
 
 // Snapshot building moved to reconciliation-substrate.js — CK no longer captures it
 
@@ -2594,8 +2595,6 @@ module.exports = {
   tick,
   startLoop,
   stopLoop,
-  startCadenceLoop,
-  stopCadenceLoop,
   rehydrate,
   status,
   getState,
