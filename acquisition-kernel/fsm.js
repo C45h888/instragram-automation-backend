@@ -1313,6 +1313,40 @@ const TRANSITION_MAP = {
       return [];
     },
   },
+
+  // ── WORKER_RESULT — record every CK-invoked worker outcome ──────────────
+  // Emitted by CK.invokeWorker after each successful worker.execute().
+  // The FSM records the outcome on the intent record for state purity.
+  // This ensures the domain's lineage partition reflects every worker
+  // execution, testable via lineage:transitionLog:domain:acquisition.
+  WORKER_RESULT: {
+    target: null,
+    guard: (event) => {
+      if (!event.intentId || !event.workerName) {
+        return { allowed: false, reason: 'WORKER_RESULT requires intentId, workerName' };
+      }
+      const rec = _intents.get(event.intentId);
+      if (!rec) {
+        return { allowed: false, reason: `intent_not_found:${event.intentId}` };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const rec = _intents.get(event.intentId);
+      if (rec) {
+        rec.workerName = event.workerName;
+        rec.workerOutcome = event.outcome;
+        if (event.outcome === 'failed') {
+          rec.lastFailureAt = Date.now();
+          rec.lastFailureError = event.error || 'worker_failed';
+        } else {
+          rec.lastFailureAt = null;
+          rec.lastFailureError = null;
+        }
+      }
+      return [];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

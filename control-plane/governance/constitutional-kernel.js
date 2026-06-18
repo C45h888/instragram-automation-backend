@@ -1658,19 +1658,19 @@ function dispatch(event) {
         _currentWorkerContext = { fsmName: domainName, workerName };
         try {
           const _result = await worker.execute(params);
-          // Emit WORKER_EXECUTED — records every FSM-invoked worker into
-          // the observability plane. The worker-recorder-worker consumes
-          // these entries and writes to lineage:worker:entries so the
-          // snapshot deriver can count real worker invocations.
+          // Emit WORKER_RESULT — records every FSM-invoked worker outcome
+          // into the domain's observability partition. Each FSM handles
+          // WORKER_RESULT in its transition map to update domain-local
+          // state (intent records, cred records, entry state, etc.).
           try {
             const obs = _getObservabilityTransition();
             if (obs) {
               obs.transition({
                 domain: domainName,
-                entity: 'worker_execution',
+                entity: 'worker_result',
                 entityId: `${domainName}:${workerName}`,
                 previousState: null,
-                nextState: 'WORKER_EXECUTED',
+                nextState: 'WORKER_RESULT',
                 authority: 'constitutional-kernel',
                 raw: {
                   workerName,
@@ -1678,6 +1678,8 @@ function dispatch(event) {
                   accountId: params?.accountId || null,
                   intentId: params?.intentId || null,
                   outcome: _result?.status || 'completed',
+                  data: _result?.data || null,
+                  error: _result?.error || null,
                   invokedAt: Date.now(),
                 },
               });

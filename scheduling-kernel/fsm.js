@@ -390,6 +390,27 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
+
+  // ── WORKER_RESULT — record every CK-invoked worker outcome ──────────────
+  // Emitted by CK.invokeWorker. The scheduling FSM maintains a rotating
+  // log of worker outcomes for health aggregation.
+  WORKER_RESULT: {
+    target: null,
+    guard: () => ({ allowed: true }),
+    buildActions: (event) => {
+      if (!_workerLog) _workerLog = [];
+      _workerLog.push({
+        workerName: event.workerName || 'unknown',
+        outcome: event.outcome || 'unknown',
+        accountId: event.accountId || null,
+        intentId: event.intentId || null,
+        error: event.error || null,
+        at: Date.now(),
+      });
+      if (_workerLog.length > 100) _workerLog.shift();
+      return [];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

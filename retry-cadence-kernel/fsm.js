@@ -1521,6 +1521,38 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
+
+  // ── WORKER_RESULT — record every CK-invoked worker outcome ──────────────
+  // Emitted by CK.invokeWorker. The engagement FSM tracks worker outcomes
+  // per business account for failure escalation and circuit breaker state.
+  WORKER_RESULT: {
+    target: null,
+    guard: (event) => {
+      if (!event.accountId || !event.workerName) {
+        return { allowed: false, reason: 'WORKER_RESULT requires accountId, workerName' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const cred = _credRecords.get(event.accountId) || _createCredRecord(event.accountId);
+      if (cred) {
+        if (!cred.workerLog) cred.workerLog = [];
+        cred.workerLog.push({
+          workerName: event.workerName,
+          outcome: event.outcome,
+          error: event.error || null,
+          at: Date.now(),
+        });
+        if (cred.workerLog.length > 100) cred.workerLog.shift();
+        if (event.outcome === 'failed') {
+          cred.consecutiveFailures = (cred.consecutiveFailures || 0) + 1;
+        } else if (event.outcome === 'completed') {
+          cred.consecutiveFailures = 0;
+        }
+      }
+      return [];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -670,6 +670,28 @@ const TRANSITION_MAP = {
       }];
     },
   },
+
+  // ── WORKER_RESULT — record every CK-invoked worker outcome ──────────────
+  // Emitted by CK.invokeWorker. The dedup FSM records the worker outcome
+  // on the relevant dedup entry for state traceability.
+  WORKER_RESULT: {
+    target: null,
+    guard: (event) => {
+      if (!event.workerName || !event.intentId) {
+        return { allowed: false, reason: 'WORKER_RESULT requires workerName, intentId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const entry = _dedupEntries.get(event.intentId);
+      if (entry) {
+        entry.workerName = event.workerName;
+        entry.outcome = event.outcome;
+        entry.attemptedAt = Date.now();
+      }
+      return [];
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -33,9 +33,9 @@ async function start() {
     // eslint-disable-next-line global-require
     const observability = require('../../../../control-plane/observability');
     _unsubscribe = observability.onWrite(async (transition) => {
-      // Only record worker_execution entries emitted by CK.invokeWorker
-      if (transition.entity !== 'worker_execution') return;
-      if (transition.nextState !== 'WORKER_EXECUTED') return;
+      // Only record worker_result entries emitted by CK.invokeWorker
+      if (transition.entity !== 'worker_result') return;
+      if (transition.nextState !== 'WORKER_RESULT') return;
 
       try {
         const redis = getRedisClient();
