@@ -61,6 +61,7 @@ const STARTED_AT = Date.now();
 const MEMBRANE_AUTHORITY_MAP = {
   'acquisition-fsm':     ['acquisition'],
   'publishing-membrane': ['publishing'],
+  'telemetry-worker':    ['telemetry'],
   'telemetry-coordination-fsm': ['telemetry-coordination-fsm'],
   'reconciliation-fsm':  ['reconciliation'],
   'scheduling-fsm':      ['scheduling'],
@@ -173,16 +174,45 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   'SUBSTRATE_ERROR','SUBSTRATE_RECOVERY','SUBSTRATE_STALL','SUBSTRATE_STALL_CLEAR',
   'GOVERNANCE_ERROR','GOVERNANCE_RECOVERY','GOVERNANCE_STALL','GOVERNANCE_STALL_CLEAR',
   'ENTRY_ERROR','ENTRY_RECOVERY','ENTRY_STALL','ENTRY_STALL_CLEAR',
+  'WORKER_ERROR_RECOVERY','INGRESS_ERROR_RECOVERY','BUFFER_ERROR_RECOVERY',
+  'CACHE_ERROR_RECOVERY','REDIS_ERROR_RECOVERY','LINEAGE_ERROR_RECOVERY',
+  'PROJECTION_ERROR_RECOVERY','COORDINATION_ERROR_RECOVERY','INTENT_ERROR_RECOVERY',
+  'REPLAY_ERROR_RECOVERY','MEMBRANE_ERROR_RECOVERY','FSM_ERROR_RECOVERY',
+  'DOMAIN_ERROR_RECOVERY','KERNEL_ERROR_RECOVERY','SUBSTRATE_ERROR_RECOVERY',
+  'GOVERNANCE_ERROR_RECOVERY','ENTRY_ERROR_RECOVERY','WORKER_LAG_RECOVERY',
+  'INGRESS_LAG_RECOVERY','REDIS_LAG_RECOVERY','LINEAGE_LAG_RECOVERY',
+  'PROJECTION_LAG_RECOVERY','COORDINATION_LAG_RECOVERY','INTENT_LAG_RECOVERY',
+  'REPLAY_LAG_RECOVERY','MEMBRANE_LAG_RECOVERY','FSM_LAG_RECOVERY','DOMAIN_LAG_RECOVERY',
+  'KERNEL_LAG_RECOVERY','SUBSTRATE_LAG_RECOVERY','GOVERNANCE_LAG_RECOVERY',
+  'ENTRY_LAG_RECOVERY','WORKER_STALL_RECOVERY','INGRESS_STALL_RECOVERY',
+  'BUFFER_STALL_RECOVERY','CACHE_STALL_RECOVERY','REDIS_STALL_RECOVERY',
+  'LINEAGE_STALL_RECOVERY','PROJECTION_STALL_RECOVERY','COORDINATION_STALL_RECOVERY',
+  'INTENT_STALL_RECOVERY','REPLAY_STALL_RECOVERY','MEMBRANE_STALL_RECOVERY',
+  'FSM_STALL_RECOVERY','DOMAIN_STALL_RECOVERY','KERNEL_STALL_RECOVERY',
+  'SUBSTRATE_STALL_RECOVERY','GOVERNANCE_STALL_RECOVERY','ENTRY_STALL_RECOVERY',
+  'AUTHORITY_VECTOR_STABLE','AUTHORITY_VECTOR_UNSTABLE','AUTHORITY_VECTOR_DEGRADED',
+  'AUTHORITY_VECTOR_RECOVERED','LINEAGE_VECTOR_STABLE','LINEAGE_VECTOR_UNSTABLE',
+  'LINEAGE_VECTOR_DEGRADED','LINEAGE_VECTOR_RECOVERED','PROJECTION_VECTOR_STABLE',
+  'PROJECTION_VECTOR_UNSTABLE','PROJECTION_VECTOR_DEGRADED','PROJECTION_VECTOR_RECOVERED',
+  'GOVERNANCE_VECTOR_STABLE','GOVERNANCE_VECTOR_UNSTABLE','GOVERNANCE_VECTOR_DEGRADED',
+  'GOVERNANCE_VECTOR_RECOVERED','CROSS_DOMAIN_VECTOR_STABLE','CROSS_DOMAIN_VECTOR_UNSTABLE',
+  'CROSS_DOMAIN_VECTOR_DEGRADED','CROSS_DOMAIN_VECTOR_RECOVERED',
 
   // Engagement domain — FSM-emitted terminal actions
   'MARK_PERMANENT_FAILURE','CREATE_SYSTEM_ALERT',
   // DB coordination events — CK-issued or FSM-coordinated, no lineageId required
   'DB_READ_REQUESTED','DB_READ_COMPLETE','DB_WRITE_REQUESTED','DB_WRITE_COMPLETE',
   'READ_RESULT_AVAILABLE','CAPABILITY_DATA_REQUEST',
+  // Webhook acquisition substrate (Phase 1+2) — substrate-issued, no
+  // lineageId required (the substrate IS the canonical source for
+  // inbound Meta webhook payloads, parallel to IG_FAILURE_OBSERVED).
+  'WEBHOOK_EVENT_RECEIVED','WEBHOOK_EVENT_DISCARDED',
+  'PERSIST_STAGED_EVENT','WEBHOOK_EVENT_PERSISTED','WEBHOOK_EVENT_PERSIST_FAILED',
   // Phase 8: CK authority-vector events — CK dispatches these from
   // GLOBAL_TRANSITION_MAP handlers during cross-kernel orchestration.
   // No lineageId required; CK IS the canonical source.
-  'RETRY_REQUESTED','ACQUISITION_DEFER','IMMEDIATE_TOKEN_REFRESH',
+  'RETRY_REQUESTED','ACQUISITION_DEFER','CAPABILITY_CHECK',
+  'IMMEDIATE_TOKEN_REFRESH',
 ]);
 
 function _extractForeignAuthorityDomain(authority) {
@@ -352,6 +382,8 @@ const DOMAIN_EVENT_MAP = {
 
   // Dedup domain
   DEDUP_BATCH_BEGIN: 'dedup',
+  DEDUP_INTENT_MARKED: 'dedup',
+  DEDUP_REPLAY_DETECTED: 'dedup',
   DEDUP_BATCH_END: 'dedup',
   CHECK_AND_MARK_DEDUP: 'dedup',
   CHECK_MUTATION_DEDUP: 'dedup',
@@ -1540,13 +1572,10 @@ function onAction(fn) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 10. Watchdog — state staleness detection + capability cadence tick
+// 10. Watchdog — state staleness detection
 // ═══════════════════════════════════════════════════════════════════════════════
-// Two intervals managed as a single loop infrastructure:
-//   - watchdog tick (10s): checks state TTL, auto-recovers from DEGRADED/BOOTING/RECOVERY
-//   - cadence tick (1h): dispatches CAPABILITY_CADENCE_TICK to GCK FSM
 
-function _watchdogTick() {
+function tick() {
   const elapsed = Date.now() - _stateEnteredAt;
   const ttl = STATE_TTL_MS[_currentState];
   if (ttl == null || elapsed < ttl) return;
@@ -1567,46 +1596,55 @@ function _watchdogTick() {
   }
 }
 
-function _cadenceTick() {
-  try {
-    dispatch({ type: 'CAPABILITY_CADENCE_TICK', source: 'constitutional-kernel.cadence_loop' });
-  } catch (err) {
-    console.warn('[constitutional-kernel] CAPABILITY_CADENCE_TICK dispatch failed:', err.message);
-  }
-}
-
-function tick() { _watchdogTick(); }
-
-const CADENCE_TICK_INTERVAL_MS = 60 * 60 * 1000; // 1h
-let _watchdogInterval = null;
-let _cadenceInterval = null;
-
 function startLoop(intervalMs = 10_000) {
   if (typeof intervalMs !== 'number' || intervalMs < 1000) {
     throw new Error(`[constitutional-kernel] intervalMs must be >= 1000, got ${intervalMs}`);
   }
-  if (_watchdogInterval) {
+  if (_loopInterval) {
     console.warn('[constitutional-kernel] Watchdog loop already running — ignoring duplicate start');
     return;
   }
-  _watchdogInterval = setInterval(_watchdogTick, intervalMs);
-  _watchdogInterval.unref();
+  _loopInterval = setInterval(tick, intervalMs);
+  _loopInterval.unref();
   console.log(`[constitutional-kernel] Watchdog loop started — tick every ${intervalMs}ms`);
-
-  // Also start the capability cadence tick
-  if (!_cadenceInterval) {
-    _cadenceInterval = setInterval(_cadenceTick, CADENCE_TICK_INTERVAL_MS);
-    _cadenceInterval.unref();
-    console.log(`[constitutional-kernel] Cadence loop started — CAPABILITY_CADENCE_TICK every ${CADENCE_TICK_INTERVAL_MS}ms`);
-  }
 }
 
 function stopLoop() {
-  if (_watchdogInterval) {
-    clearInterval(_watchdogInterval);
-    _watchdogInterval = null;
+  if (_loopInterval) {
+    clearInterval(_loopInterval);
+    _loopInterval = null;
     console.log('[constitutional-kernel] Watchdog loop stopped');
   }
+}
+
+// ── Phase C: cadence tick loop ───────────────────────────────────────────────
+// Recurring CAPABILITY_CADENCE_TICK dispatch. The FSM owns the per-cred
+// gating policy; this loop is a pure clock. 1 hour default — smaller than
+// the smallest cadence window (TOKEN_HEALTH_WINDOW_MS=24h).
+const CADENCE_TICK_INTERVAL_MS = 60 * 60 * 1000; // 1h
+let _cadenceInterval = null;
+
+function startCadenceLoop(intervalMs = CADENCE_TICK_INTERVAL_MS) {
+  if (typeof intervalMs !== 'number' || intervalMs < 1000) {
+    throw new Error(`[constitutional-kernel] cadence intervalMs must be >= 1000, got ${intervalMs}`);
+  }
+  if (_cadenceInterval) {
+    console.warn('[constitutional-kernel] Cadence loop already running — ignoring duplicate start');
+    return;
+  }
+  const tick = () => {
+    try {
+      dispatch({ type: 'CAPABILITY_CADENCE_TICK', source: 'constitutional-kernel.cadence_loop' });
+    } catch (err) {
+      console.warn('[constitutional-kernel] CAPABILITY_CADENCE_TICK dispatch failed:', err.message);
+    }
+  };
+  _cadenceInterval = setInterval(tick, intervalMs);
+  _cadenceInterval.unref();
+  console.log(`[constitutional-kernel] Cadence loop started — CAPABILITY_CADENCE_TICK every ${intervalMs}ms`);
+}
+
+function stopCadenceLoop() {
   if (_cadenceInterval) {
     clearInterval(_cadenceInterval);
     _cadenceInterval = null;
@@ -2575,7 +2613,8 @@ async function bootstrap() {
   //    the FSM on a schedule. The interval is deliberately smaller than the
   //    smallest cadence window (TOKEN_HEALTH_WINDOW_MS=24h), so creds are
   //    checked at most once per window.
-  //    NOTE: cadence loop is started inside startLoop() — no separate call needed.
+  startCadenceLoop(CADENCE_TICK_INTERVAL_MS);
+  console.log(`[constitutional-kernel] Cadence loop started — CAPABILITY_CADENCE_TICK every ${CADENCE_TICK_INTERVAL_MS}ms`);
 
   return result;
 }
