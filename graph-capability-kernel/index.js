@@ -28,6 +28,10 @@ const signalDispatch = require('./substrates/vault/signal-dispatch');
 const healthSubstrate = require('./substrates/health-substrate');
 const orchestrator = require('./orchestrator');
 
+// Capability-check workers (registered via CK's invokeWorker gate)
+const credentialCapWorker = require('./substrates/capability-check-substrate/workers/credential-capability-worker');
+const quotaIntWorker = require('./substrates/capability-check-substrate/workers/quota-intelligence-worker');
+
 // Worker imports (Pass 2)
 const QuotaIntelligenceWorker = require('./substrates/workers/quota-intelligence-worker');
 const WebhookSyncWorker = require('./substrates/workers/webhook-sync-worker');
@@ -132,10 +136,21 @@ function install({ ck } = {}) {
   fsm.setMembrane('account-sync', { substrate: _accountSyncWorker });
   fsm.setMembrane('escalation', { substrate: _escalationWorker });
 
-  // 5. Wire the capability-check orchestrator to CK (subscribes to CAPABILITY_CHECK)
-  orchestrator.wire(ck);
+  // 5. Register capability-check workers with CK's invokeWorker gate.
+  //    This enables ctx.invokeWorker() inside the FSM's CAPABILITY_CHECK
+  //    buildActions — CK validates ownership, contract, and system sanity
+  //    before execution, and emits WORKER_RESULT to the observability ledger.
+  if (ck && typeof ck.registerWorker === 'function') {
+    ck.registerWorker('graph-capability', 'credential-capability', credentialCapWorker);
+    ck.registerWorker('graph-capability', 'quota-intelligence', quotaIntWorker);
+  }
 
-  // 6. Start the graph-capability substrate (binding only)
+  // 6. Wire the evaluation worker — subscribes to CAPABILITY_EVALUATION_STARTED
+  //    to trigger re-inference when vault state changes.
+  const evaluationWorker = require('./substrates/workers/evaluation-worker');
+  evaluationWorker.start(ck);
+
+  // 7. Start the graph-capability substrate (binding only)
   const result = wiring.install({ ck });
   _started = result.started;
   _installed = true;
@@ -152,7 +167,10 @@ function uninstall() {
   fsm.setDispatchCtx(null);
   fsm.setGovernance(null);
   fsm.resetMembrane();
-  orchestrator.stop?.();
+  try {
+    const ev = require('./substrates/workers/evaluation-worker');
+    ev.stop();
+  } catch (_) {}
   _quotaWorker = null;
   _webhookWorker = null;
   _dependencyWorker = null;

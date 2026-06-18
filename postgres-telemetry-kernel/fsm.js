@@ -28,7 +28,6 @@ function _obs() {
   return _observability;
 }
 
-const db = require('./writers');
 const crypto = require('crypto');
 // analyzeFailure is called by the FSM itself (constitutional pattern)
 // when workers emit raw errors. Workers no longer import the substrate.
@@ -172,57 +171,32 @@ const TRANSITION_MAP = {
     buildActions: async (event, ctx) => {
       const { readDomain, accountId, readId, params } = event;
 
-      // Track in-flight
+      // Track in-flight — FSM owns state, orchestrator owns execution
       _readsInFlight++;
 
       // Store params for retry path (read cadence loop)
       _pendingReads.set(readId, { readDomain, accountId, params });
 
-      // Delegate to reading-substrate — async, non-blocking
-      // _readingSubstrate is injected by CK via setReadingSubstrate() at boot
-      if (_readingSubstrate) {
-        const readPromise = _readingSubstrate.executeRead(readDomain, params, readId);
-        // Fire completion back through governance when done
-        readPromise.then((result) => {
-          if (ctx && ctx.dispatchGlobal) {
-            ctx.dispatchGlobal({
-              type: 'DB_READ_COMPLETE',
-              readDomain,
-              accountId,
-              readId,
-              success: result.success,
-              data: result.data,
-              error: result.error,
-              latencyMs: result.latencyMs,
-              cached: result.cached || false,
-            });
-          }
-        }).catch((err) => {
-          if (ctx && ctx.dispatchGlobal) {
-            ctx.dispatchGlobal({
-              type: 'DB_READ_COMPLETE',
-              readDomain,
-              accountId,
-              readId,
-              success: false,
-              data: null,
-              error: err.message,
-              latencyMs: 0,
-            });
-          }
-        });
-      } else {
-        // No reading substrate wired — fail fast
-        _readsInFlight = Math.max(0, _readsInFlight - 1);
-        return [{
+      // Delegate execution to orchestrator via CK action emission.
+      // Orchestrator subscribes to EXECUTE_DB_READ, calls reading-substrate,
+      // and dispatches DB_READ_COMPLETE back through CK.
+      // FSM continues to own: backpressure, in-flight tracking, retry path.
+      if (!_readingSubstrate) {
+        // No reading substrate wired — fail fast through CK.
+        // DB_READ_COMPLETE routes to FSM, FSM processes it identically
+        // to a successful completion (decrements in-flight, emits READ_RESULT_AVAILABLE).
+        ctx.dispatchGlobal({
           type: 'DB_READ_COMPLETE',
           readDomain,
           accountId,
           readId,
           success: false,
+          data: null,
           error: 'reading_substrate_unavailable',
           latencyMs: 0,
-        }];
+          authority: 'persist-telemetry-fsm',
+        });
+        return [];
       }
 
       if (_readsInFlight > READ_BACKPRESSURE_THRESHOLD) {
@@ -233,7 +207,16 @@ const TRANSITION_MAP = {
         }];
       }
 
-      return [];
+      // Orchestrator holds the execution contract. FSM emits the action;
+      // CK emits it → orchestrator's subscribeAction fires → orchestrator
+      // calls reading-substrate → orchestrator dispatches DB_READ_COMPLETE → CK → FSM.
+      return [{
+        type: 'EXECUTE_DB_READ',
+        readDomain,
+        accountId,
+        readId,
+        params,
+      }];
     },
   },
 
@@ -373,7 +356,7 @@ const TRANSITION_MAP = {
         ];
       }
 
-      // Track in-flight
+      // Track in-flight — FSM owns state, orchestrator owns execution
       _inFlight++;
 
       // Step 6: idempotency key generation for state-mutating writes.
@@ -381,18 +364,21 @@ const TRANSITION_MAP = {
       // Same retry of the same intent produces the same key.
       const idempotencyKey = _generateIdempotencyKey(accountId, intentId, table, rows);
 
-      // Delegate to db writers substrate — async, non-blocking
-      db.dispatchWrite(operation, { domain, accountId, intentId, table, rows, idempotencyKey });
-
-      if (_inFlight > BACKPRESSURE_THRESHOLD) {
-        return [{
-          type: 'LOG_DEGRADED',
-          substate: 'BACKPRESSURE',
-          reason: `Write queue at ${_inFlight} (threshold ${BACKPRESSURE_THRESHOLD})`,
-        }];
-      }
-
-      return [];
+      // Delegate execution to orchestrator via CK action emission.
+      // Orchestrator subscribes to EXECUTE_DB_WRITE, calls the domain writer,
+      // and dispatches DB_WRITE_COMPLETE / DB_WRITE_FAILED back through CK.
+      // FSM continues to own: table whitelist guard, sanity gate, in-flight tracking,
+      // idempotency key generation, backpressure. Orchestrator owns writer dispatch.
+      return [{
+        type: 'EXECUTE_DB_WRITE',
+        domain,
+        accountId,
+        intentId,
+        table,
+        operation,
+        rows,
+        idempotencyKey,
+      }];
     },
   },
 
@@ -633,14 +619,29 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── WORKER_RESULT — observability-only (no workers registered) ──────────
-  // Persist-telemetry FSM does not register or invoke workers through
-  // ctx.invokeWorker(). DB writes and reads are handled directly through
-  // CK's GLOBAL_TRANSITION_MAP. This handler exists for completeness.
+  // ── WORKER_RESULT — record every CK-invoked worker outcome ──────────────
+  // Emitted by CK.invokeWorker after each worker.execute(). Persist-telemetry
+  // FSM does not currently use invokeWorker (DB ops are handled through CK's
+  // GLOBAL_TRANSITION_MAP), but this handler exists for consistency with the
+  // canonical kernel architecture. Outcome is tracked per worker for diagnostic
+  // traceability.
   WORKER_RESULT: {
     target: null,
-    guard: () => ({ allowed: true }),
-    buildActions: () => [],
+    guard: (event) => {
+      if (!event.workerName) {
+        return { allowed: false, reason: 'WORKER_RESULT requires workerName' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      _lastWorkerResults.set(event.workerName, {
+        outcome: event.outcome || 'completed',
+        error: event.error || null,
+        accountId: event.accountId || null,
+        recordedAt: Date.now(),
+      });
+      return [];
+    },
   },
 };
 
@@ -686,6 +687,12 @@ let _readsInFlight = 0;   // reads in flight
 // Stored at DB_READ_REQUESTED so the retry path can reconstruct the
 // original read query when a read fails and needs retrying.
 const _pendingReads = new Map();
+
+// ── Last worker results: workerName → { outcome, error, accountId, recordedAt } ─
+// Tracks the most recent CK.invokeWorker outcome per worker for diagnostic
+// traceability. Persist-telemetry FSM does not currently use invokeWorker,
+// but the map exists for consistency with the canonical kernel architecture.
+const _lastWorkerResults = new Map();
 
 // ── Default fail-open sanity check (universal gate pattern) ─────────────
 // The ctx.sanityCheck is the universal gate. The FSM calls it

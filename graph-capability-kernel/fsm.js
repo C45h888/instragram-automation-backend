@@ -428,16 +428,15 @@ const TRANSITION_MAP = {
   },
 
   // ── CAPABILITY_CHECK (2026-06-18): Publishing FSM requests capability
-  //     analysis after a publication timeout. GC FSM emits CAPABILITY_CHECK as a
-  //     domain action. CK routes it to the orchestrator via DOMAIN_EVENT_MAP.
-  //     The orchestrator (graph-capability/orchestrator.js) subscribes via
-  //     governance.subscribeAction('CAPABILITY_CHECK') — it owns the subscription,
-  //     not the substrate. The orchestrator calls the capability-check substrate
-  //     (execute only — no membrane) and dispatches CAPABILITY_CHECK_COMPLETE
-  //     (or CAPABILITY_CHECK_FAILED) back through CK → FSM.
+  //     analysis after a publication timeout. GC FSM invokes credential
+  //     and quota workers through CK's ctx.invokeWorker gate, which
+  //     validates ownership, contract, and system sanity before execution.
+  //     WORKER_RESULT is emitted to the observability ledger.
   //
-  //     This handler returns zero actions — the result flows back asynchronously
-  //     via CAPABILITY_CHECK_COMPLETE / CAPABILITY_CHECK_FAILED.
+  //     Results are assembled inline from the worker return values and
+  //     dispatched as CAPABILITY_CHECK_RESULT back to the publishing FSM
+  //     (or CK-level CAPABILITY_AUTH_FAILURE / CAPABILITY_DEGRADED when
+  //     the cred state warrants it).
   CAPABILITY_CHECK: {
     target: null,
     guard: (event) => {
@@ -446,27 +445,64 @@ const TRANSITION_MAP = {
       }
       return { allowed: true };
     },
-    buildActions: (event) => {
-      // Emit the domain action. CK routes it to the orchestrator subscriber.
-      // The orchestrator dispatches the result event back through CK → FSM.
+    buildActions: async (event, ctx) => {
+      const baId = event.businessAccountId;
+      const cred = _credRecord(baId);
+
+      try {
+        // Invoke workers through CK gate — ownership, contract, sanity checks.
+        // Both workers export { execute } and are registered to 'graph-capability'.
+        const [credResult, quotaResult] = await Promise.all([
+          ctx.invokeWorker('credential-capability', { businessAccountId: baId }),
+          ctx.invokeWorker('quota-intelligence', { businessAccountId: baId }),
+        ]);
+
+        cred.lastObservedAt = Date.now();
+        cred.consecutiveFailures = credResult.consecutiveFailures || 0;
+
+        // Cross-kernel result path: notify publishing FSM via dispatchGlobal.
+        if (ctx && ctx.dispatchGlobal && event.sourceDomain2 === 'publishing') {
+          ctx.dispatchGlobal({
+            type: 'CAPABILITY_CHECK_RESULT',
+            sourceDomain: 'graph-capability',
+            businessAccountId: baId,
+            correlationId: event.correlationId || null,
+            capabilityState: credResult.capabilityState || 'UNKNOWN',
+            quotaState: quotaResult.quotaState || 'NONE',
+            freshnessMs: credResult.freshnessMs || null,
+            consecutiveFailures: cred.consecutiveFailures,
+          });
+        }
+      } catch (err) {
+        // Worker invocation failed through CK gate — record failure
+        cred.consecutiveFailures = (cred.consecutiveFailures || 0) + 1;
+
+        if (ctx && ctx.dispatchGlobal && event.sourceDomain2 === 'publishing') {
+          ctx.dispatchGlobal({
+            type: 'CAPABILITY_CHECK_RESULT',
+            sourceDomain: 'graph-capability',
+            businessAccountId: baId,
+            correlationId: event.correlationId || null,
+            capabilityState: 'UNAUTHORIZED',
+            quotaState: 'NONE',
+            freshnessMs: null,
+            consecutiveFailures: cred.consecutiveFailures,
+          });
+        }
+      }
+
       return [];
     },
   },
 
-  // ── Result from capability-check substrate (Phase 9) ───────────────────
-  // The orchestrator's governance.subscribeAction intercepted CAPABILITY_CHECK,
-  // ran the substrate workers, and dispatched this event back through CK.
-  //
-  // Cross-kernel result path (publishing kernel):
-  //   publishing-fsm → ctx.dispatchGlobal(CAPABILITY_CHECK) → CK → GC orchestrator
-  //     → capability-check substrate → CAPABILITY_CHECK_COMPLETE → CK
-  //       → GC FSM (here) → ctx.dispatchGlobal(CAPABILITY_CHECK_RESULT)
-  //         → CK → publishing-fsm CAPABILITY_CHECK_RESULT handler.
-  //   The original sourceDomain is preserved as sourceDomain2 by the publishing FSM.
-  //
-  //   When sourceDomain2 === 'publishing', emit CAPABILITY_CHECK_RESULT back
-  //   via dispatchGlobal so CK routes it to the publishing FSM. The publishing
-  //   FSM does NOT have CAPABILITY_CHECK_COMPLETE in its TRANSITION_MAP.
+  // ── CAPABILITY_CHECK_COMPLETE — defensive (deprecated primary path) ────
+  // Previously the orchestrator dispatched this event back through CK after
+  // running the capability-check substrate. Now the FSM's CAPABILITY_CHECK
+  // handler calls ctx.invokeWorker() directly and dispatches
+  // CAPABILITY_CHECK_RESULT inline. This handler is kept for defensive
+  // compatibility — if something external dispatches CAPABILITY_CHECK_COMPLETE
+  // (e.g. a test harness), it still updates the cred record and routes the
+  // result appropriately.
   CAPABILITY_CHECK_COMPLETE: {
     target: null,
     guard: (event) => {
@@ -510,10 +546,9 @@ const TRANSITION_MAP = {
     },
   },
 
-  // ── Capability check failure — cross-kernel path ─────────────────────────
-  // Same result path as CAPABILITY_CHECK_COMPLETE, but with UNAUTHORIZED state.
-  // The publishing FSM's CAPABILITY_CHECK_RESULT guard handles UNAUTHORIZED/UNKNOWN
-  // by emitting AUTH_FAILURE_STRIKE + PUBLISH_FAILURE and transitioning to IDLE.
+  // ── CAPABILITY_CHECK_FAILED — defensive (deprecated primary path) ───────
+  // Kept for defensive compatibility — see CAPABILITY_CHECK_COMPLETE.
+  // The primary failure path is now in CAPABILITY_CHECK's try/catch.
   CAPABILITY_CHECK_FAILED: {
     target: null,
     guard: (event) => {
@@ -1074,15 +1109,32 @@ const TRANSITION_MAP = {
     }],
   },
 
-  // ── WORKER_RESULT — observability-only (no workers registered) ──────────
-  // Graph-capability FSM does not register or invoke workers through
-  // ctx.invokeWorker(). This handler exists for completeness so that
-  // the domain's lineage partition can accept WORKER_RESULT events
-  // if workers are ever registered.
+  // ── WORKER_RESULT — record every CK-invoked worker outcome ──────────────
+  // Emitted by CK.invokeWorker after each worker.execute(). The GC FSM does
+  // not currently use invokeWorker (workers are called through the
+  // orchestrator/substrate pattern), but this handler exists for consistency
+  // with the canonical kernel architecture. If a future worker is wired
+  // through invokeWorker, the outcome is stamped on the cred record.
   WORKER_RESULT: {
     target: null,
-    guard: () => ({ allowed: true }),
-    buildActions: () => [],
+    guard: (event) => {
+      if (!event.workerName || !event.businessAccountId) {
+        return { allowed: false, reason: 'WORKER_RESULT requires workerName, businessAccountId' };
+      }
+      return { allowed: true };
+    },
+    buildActions: (event) => {
+      const cred = _byCred.get(event.businessAccountId);
+      if (cred) {
+        cred.lastWorkerResult = {
+          workerName: event.workerName,
+          outcome: event.outcome || 'completed',
+          error: event.error || null,
+          recordedAt: Date.now(),
+        };
+      }
+      return [];
+    },
   },
 };
 

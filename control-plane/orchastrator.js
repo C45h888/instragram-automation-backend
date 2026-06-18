@@ -51,6 +51,7 @@ const cognitionScanner = require('../postgres-telemetry-kernel/cognition-scanner
 const orphanMessageRepair = require('../reconciliation-kernel/orphan-message-repair');
 const dedupKernel = require('../dedup-kernel');
 const dedupOrchestrator = require('../dedup-kernel/orchestrator');
+const persistTelemetryOrchestrator = require('../postgres-telemetry-kernel/orchestrator');
 
 // ── 8 Domain FSMs ───────────────────────────────────────────────────────────
 const acquisitionFsm = require('../acquisition-kernel/fsm');
@@ -104,6 +105,7 @@ function _wire() {
   reconciliationFsm.setGovernance(constitutional);
   telemetryCoordinationFsm.setGovernance(constitutional);
   persistTelemetryFsm.setGovernance(constitutional);
+  persistTelemetryFsm.setReadingSubstrate(require('../control-plane/governance/domains/reading-substrate'));
 
   // Phase 4 (base): IG recovery substrate façade + workers.
   // The substrate dispatches IG-specific recovery recommendations
@@ -303,6 +305,7 @@ function _wire() {
   lifecycleOrchestrator.wire(constitutional);
   degradationOrchestrator.wire(constitutional);
   dedupOrchestrator.wire(constitutional, dedupFsm);
+  persistTelemetryOrchestrator.wire(constitutional);
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
