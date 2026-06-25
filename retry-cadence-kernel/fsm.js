@@ -1555,6 +1555,21 @@ const TRANSITION_MAP = {
   },
 };
 
+function _emitWorkerResult(workerName, result) {
+  const obs = _obs();
+  if (!obs) return;
+  const outcome = (result && result.status) || (result && !result.error ? 'completed' : 'failed');
+  obs.transition({
+    domain: 'engagement',
+    entity: 'worker_result',
+    entityId: `engagement:${workerName}`,
+    previousState: null,
+    nextState: 'WORKER_RESULT',
+    authority: 'engagement-fsm',
+    raw: { workerName, domain: 'engagement', accountId: null, outcome, data: (result && result.data) || null, error: (result && result.error) || null, invokedAt: Date.now() },
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3. Domain-local runtime state (private)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1963,7 +1978,7 @@ async function _executeRetry(context, fsmCtx) {
     return;
   }
   try {
-    await context.invokeWorker(context.workerName, {
+    const result = await context.invokeWorker(context.workerName, {
       domain: context.domain,
       accountId: context.accountId,
       intentId: context.intentId,
@@ -1972,6 +1987,7 @@ async function _executeRetry(context, fsmCtx) {
       maxRetries: context.maxRetries,
       governance: context.governance,
     });
+    _emitWorkerResult(context.workerName, result);
   } catch (err) {
     console.error(`[engagement-fsm] CTX gate blocked worker '${context.workerName}' for ${context.intentId}:`, err.message);
   }

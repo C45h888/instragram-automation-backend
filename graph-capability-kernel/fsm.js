@@ -457,11 +457,15 @@ const TRANSITION_MAP = {
           ctx.invokeWorker('quota-intelligence', { businessAccountId: baId }),
         ]);
 
+        // FSM owns ledger emission for both worker results
+        _emitWorkerResult('credential-capability', credResult, baId);
+        _emitWorkerResult('quota-intelligence', quotaResult, baId);
+
         cred.lastObservedAt = Date.now();
         cred.consecutiveFailures = credResult.consecutiveFailures || 0;
 
         // Cross-kernel result path: notify publishing FSM via dispatchGlobal.
-        if (ctx && ctx.dispatchGlobal && event.sourceDomain2 === 'publishing') {
+        if (ctx && ctx.dispatchGlobal && event.sourceDomain === 'publishing') {
           ctx.dispatchGlobal({
             type: 'CAPABILITY_CHECK_RESULT',
             sourceDomain: 'graph-capability',
@@ -477,7 +481,7 @@ const TRANSITION_MAP = {
         // Worker invocation failed through CK gate — record failure
         cred.consecutiveFailures = (cred.consecutiveFailures || 0) + 1;
 
-        if (ctx && ctx.dispatchGlobal && event.sourceDomain2 === 'publishing') {
+        if (ctx && ctx.dispatchGlobal && event.sourceDomain === 'publishing') {
           ctx.dispatchGlobal({
             type: 'CAPABILITY_CHECK_RESULT',
             sourceDomain: 'graph-capability',
@@ -527,9 +531,9 @@ const TRANSITION_MAP = {
       cred.lastObservedAt = Date.now();
 
       // Cross-kernel result path: notify the publishing FSM via dispatchGlobal.
-      // sourceDomain2 carries the original sourceDomain from the publishing FSM's
-      // CAPABILITY_CHECK dispatch, so we know this is a cross-kernel call.
-      if (ctx && ctx.dispatchGlobal && event.sourceDomain2 === 'publishing') {
+      // event.sourceDomain carries the original sourceDomain from the publishing
+      // FSM's CAPABILITY_CHECK dispatch, so we know this is a cross-kernel call.
+      if (ctx && ctx.dispatchGlobal && event.sourceDomain === 'publishing') {
         ctx.dispatchGlobal({
           type: 'CAPABILITY_CHECK_RESULT',
           sourceDomain: 'graph-capability',
@@ -573,7 +577,7 @@ const TRANSITION_MAP = {
       cred.consecutiveFailures = (cred.consecutiveFailures || 0) + 1;
 
       // Cross-kernel result path: notify the publishing FSM via dispatchGlobal.
-      if (ctx && ctx.dispatchGlobal && event.sourceDomain2 === 'publishing') {
+      if (ctx && ctx.dispatchGlobal && event.sourceDomain === 'publishing') {
         ctx.dispatchGlobal({
           type: 'CAPABILITY_CHECK_RESULT',
           sourceDomain: 'graph-capability',
@@ -1110,11 +1114,11 @@ const TRANSITION_MAP = {
   },
 
   // ── WORKER_RESULT — record every CK-invoked worker outcome ──────────────
-  // Emitted by CK.invokeWorker after each worker.execute(). The GC FSM does
-  // not currently use invokeWorker (workers are called through the
-  // orchestrator/substrate pattern), but this handler exists for consistency
-  // with the canonical kernel architecture. If a future worker is wired
-  // through invokeWorker, the outcome is stamped on the cred record.
+  // Emitted by CK.invokeWorker after each worker.execute(). The GC FSM now
+  // uses invokeWorker in CAPABILITY_CHECK (credential-capability + quota-
+  // intelligence workers) via ctx.invokeWorker(). This handler receives the
+  // outcome from those invocations and stamps lastWorkerResult on the cred
+  // record for diagnostic traceability.
   WORKER_RESULT: {
     target: null,
     guard: (event) => {
@@ -1137,6 +1141,32 @@ const TRANSITION_MAP = {
     },
   },
 };
+
+// ── Worker result ledger emission — FSM owns the authority ───────────────
+// Called after ctx.invokeWorker() returns. The FSM writes to the
+// observability ledger with its own domain authority instead of CK doing it.
+function _emitWorkerResult(workerName, result, baId) {
+  const obs = _obs();
+  if (!obs) return;
+  const outcome = (result && result.status) || (result && !result.error ? 'completed' : 'failed');
+  obs.transition({
+    domain: 'graph-capability',
+    entity: 'worker_result',
+    entityId: `graph-capability:${workerName}`,
+    previousState: null,
+    nextState: 'WORKER_RESULT',
+    authority: 'graph-capability-fsm',
+    raw: {
+      workerName,
+      domain: 'graph-capability',
+      accountId: baId || null,
+      outcome,
+      data: (result && result.data) || null,
+      error: (result && result.error) || null,
+      invokedAt: Date.now(),
+    },
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 4. Domain-local runtime — per-cred map (private)

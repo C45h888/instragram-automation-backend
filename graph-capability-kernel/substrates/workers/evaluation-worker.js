@@ -64,11 +64,11 @@ class EvaluationWorker {
           evaluatedAt: Date.now(),
         };
 
-        fsm.dispatch({
+        this._governance.dispatch({
           type: 'CAPABILITY_OBSERVATION',
           envelope,
           businessAccountId,
-        }, this._governance);
+        });
       } catch (err) {
         console.error(`[evaluation-worker] Re-evaluation failed for ${businessAccountId}:`, err.message);
       }

@@ -123,6 +123,7 @@ const TRANSITION_MAP = {
       let workerResult = null;
       try {
         workerResult = await ctx.invokeWorker('lifecycle-refresh', { accounts });
+        _emitWorkerResult('lifecycle-refresh', workerResult);
       } catch (err) {
         console.error('[scheduling-fsm] lifecycle-refresh worker failed:', err.message);
         return [{ type: 'LOG_DEGRADED', substate: 'LIFECYCLE_FAILURE', reason: err.message }];
@@ -170,6 +171,7 @@ const TRANSITION_MAP = {
         // Also emit UPDATE_ACCOUNTS so the membrane can update CK's account list
         try {
           await ctx.invokeWorker('safety-check', {});
+          _emitWorkerResult('safety-check', null);
         } catch (err) {
           console.error('[scheduling-fsm] safety-check worker failed:', err.message);
           return [{ type: 'LOG_DEGRADED', substate: 'SAFETY_FAILURE', reason: err.message }];
@@ -193,6 +195,7 @@ const TRANSITION_MAP = {
       let metricsResult = null;
       try {
         metricsResult = await ctx.invokeWorker('metrics-report', {});
+        _emitWorkerResult('metrics-report', metricsResult);
       } catch (err) {
         console.error('[scheduling-fsm] metrics-report worker failed:', err.message);
         return [{ type: 'LOG_DEGRADED', substate: 'METRICS_FAILURE', reason: err.message }];
@@ -294,6 +297,7 @@ const TRANSITION_MAP = {
           queryType: event.queryType,
           params: event.params,
         });
+        _emitWorkerResult('metrics-query', result);
         _readCache.set(cacheKey, { data: result.data, cachedAt: Date.now() });
         return [
           { type: 'METRICS_CACHE_MISS', queryId: event.queryId, queryType: event.queryType },
@@ -330,6 +334,7 @@ const TRANSITION_MAP = {
 
       try {
         const result = await ctx.invokeWorker('metrics-flush', { records: batch });
+        _emitWorkerResult('metrics-flush', result);
         _lastFlushAt = Date.now();
         return [{
           type: 'METRICS_BUFFER_DRAINED',
@@ -373,6 +378,7 @@ const TRANSITION_MAP = {
         _readCache.clear();
         try {
           await ctx.invokeWorker('metrics-flush', { records: batch });
+          _emitWorkerResult('metrics-flush', null);
           _lastFlushAt = Date.now();
           actions.push({ type: 'METRICS_BUFFER_DRAINED', count });
         } catch (err) {
@@ -412,6 +418,30 @@ const TRANSITION_MAP = {
     },
   },
 };
+
+// ── Worker result ledger emission — FSM owns the authority ───────────────
+function _emitWorkerResult(workerName, result) {
+  const obs = _obs();
+  if (!obs) return;
+  const outcome = (result && result.status) || (result && !result.error ? 'completed' : 'failed');
+  obs.transition({
+    domain: 'scheduling',
+    entity: 'worker_result',
+    entityId: `scheduling:${workerName}`,
+    previousState: null,
+    nextState: 'WORKER_RESULT',
+    authority: 'scheduling-fsm',
+    raw: {
+      workerName,
+      domain: 'scheduling',
+      accountId: null,
+      outcome,
+      data: (result && result.data) || null,
+      error: (result && result.error) || null,
+      invokedAt: Date.now(),
+    },
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3. Domain-local runtime state (private)

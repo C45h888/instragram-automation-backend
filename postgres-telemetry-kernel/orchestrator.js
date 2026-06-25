@@ -2,49 +2,52 @@
 // Persist Telemetry Orchestrator: constitutional coordination membrane.
 //
 // Owns: routing EXECUTE_DB_READ / EXECUTE_DB_WRITE actions from the FSM
-//       through bounded substrates, emitting completion events through CK.
-// Does NOT own: FSM state transitions, read/write policy, whitelist validation,
-//               backpressure tracking, idempotency key generation.
+//       through bounded substrates.
+// Does NOT own: event emission, FSM state transitions, read/write policy,
+//               whitelist validation, backpressure tracking, idempotency keys.
 //
 // Constitutional purity: this orchestrator mechanically dispatches reads and
 // writes without understanding what the data means. It translates FSM actions
-// into bounded I/O and emits normalized outcomes.
+// into bounded I/O and passes raw results back to the FSM for emission.
+//
+// Semantic authority: the FSM owns emission (receiveWriteResult / receiveReadResult).
+// The orchestrator is a bounded executor — it calls I/O, passes results back.
 //
 // Flow (canonical):
-//   FSM buildActions → ctx.dispatchGlobal({ type: 'EXECUTE_DB_READ', ... })
-//     → CK emits actions → subscribeAction('EXECUTE_DB_READ') fires
+//   FSM buildActions → [{ type: 'EXECUTE_DB_READ', ... }]
+//     → CK emits action → subscribeAction('EXECUTE_DB_READ') fires
 //     → orchestrator calls readingSubstrate.executeRead()
-//     → orchestrator dispatches DB_READ_COMPLETE through CK
-//     → CK routes DB_READ_COMPLETE to persist-telemetry FSM
-//     → FSM handles completion, emits READ_RESULT_AVAILABLE to calling domain
-//
-//   FSM buildActions → ctx.dispatchGlobal({ type: 'EXECUTE_DB_WRITE', ... })
-//     → CK emits actions → subscribeAction('EXECUTE_DB_WRITE') fires
-//     → orchestrator calls writer.execute(event, ctx)
-//     → writer calls ctx.emit(DB_WRITE_COMPLETE / DB_WRITE_FAILED)
-//     → orchestrator dispatches completion through CK
-//     → CK routes to FSM for state transition
+//     → orchestrator calls fsm.receiveReadResult(action, result)
+//       → FSM dispatches DB_READ_COMPLETE through governance
+//       → CK routes DB_READ_COMPLETE to FSM handler
+//       → FSM handles completion, emits READ_RESULT_AVAILABLE to calling domain
 
 const readingSubstrate = require('../control-plane/governance/domains/reading-substrate');
 const writers = require('./writers');
 
-// ── Governance reference — set by wire() ─────────────────────────────────────
+// ── Governance + FSM references — set by wire() ─────────────────────────────
 let _governance = null;
+let _fsm = null;
 
 /**
- * Wire this orchestrator to the governance kernel.
+ * Wire this orchestrator to the governance kernel and FSM.
  * Registers per-action-type subscribers for persist-telemetry actions.
- * Called at boot via orchestator.js wire() in control-plane/orchastrator.js.
+ * The FSM reference is used to pass raw I/O results back — the FSM owns emission.
  */
-function wire(governance) {
+function wire(governance, fsm) {
   if (!governance || typeof governance.dispatch !== 'function') {
     throw new Error('[persist-telemetry-orchestrator] wire() requires a governance object with dispatch()');
   }
+  if (!fsm || typeof fsm.receiveWriteResult !== 'function' || typeof fsm.receiveReadResult !== 'function') {
+    throw new Error('[persist-telemetry-orchestrator] wire() requires an FSM with receiveWriteResult() and receiveReadResult()');
+  }
   _governance = governance;
+  _fsm = fsm;
 
   // ── EXECUTE_DB_READ: FSM validated the read, orchestrator executes it ───────
   // FSM (DB_READ_REQUESTED) has already done: whitelist guard, in-flight tracking,
-  // pending-read registration. This handler owns the actual read execution.
+  // pending-read registration. This handler owns the actual read execution and
+  // passes the raw result back to the FSM for emission.
   _governance.subscribeAction('EXECUTE_DB_READ', async (action) => {
     const { readDomain, accountId, readId, params } = action;
 
@@ -55,28 +58,11 @@ function wire(governance) {
 
     try {
       const result = await readingSubstrate.executeRead(readDomain, params, readId);
-
-      // Emit DB_READ_COMPLETE through CK — success and failure both flow through here.
-      // CK routes DB_READ_COMPLETE to persist-telemetry FSM for state transition
-      // and READ_RESULT_AVAILABLE forwarding to the calling domain.
-      _governance.dispatch({
-        type: 'DB_READ_COMPLETE',
-        readDomain,
-        accountId,
-        readId,
-        success: result.success,
-        data: result.data || null,
-        error: result.error || null,
-        latencyMs: result.latencyMs || 0,
-        cached: result.cached || false,
-      });
+      // Pass raw result to FSM — FSM owns emission of DB_READ_COMPLETE
+      _fsm.receiveReadResult(action, result);
     } catch (err) {
-      // Hard error — reading substrate threw. Emit failure through CK.
-      _governance.dispatch({
-        type: 'DB_READ_COMPLETE',
-        readDomain,
-        accountId,
-        readId,
+      // Hard error — reading substrate threw. Pass error result to FSM.
+      _fsm.receiveReadResult(action, {
         success: false,
         data: null,
         error: err.message,
@@ -89,7 +75,8 @@ function wire(governance) {
   // ── EXECUTE_DB_WRITE: FSM validated the write, orchestrator executes it ─────
   // FSM (DB_WRITE_REQUESTED) has already done: table whitelist, sanity gate,
   // in-flight tracking, idempotency key generation. This handler owns the
-  // actual write execution through the domain writer.
+  // actual write execution through the domain writer and passes the raw result
+  // back to the FSM for emission.
   _governance.subscribeAction('EXECUTE_DB_WRITE', async (action) => {
     const { domain, accountId, intentId, table, operation, rows, idempotencyKey } = action;
 
@@ -101,20 +88,10 @@ function wire(governance) {
     const writer = writers.getWriter(domain);
 
     if (!writer) {
-      // No writer registered for this domain — emit failure and return.
-      // The FSM's DB_WRITE_REQUESTED guard should have caught unknown domains,
-      // but we handle it here as a defensive layer.
-      console.warn(`[persist-telemetry-orchestrator] EXECUTE_DB_WRITE: no writer for domain="${domain}"`);
-      _governance.dispatch({
-        type: 'DB_WRITE_COMPLETE',
-        domain,
-        accountId,
-        intentId,
-        table,
+      // No writer registered for this domain — pass failure result to FSM.
+      _fsm.receiveWriteResult(action, {
         count: 0,
-        status: 'failed',
         error: `no_writer_for_domain: ${domain}`,
-        authority: 'persist-telemetry-orchestrator',
       });
       return;
     }
@@ -132,39 +109,21 @@ function wire(governance) {
 
       // writer.execute() is responsible for emitting DB_WRITE_COMPLETE or
       // DB_WRITE_FAILED via ctx.emit(). If it returned without emitting (should
-      // not happen with current writers), emit a defensive completion here.
+      // not happen with current writers), pass the result to the FSM here.
       // This path exists to prevent silent black holes if a writer is misbehaving.
       if (result && !result.emitted) {
-        _governance.dispatch({
-          type: 'DB_WRITE_COMPLETE',
-          domain,
-          accountId,
-          intentId,
-          table,
-          count: result.count || 0,
-          status: result.success ? 'completed' : 'failed',
-          error: result.error || null,
-          authority: 'persist-telemetry-orchestrator',
-        });
+        _fsm.receiveWriteResult(action, result);
       }
     } catch (err) {
       // Hard error — writer threw without emitting a completion event.
-      console.error(`[persist-telemetry-orchestrator] EXECUTE_DB_WRITE threw for ${domain}/${table}:`, err.message);
-      _governance.dispatch({
-        type: 'DB_WRITE_COMPLETE',
-        domain,
-        accountId,
-        intentId,
-        table,
+      _fsm.receiveWriteResult(action, {
         count: 0,
-        status: 'failed',
         error: err.message,
-        authority: 'persist-telemetry-orchestrator',
       });
     }
   });
 
-  console.log('[persist-telemetry-orchestrator] wired to governance');
+  console.log('[persist-telemetry-orchestrator] wired to governance + FSM');
 }
 
 module.exports = { wire };

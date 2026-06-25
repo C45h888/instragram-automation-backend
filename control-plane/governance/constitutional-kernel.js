@@ -388,10 +388,12 @@ const DOMAIN_EVENT_MAP = {
   CAPABILITY_CHECK_COMPLETE: 'graph-capability',
   CAPABILITY_CHECK_FAILED: 'graph-capability',
   IMMEDIATE_TOKEN_REFRESH: 'graph-capability',
+  CAPABILITY_OBSERVATION: 'graph-capability',  // dispatched by evaluation-worker through CK; routes back to GC FSM for constitutional validation
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',
   DB_WRITE_COMPLETE: 'persist-telemetry',
+  DB_WRITE_CONFIRMED: 'persist-telemetry',  // observation span — routed to persist-telemetry FSM (null-target transition, no state change)
   DB_WRITE_ACKNOWLEDGED: 'graph-capability',
   DB_READ_OBSERVED: 'persist-telemetry',
   DB_READ_REQUESTED: 'persist-telemetry',
@@ -1418,33 +1420,10 @@ function dispatch(event) {
         _currentWorkerContext = { fsmName: domainName, workerName };
         try {
           const _result = await worker.execute(params);
-          // Emit WORKER_RESULT — records every FSM-invoked worker outcome
-          // into the domain's observability partition. Each FSM handles
-          // WORKER_RESULT in its transition map to update domain-local
-          // state (intent records, cred records, entry state, etc.).
-          try {
-            const obs = _getObservabilityTransition();
-            if (obs) {
-              obs.transition({
-                domain: domainName,
-                entity: 'worker_result',
-                entityId: `${domainName}:${workerName}`,
-                previousState: null,
-                nextState: 'WORKER_RESULT',
-                authority: 'constitutional-kernel',
-                raw: {
-                  workerName,
-                  domain: domainName,
-                  accountId: params?.accountId || null,
-                  intentId: params?.intentId || null,
-                  outcome: _result?.status || 'completed',
-                  data: _result?.data || null,
-                  error: _result?.error || null,
-                  invokedAt: Date.now(),
-                },
-              });
-            }
-          } catch (_) { /* worker emission is non-critical */ }
+          // WORKER_RESULT is no longer emitted here — each FSM calls
+          // its own _emitWorkerResult() after receiving the result
+          // inline from await ctx.invokeWorker(). The FSM owns the
+          // ledger emission with its own domain authority.
           return _result;
         } finally {
           _currentWorkerContext = prevCtx;

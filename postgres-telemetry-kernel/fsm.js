@@ -406,27 +406,31 @@ const TRANSITION_MAP = {
         }];
       }
 
-      // Success confirmation span: the constitutional path for retry-cadence
-      // is the FAILURE path (DB_PERSIST_FAILURE on DB_WRITE_FAILED). The
-      // success path closes the in-flight counter and emits a span so the
-      // observability plane sees the write landed. No retry is instantiated
-      // — the retry-cadence kernel only acts on failures.
+      // ── Success confirmation span ──────────────────────────────────────────
+      // The constitutional retry path is failure-only (DB_PERSIST_FAILURE on
+      // DB_WRITE_FAILED). The success path closes the in-flight counter and
+      // emits an observation span so the observability plane sees the write
+      // landed. DB_WRITE_CONFIRMED is routed by CK to the persist-telemetry
+      // FSM itself (DOMAIN_EVENT_MAP → 'persist-telemetry'), accepted as a
+      // null-target transition — the event's existence in the lineage ledger
+      // IS the observation. No retry is instantiated.
       if (ctx && ctx.dispatchGlobal) {
-        try {
-          ctx.dispatchGlobal({
-            type: 'DB_WRITE_CONFIRMED',
-            domain, accountId, intentId, table,
-            count: count || 0,
-            writeId: event.writeId || null,
-            lineageId: event.lineageId || null,
-          });
-        } catch (_) { /* observation is best-effort; do not block the path */ }
+        ctx.dispatchGlobal({
+          type: 'DB_WRITE_CONFIRMED',
+          domain, accountId, intentId, table,
+          count: count || 0,
+          writeId: event.writeId || null,
+          lineageId: event.lineageId || null,
+        });
       }
 
-      // Forward completion to originating domain so it can resolve pending writes.
-      // DB_WRITE_ACKNOWLEDGED is routed by CK to the domain that dispatched DB_WRITE_REQUESTED.
-      // This closes the request-and-await loop for credential status updates and other
-      // operational writes where the caller must confirm the write landed.
+      // ── Completion signals to originating domains ──────────────────────────
+      // PARSING_COMPLETE and DB_WRITE_ACKNOWLEDGED are routed via CK's DOMAIN_EVENT_MAP
+      // to their target FSMs ('acquisition' and 'graph-capability' respectively).
+      // WRITE_ACQUISITION_RESULT is pushed to the buildActions return array so it
+      // goes through CK's _emitActions → reaches the acquisition orchestrator's
+      // subscribeAction handler directly (no FSM routing needed — it's a
+      // mechanical notification, not a state transition).
       const actions = [];
       if (ctx && ctx.dispatchGlobal) {
         ctx.dispatchGlobal({
@@ -434,13 +438,15 @@ const TRANSITION_MAP = {
           accountId, domain, intentId,
           result: { status: 'completed', count },
         });
-        ctx.dispatchGlobal({
+        actions.push({
           type: 'WRITE_ACQUISITION_RESULT',
           accountId, domain, intentId,
           result: { status: 'completed', count },
         });
-        // Forward acknowledgement to originating domain — graph-capability FSM
-        // resolves pendingWrites Promise, unblocking the awaiting worker.
+        // DB_WRITE_ACKNOWLEDGED always routes to 'graph-capability' (static map
+        // entry) — this is correct because only graph-capability resolves
+        // pendingWrites promises through this signal. Acquisition kernel handles
+        // write completion directly via DB_WRITE_COMPLETE routed to its FSM.
         ctx.dispatchGlobal({
           type: 'DB_WRITE_ACKNOWLEDGED',
           domain, accountId, table,
@@ -452,6 +458,16 @@ const TRANSITION_MAP = {
 
       return actions;
     },
+  },
+
+  // ── DB_WRITE_CONFIRMED — observation span (write landed) ─────────────────
+  // The event is routed by CK to this FSM via DOMAIN_EVENT_MAP →
+  // 'persist-telemetry'. target: null means no state change — the event's
+  // presence in the lineage ledger IS the observation. This satisfies the
+  // "observability plane" contract without processing overhead.
+  DB_WRITE_CONFIRMED: {
+    target: null,
+    guard: () => ({ allowed: true }),
   },
 
   // ── DB_WRITE_FAILED — worker emitted a raw failure ───────────────────
@@ -618,31 +634,6 @@ const TRANSITION_MAP = {
       return actions;
     },
   },
-
-  // ── WORKER_RESULT — record every CK-invoked worker outcome ──────────────
-  // Emitted by CK.invokeWorker after each worker.execute(). Persist-telemetry
-  // FSM does not currently use invokeWorker (DB ops are handled through CK's
-  // GLOBAL_TRANSITION_MAP), but this handler exists for consistency with the
-  // canonical kernel architecture. Outcome is tracked per worker for diagnostic
-  // traceability.
-  WORKER_RESULT: {
-    target: null,
-    guard: (event) => {
-      if (!event.workerName) {
-        return { allowed: false, reason: 'WORKER_RESULT requires workerName' };
-      }
-      return { allowed: true };
-    },
-    buildActions: (event) => {
-      _lastWorkerResults.set(event.workerName, {
-        outcome: event.outcome || 'completed',
-        error: event.error || null,
-        accountId: event.accountId || null,
-        recordedAt: Date.now(),
-      });
-      return [];
-    },
-  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -687,12 +678,6 @@ let _readsInFlight = 0;   // reads in flight
 // Stored at DB_READ_REQUESTED so the retry path can reconstruct the
 // original read query when a read fails and needs retrying.
 const _pendingReads = new Map();
-
-// ── Last worker results: workerName → { outcome, error, accountId, recordedAt } ─
-// Tracks the most recent CK.invokeWorker outcome per worker for diagnostic
-// traceability. Persist-telemetry FSM does not currently use invokeWorker,
-// but the map exists for consistency with the canonical kernel architecture.
-const _lastWorkerResults = new Map();
 
 // ── Default fail-open sanity check (universal gate pattern) ─────────────
 // The ctx.sanityCheck is the universal gate. The FSM calls it
@@ -799,6 +784,67 @@ function init(rehydratedState) {
   }
 }
 
+function _emitWorkerResult(workerName, result, accountId) {
+  const obs = _obs();
+  if (!obs) return;
+  const outcome = (result && result.status) || (result && !result.error ? 'completed' : 'failed');
+  obs.transition({
+    domain: 'persist-telemetry',
+    entity: 'worker_result',
+    entityId: `persist-telemetry:${workerName}`,
+    previousState: null,
+    nextState: 'WORKER_RESULT',
+    authority: 'persist-telemetry-fsm',
+    raw: { workerName, domain: 'persist-telemetry', accountId: accountId || null, outcome, data: (result && result.data) || null, error: (result && result.error) || null, invokedAt: Date.now() },
+  });
+}
+
+// ── Orchestrator result receivers ─────────────────────────────────────────
+// The orchestrator executes I/O and passes raw results back to the FSM.
+// The FSM owns the emission — it decides the event type and dispatches
+// through governance. This preserves semantic authority: the orchestrator
+// is a bounded executor, the FSM is the sole event issuer.
+//
+// Called from: persist-telemetry-kernel/orchestrator.js subscriber callbacks.
+// Flow: orchestrator → fsm.receive* → governance.dispatch → CK → FSM handler.
+
+function receiveWriteResult(action, result) {
+  const { domain, accountId, intentId, table } = action;
+  _emitWorkerResult('writer:writes', result, action.accountId);
+  const success = result && !result.error;
+  if (_governance) {
+    _governance.dispatch({
+      type: 'DB_WRITE_COMPLETE',
+      domain,
+      accountId,
+      intentId,
+      table,
+      count: (result && result.count) || 0,
+      status: success ? 'completed' : 'failed',
+      error: (result && result.error) || null,
+      authority: 'persist-telemetry-fsm',
+    });
+  }
+}
+
+function receiveReadResult(action, result) {
+  const { readDomain, accountId, readId } = action;
+  _emitWorkerResult('reader-substrate', result, action.accountId);
+  if (_governance) {
+    _governance.dispatch({
+      type: 'DB_READ_COMPLETE',
+      readDomain,
+      accountId,
+      readId,
+      success: result ? result.success : false,
+      data: (result && result.data) || null,
+      error: (result && result.error) || null,
+      latencyMs: (result && result.latencyMs) || 0,
+      cached: (result && result.cached) || false,
+    });
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 6. Observability — domain state queries
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -821,6 +867,8 @@ module.exports = {
   name: 'persist-telemetry',
   dispatch,
   init,
+  receiveWriteResult,
+  receiveReadResult,
   getState,
   exportState,
   getHealth,

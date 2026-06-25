@@ -205,7 +205,8 @@ const TRANSITION_MAP = {
       // can schedule a retry to restore substrate health.
       try {
         if (ctx && typeof ctx.invokeWorker === 'function') {
-          await ctx.invokeWorker('clear-tick', {});
+          const clearTickResult = await ctx.invokeWorker('clear-tick', {});
+          _emitWorkerResult('clear-tick', clearTickResult);
         } else {
           _substrate().clearTick();
         }
@@ -299,6 +300,7 @@ const TRANSITION_MAP = {
           checkResult = await ctx.invokeWorker('check-dedup', {
             accountId, actionType, resourceId, intentId,
           });
+          _emitWorkerResult('check-dedup', checkResult);
         } else {
           checkResult = await _substrate().isInFlight(
             accountId, actionType, resourceId, intentId
@@ -345,9 +347,10 @@ const TRANSITION_MAP = {
       // retry to restore substrate health.
       try {
         if (ctx && typeof ctx.invokeWorker === 'function') {
-          await ctx.invokeWorker('mark-in-flight', {
+          const markInFlightResult = await ctx.invokeWorker('mark-in-flight', {
             accountId, actionType, resourceId, intentId,
           });
+          _emitWorkerResult('mark-in-flight', markInFlightResult);
         } else {
           await _substrate().markInFlight(accountId, actionType, resourceId, { intentId });
         }
@@ -426,6 +429,7 @@ const TRANSITION_MAP = {
           checkResult = await ctx.invokeWorker('check-mutation-dedup', {
             accountId, actionType, resourceId, intentId,
           });
+          _emitWorkerResult('check-mutation-dedup', checkResult);
         } else {
           checkResult = await _mutationSubstrate().isInFlightMutation(
             accountId, actionType, resourceId, intentId
@@ -461,9 +465,10 @@ const TRANSITION_MAP = {
       // ── 3. Mark in-flight via bounded worker (CK gate) ─────────────
       try {
         if (ctx && typeof ctx.invokeWorker === 'function') {
-          await ctx.invokeWorker('mark-mutation-in-flight', {
+          const markMutationResult = await ctx.invokeWorker('mark-mutation-in-flight', {
             accountId, actionType, resourceId, intentId,
           });
+          _emitWorkerResult('mark-mutation-in-flight', markMutationResult);
         } else {
           await _mutationSubstrate().markInFlightMutation(accountId, actionType, resourceId, { intentId });
         }
@@ -516,6 +521,7 @@ const TRANSITION_MAP = {
           checkResult = await ctx.invokeWorker('check-emission-dedup', {
             accountId, actionType, resourceId, intentId,
           });
+          _emitWorkerResult('check-emission-dedup', checkResult);
         } else {
           checkResult = await _mutationSubstrate().isInFlightEmission(
             accountId, actionType, resourceId, intentId
@@ -551,9 +557,10 @@ const TRANSITION_MAP = {
       // ── 3. Mark in-flight via bounded worker (CK gate) ─────────────
       try {
         if (ctx && typeof ctx.invokeWorker === 'function') {
-          await ctx.invokeWorker('mark-emission-in-flight', {
+          const markEmissionResult = await ctx.invokeWorker('mark-emission-in-flight', {
             accountId, actionType, resourceId, intentId,
           });
+          _emitWorkerResult('mark-emission-in-flight', markEmissionResult);
         } else {
           await _mutationSubstrate().markInFlightEmission(accountId, actionType, resourceId, { intentId });
         }
@@ -693,6 +700,22 @@ const TRANSITION_MAP = {
     },
   },
 };
+
+// ── Worker result emission helper ────────────────────────────────────────────
+function _emitWorkerResult(workerName, result) {
+  const obs = _obs();
+  if (!obs) return;
+  const outcome = (result && result.status) || (result && !result.error ? 'completed' : 'failed');
+  obs.transition({
+    domain: 'dedup',
+    entity: 'worker_result',
+    entityId: `dedup:${workerName}`,
+    previousState: null,
+    nextState: 'WORKER_RESULT',
+    authority: 'dedup-fsm',
+    raw: { workerName, domain: 'dedup', accountId: null, outcome, data: (result && result.data) || null, error: (result && result.error) || null, invokedAt: Date.now() },
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3. Domain-local runtime state (private)

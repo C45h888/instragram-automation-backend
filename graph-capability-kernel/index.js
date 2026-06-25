@@ -21,16 +21,12 @@
 //   permission-recovery → PermissionRecoveryWorker (scope drift, role changes)
 //   account-sync        → AccountSyncWorker (cross-domain reconciliation)
 //   escalation          → EscalationWorker (unrecoverable condition handling)
+//   evaluation          → EvaluationWorker (reactive re-inference on vault state change)
 
 const wiring = require('./substrates/graph-capability/wiring');
 const fsm = require('./fsm');
 const signalDispatch = require('./substrates/vault/signal-dispatch');
 const healthSubstrate = require('./substrates/health-substrate');
-const orchestrator = require('./orchestrator');
-
-// Capability-check workers (registered via CK's invokeWorker gate)
-const credentialCapWorker = require('./substrates/capability-check-substrate/workers/credential-capability-worker');
-const quotaIntWorker = require('./substrates/capability-check-substrate/workers/quota-intelligence-worker');
 
 // Worker imports (Pass 2)
 const QuotaIntelligenceWorker = require('./substrates/workers/quota-intelligence-worker');
@@ -39,6 +35,7 @@ const DependencyRecoveryWorker = require('./substrates/workers/dependency-recove
 const PermissionRecoveryWorker = require('./substrates/workers/permission-recovery-worker');
 const AccountSyncWorker = require('./substrates/workers/account-sync-worker');
 const EscalationWorker = require('./substrates/workers/escalation-worker');
+const evaluationWorker = require('./substrates/workers/evaluation-worker');
 
 // Re-export the public surface from the kernel substrates
 const vault = require('./substrates/vault');
@@ -136,27 +133,19 @@ function install({ ck } = {}) {
   fsm.setMembrane('account-sync', { substrate: _accountSyncWorker });
   fsm.setMembrane('escalation', { substrate: _escalationWorker });
 
-  // 5. Register capability-check workers with CK's invokeWorker gate.
-  //    This enables ctx.invokeWorker() inside the FSM's CAPABILITY_CHECK
-  //    buildActions — CK validates ownership, contract, and system sanity
-  //    before execution, and emits WORKER_RESULT to the observability ledger.
-  if (ck && typeof ck.registerWorker === 'function') {
-    ck.registerWorker('graph-capability', 'credential-capability', credentialCapWorker);
-    ck.registerWorker('graph-capability', 'quota-intelligence', quotaIntWorker);
-  }
+  // Pass 3: evaluation worker — registers as membrane so CAPABILITY_BOOTSTRAP
+  // triggers its start(ck) via _wireMembranes(). Subscribes to
+  // CAPABILITY_EVALUATION_STARTED and dispatches CAPABILITY_OBSERVATION
+  // through CK's dispatch() for constitutional validation.
+  fsm.setMembrane('evaluation', { substrate: evaluationWorker });
 
-  // 6. Wire the evaluation worker — subscribes to CAPABILITY_EVALUATION_STARTED
-  //    to trigger re-inference when vault state changes.
-  const evaluationWorker = require('./substrates/workers/evaluation-worker');
-  evaluationWorker.start(ck);
-
-  // 7. Start the graph-capability substrate (binding only)
+  // 5. Start the graph-capability substrate (binding only)
   const result = wiring.install({ ck });
   _started = result.started;
   _installed = true;
   _lastBoundCk = ck;
 
-  console.log('[graph-capability-kernel] 7 membranes registered: health, quota-intelligence, webhook-sync, dependency-recovery, permission-recovery, account-sync, escalation');
+  console.log('[graph-capability-kernel] 8 membranes registered: health, quota-intelligence, webhook-sync, dependency-recovery, permission-recovery, account-sync, escalation, evaluation');
 
   return { fsm, started: _started, healthStarted: health.isStarted ? health.isStarted() : false };
 }

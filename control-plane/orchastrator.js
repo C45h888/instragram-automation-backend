@@ -298,6 +298,16 @@ function _wire() {
   constitutional.registerWorker('scheduling', 'metrics-flush',
     require('../scheduling-kernel/workers/metrics-flush-worker'));
 
+  // ── graph-capability-fsm — capability-check workers ─────────────────────
+  // These two workers are the CK-gated execution path for CAPABILITY_CHECK.
+  // ctx.invokeWorker() validates ownership, contract, and system sanity
+  // before execution. The dead ck.registerWorker() call in the GC kernel's
+  // index.js is removed — CK._workerRegistry is only populated here.
+  constitutional.registerWorker('graph-capability', 'credential-capability',
+    require('../graph-capability-kernel/substrates/capability-check-substrate/workers/credential-capability-worker'));
+  constitutional.registerWorker('graph-capability', 'quota-intelligence',
+    require('../graph-capability-kernel/substrates/capability-check-substrate/workers/quota-intelligence-worker'));
+
   // Wire each membrane orchestrator
   cadenceOrchestrator.wire(constitutional);
   acquisitionOrchestrator.wire(constitutional, acquisitionFsm);
@@ -305,7 +315,7 @@ function _wire() {
   lifecycleOrchestrator.wire(constitutional);
   degradationOrchestrator.wire(constitutional);
   dedupOrchestrator.wire(constitutional, dedupFsm);
-  persistTelemetryOrchestrator.wire(constitutional);
+  persistTelemetryOrchestrator.wire(constitutional, persistTelemetryFsm);
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
