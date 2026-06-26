@@ -1,0 +1,20 @@
+{
+  "object": "instagram",
+  "entry": [
+    {
+      "id": "17841405822304914",
+      "time": 1700000000,
+      "messaging": [
+        {
+          "sender": { "id": "USER_SENDER_1" },
+          "recipient": { "id": "PAGE_RECIPIENT_1" },
+          "timestamp": 1700000000000,
+          "message": {
+            "mid": "m_message_001",
+            "text": "hello from phase-9 canonical webhook fixture"
+          }
+        }
+      ]
+    }
+  ]
+}

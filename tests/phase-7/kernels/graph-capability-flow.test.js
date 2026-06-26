@@ -108,6 +108,18 @@ require_.cache[apiSurfacePath] = {
   paths: [],
 };
 
+// ─── Redis mock — return null client so _syncProjectionState bails out ──────
+const configRedisPath = require_.resolve('../../../config/redis.js');
+const redisMockClient = { status: null, get: async () => null };
+require_.cache[configRedisPath] = {
+  id: configRedisPath,
+  filename: configRedisPath,
+  loaded: true,
+  exports: { getRedisClient: () => redisMockClient, getRedisInstance: () => redisMockClient },
+  children: [],
+  paths: [],
+};
+
 // ─── Stub CK (constitutional kernel) ──────────────────────────────────────
 
 function makeStubCk() {
@@ -246,13 +258,13 @@ describe('V1 — End-to-end smoke: gck.install wires FSM, CAPABILITY_BOOTSTRAP w
     expect(signalDispatch.getCk()).toBeNull();
   });
 
-  it('CAPABILITY_BOOTSTRAP causes the FSM to call substrate.start(ck) and the membrane becomes a first-class citizen', () => {
+  it('CAPABILITY_BOOTSTRAP causes the FSM to call substrate.start(ck) and the membrane becomes a first-class citizen', async () => {
     const ck = makeStubCk();
     gck.install({ ck });
     expect(healthSubstrate.isStarted()).toBe(false);
     // Dispatch CAPABILITY_BOOTSTRAP through the stub CK → routes to the FSM
     // (because the stub CK's dispatch is the constitutional ingress)
-    ck.dispatch({ type: 'CAPABILITY_BOOTSTRAP' });
+    await ck.dispatch({ type: 'CAPABILITY_BOOTSTRAP' });
     // The membrane is now wired
     expect(healthSubstrate.isStarted()).toBe(true);
     // The membrane subscribed to BOTH action types
@@ -405,7 +417,7 @@ describe('V4 — Constitutional ordering: FSM (policy) → substrate (membrane) 
   it('the membrane runs the worker only when the action arrives (FSM is the policy authority)', async () => {
     const ck = makeStubCk();
     gck.install({ ck });
-    ck.dispatch({ type: 'CAPABILITY_BOOTSTRAP' });
+    await ck.dispatch({ type: 'CAPABILITY_BOOTSTRAP' });
 
     // Subscribe handlers were captured by the stub CK
     const handlers = ck.actionSubscribers.get('RUN_TOKEN_HEALTH_CHECK');
@@ -435,18 +447,18 @@ describe('V5 — Cadence gate: fsm._shouldCheck', () => {
     expect(fsm._shouldCheck(BA_A, 'data_access_expiry')).toBe(true);
   });
 
-  it('returns false for a cred within the cadence window after a completion stamp', () => {
+  it('returns false for a cred within the cadence window after a completion stamp', async () => {
     const ck = makeStubCk();
     gck.install({ ck });
-    fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, ck);
-    fsm.dispatch({ type: 'CAPABILITY_HEALTH_CHECK_COMPLETED', checkType: 'token_health', businessAccountId: BA_A }, ck);
+    await fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, ck);
+    await fsm.dispatch({ type: 'CAPABILITY_HEALTH_CHECK_COMPLETED', checkType: 'token_health', businessAccountId: BA_A }, ck);
     expect(fsm._shouldCheck(BA_A, 'token_health')).toBe(false);
     expect(fsm._shouldCheck(BA_A, 'uat_refresh')).toBe(true);
   });
 
-  it('rejects CAPABILITY_HEALTH_CHECK_COMPLETED with unknown checkType', () => {
+  it('rejects CAPABILITY_HEALTH_CHECK_COMPLETED with unknown checkType', async () => {
     gck.install({ ck: makeStubCk() });
-    const result = fsm.dispatch(
+    const result = await fsm.dispatch(
       { type: 'CAPABILITY_HEALTH_CHECK_COMPLETED', checkType: 'bogus_type', businessAccountId: BA_A },
       makeStubCk()
     );
@@ -458,21 +470,21 @@ describe('V5 — Cadence gate: fsm._shouldCheck', () => {
 // V6. Per-cred cadence stamping
 // ═══════════════════════════════════════════════════════════════════════════
 describe('V6 — Per-cred cadence stamping', () => {
-  it('CAPABILITY_HEALTH_CHECK_COMPLETED stamps lastTokenHealthCheckAt on the cred', () => {
+  it('CAPABILITY_HEALTH_CHECK_COMPLETED stamps lastTokenHealthCheckAt on the cred', async () => {
     const ck = makeStubCk();
     gck.install({ ck });
-    fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, ck);
+    await fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, ck);
     expect(fsm.exportState(BA_A).lastTokenHealthCheckAt).toBeNull();
-    fsm.dispatch({ type: 'CAPABILITY_HEALTH_CHECK_COMPLETED', checkType: 'token_health', businessAccountId: BA_A }, ck);
+    await fsm.dispatch({ type: 'CAPABILITY_HEALTH_CHECK_COMPLETED', checkType: 'token_health', businessAccountId: BA_A }, ck);
     expect(fsm.exportState(BA_A).lastTokenHealthCheckAt).toBeGreaterThan(0);
   });
 
-  it('per-cred isolation: stamping BA_A does not affect BA_B', () => {
+  it('per-cred isolation: stamping BA_A does not affect BA_B', async () => {
     const ck = makeStubCk();
     gck.install({ ck });
-    fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, ck);
-    fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_B) }, ck);
-    fsm.dispatch({ type: 'CAPABILITY_HEALTH_CHECK_COMPLETED', checkType: 'token_health', businessAccountId: BA_A }, ck);
+    await fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_A) }, ck);
+    await fsm.dispatch({ type: 'CAPABILITY_OBSERVATION', envelope: freshFullEnvelope(BA_B) }, ck);
+    await fsm.dispatch({ type: 'CAPABILITY_HEALTH_CHECK_COMPLETED', checkType: 'token_health', businessAccountId: BA_A }, ck);
     expect(fsm.exportState(BA_A).lastTokenHealthCheckAt).toBeGreaterThan(0);
     expect(fsm.exportState(BA_B).lastTokenHealthCheckAt).toBeNull();
   });

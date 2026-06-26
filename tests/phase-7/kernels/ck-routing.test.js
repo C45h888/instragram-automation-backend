@@ -27,7 +27,7 @@ describe('Constitutional Kernel — gate + routing for governed read', () => {
     ck.registerDomain(fsm);
   });
 
-  it('SCENARIO 13 — INTERNAL_DOMAIN_EVENTS lets CAPABILITY_DATA_REQUEST pass the canonical source gate (no lineageId needed)', () => {
+  it('SCENARIO 13 — INTERNAL_DOMAIN_EVENTS lets CAPABILITY_DATA_REQUEST pass the canonical source gate (no lineageId needed)', async () => {
     // CAPABILITY_DATA_REQUEST is in INTERNAL_DOMAIN_EVENTS so the
     // canonical source gate must let it through without a lineageId.
     // The FSM has a transition for it that creates a pendingReads
@@ -35,7 +35,7 @@ describe('Constitutional Kernel — gate + routing for governed read', () => {
     const mockResolve = vi.fn();
     const mockReject = vi.fn();
 
-    const result = ck.dispatch({
+    const result = await ck.dispatch({
       type: 'CAPABILITY_DATA_REQUEST',
       businessAccountId: 'ba-1',
       readDomain: 'db.scope-cache',
@@ -51,7 +51,7 @@ describe('Constitutional Kernel — gate + routing for governed read', () => {
 
     // Observable proof the FSM received the event: a follow-up
     // READ_RESULT_AVAILABLE resolves the stored Promise controllers.
-    ck.dispatch({
+    await ck.dispatch({
       type: 'READ_RESULT_AVAILABLE',
       businessAccountId: 'ba-1',
       accountId: 'ba-1',
@@ -83,7 +83,7 @@ describe('Constitutional Kernel — gate + routing for governed read', () => {
     expect(result.reason).toMatch(/canonical source required/);
   });
 
-  it('SCENARIO 14 — DOMAIN_EVENT_MAP routes CAPABILITY_DATA_REQUEST to the graph-capability FSM only', () => {
+  it('SCENARIO 14 — DOMAIN_EVENT_MAP routes CAPABILITY_DATA_REQUEST to the graph-capability FSM only', async () => {
     // Dispatch CAPABILITY_DATA_REQUEST through CK. The graph-capability
     // FSM is the only registered domain in this test. Observable
     // side effect: the FSM stores the Promise controllers in
@@ -93,7 +93,7 @@ describe('Constitutional Kernel — gate + routing for governed read', () => {
     const mockResolve = vi.fn();
     const mockReject = vi.fn();
 
-    const result = ck.dispatch({
+    const result = await ck.dispatch({
       type: 'CAPABILITY_DATA_REQUEST',
       businessAccountId: 'ba-1',
       readDomain: 'db.scope-cache',
@@ -108,7 +108,7 @@ describe('Constitutional Kernel — gate + routing for governed read', () => {
 
     // Route confirmation: the event reached the graph-capability FSM
     // because the Promise controllers are storable / resolvable.
-    ck.dispatch({
+    await ck.dispatch({
       type: 'READ_RESULT_AVAILABLE',
       businessAccountId: 'ba-1',
       accountId: 'ba-1',

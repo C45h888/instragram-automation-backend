@@ -388,7 +388,6 @@ const DOMAIN_EVENT_MAP = {
   CAPABILITY_CHECK_COMPLETE: 'graph-capability',
   CAPABILITY_CHECK_FAILED: 'graph-capability',
   IMMEDIATE_TOKEN_REFRESH: 'graph-capability',
-  CAPABILITY_OBSERVATION: 'graph-capability',  // dispatched by evaluation-worker through CK; routes back to GC FSM for constitutional validation
 
   // Persist-Telemetry domain — governs all DB write + read operations
   DB_WRITE_REQUESTED: 'persist-telemetry',
