@@ -64,6 +64,18 @@ const reconciliationFsm = require('../reconciliation-kernel/fsm');
 const telemetryCoordinationFsm = telemetryKernel.fsm;
 const persistTelemetryFsm = require('../postgres-telemetry-kernel/fsm');
 
+// ── 10th Domain FSM (Pass 7 / S5 consumer-side) ────────────────────────────
+// WebView reactive membrane. The require is defensive — the FSM
+// module was authored in Pass 7.1 and may be absent during partial
+// rollouts; a guarded skip preserves the existing 9-FSM contract.
+let webviewFsm = null;
+try {
+  webviewFsm = require('./governance/webview-fsm');
+} catch (e) {
+  webviewFsm = null;
+  console.warn('[orchastrator] webview-fsm not loaded; WebView reactive membrane inert. (Pass 7.1 stub.)');
+}
+
 // ── 6 Membrane orchestrators ─────────────────────────────────────────────────
 const cadenceOrchestrator     = require('../scheduling-kernel/orchestrator');
 const acquisitionOrchestrator = require('../acquisition-kernel/orchestrator');
@@ -91,6 +103,15 @@ function _wire() {
   constitutional.registerDomain(reconciliationFsm);
   constitutional.registerDomain(telemetryCoordinationFsm);
   constitutional.registerDomain(persistTelemetryFsm);
+  // Pass 7 — WebView reactive membrane (10th domain FSM).
+  // Guarded: if the FSM module was not loaded (partial rollout,
+  // hot reload race, etc.), the existing 9-FSM contract is
+  // preserved with no behaviour change.
+  if (webviewFsm && typeof webviewFsm.dispatch === 'function') {
+    constitutional.registerDomain(webviewFsm);
+  } else {
+    console.warn('[orchastrator] skipping registerDomain(webview-fsm) — module not available.');
+  }
 
   // Wire governance refs to all domain FSMs.
   // Each FSM holds the governance ref so it can pass it to
@@ -105,6 +126,15 @@ function _wire() {
   reconciliationFsm.setGovernance(constitutional);
   telemetryCoordinationFsm.setGovernance(constitutional);
   persistTelemetryFsm.setGovernance(constitutional);
+  // Pass 7 — webview-fsm receives governance too, guarded the
+  // same way as registerDomain. webview-fsm.js does not declare
+  // setGovernance at the contract surface; the FSM contract
+  // requires only the 5 methods (init optional). If a future
+  // pass author extends the stub with setGovernance, this branch
+  // wires it; otherwise it is a no-op.
+  if (webviewFsm && typeof webviewFsm.setGovernance === 'function') {
+    webviewFsm.setGovernance(constitutional);
+  }
   persistTelemetryFsm.setReadingSubstrate(require('../control-plane/governance/domains/reading-substrate'));
 
   // Phase 4 (base): IG recovery substrate façade + workers.

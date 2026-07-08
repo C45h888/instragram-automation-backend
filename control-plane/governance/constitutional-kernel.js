@@ -68,6 +68,12 @@ const MEMBRANE_AUTHORITY_MAP = {
   'engagement-fsm':      ['engagement'],
   'dedup-fsm':           ['dedup'],
   'persist-telemetry': ['persist-telemetry'],
+  // Pass 7 — WebView reactive membrane (S5 consumer-side).
+  // The webview-fsm domain is the sole authority for WebView-origin
+  // transitions arriving via the lineage:webview:transitions stream.
+  // Mirrors the authority-vector pattern used by acquisition-fsm,
+  // publishing-membrane, reconciliation-fsm, etc.
+  'webview-fsm':        ['webview-fsm'],
   'governance-kernel':   ['governance', 'execution', 'acquisition', 'publishing',
                           'scheduling', 'telemetry', 'reconciliation', 'projection'],
 };
@@ -183,6 +189,17 @@ const INTERNAL_DOMAIN_EVENTS = new Set([
   // GLOBAL_TRANSITION_MAP handlers during cross-kernel orchestration.
   // No lineageId required; CK IS the canonical source.
   'RETRY_REQUESTED','ACQUISITION_DEFER','IMMEDIATE_TOKEN_REFRESH',
+
+  // Pass 7 — WebView reactive membrane (S5 consumer-side).
+  // Issued by the XREAD pump in webview-stream.js for every entry
+  // arriving on lineage:webview:transitions. CK is the canonical
+  // source — this event dispatches into the webview-fsm domain
+  // for authority validation; no producer-side lineageId required.
+  'WEBVIEW_TRANSITION_REQUESTED',
+  // Pass 7 — pump lifecycle and receipt-write telemetry. Emitted by
+  // webview-stream.js / webview-receipt.js to surface Redis health
+  // independently of the dispatch path.
+  'STREAM_PUMP_UP','STREAM_PUMP_DOWN','READ_RESULTS_WRITE_FAILED',
 ]);
 
 function _extractForeignAuthorityDomain(authority) {
@@ -416,6 +433,13 @@ const DOMAIN_EVENT_MAP = {
   // Worker emits PROJECTION_PARTITION_WRITE_FAILED on rpush failure.
   // FSM observes via onWrite() and dispatches RETRY_CADENCE_REQUEST.
   PROJECTION_PARTITION_WRITE_FAILED: 'telemetry-coordination-fsm',
+
+  // Pass 7 — WebView reactive membrane (S5 consumer-side).
+  // Every WebView-origin transition arrives via
+  // lineage:webview:transitions (XREAD pump in webview-stream.js).
+  // Routes into the webview-fsm domain for authority validation;
+  // see PASS 7 spec 2026-07-05-pass7-ck-reactive-webview-membrane.md.
+  WEBVIEW_TRANSITION_REQUESTED: 'webview-fsm',
 };
 
 // ── Reconciliation cycle coordination state ──────────────────────────────────
@@ -2599,6 +2623,32 @@ async function bootstrap() {
   //    checked at most once per window.
   //    NOTE: cadence loop is started inside startLoop() — no separate call needed.
 
+  // 5. Pass 7.2.e — start the WebView reactive membrane pump. The pump
+  //    XREADs lineage:webview:transitions, dispatches each entry into
+  //    the webview-fsm domain, computes a DecisionReceipt, and emits
+  //    it to lineage:webview:read-results. The pump runs as a permanent
+  //    async loop — Redis BLOCK is the wait primitive (no timer poll).
+  //    Failure of the pump on first start logs + surfaces
+  //    STREAM_PUMP_DOWN as a constitutional event; the CK continues to
+  //    operate regardless. The pump handle is exposed via
+  //    module.exports.webviewStreamPump so ops + tests can inspect
+  //    status or call .stop() during shutdown.
+  try {
+    const { createWebviewStreamPump } = require('./webview-stream');
+    const webviewFsm = require('./webview-fsm');
+    const pump = createWebviewStreamPump({
+      ck: module.exports,
+      fsm: webviewFsm,
+    });
+    module.exports.setWebviewStreamPump(pump);
+    pump.start(); // fire-and-forget; the loop self-manages retry.
+    console.log('[constitutional-kernel] WebView reactive membrane pump started');
+  } catch (pumpErr) {
+    // Per spec: log + continue. The CK is live; the membrane is inert
+    // until a future bootstrap.
+    console.error('[constitutional-kernel] WebView stream pump start failed:', pumpErr && pumpErr.message);
+  }
+
   return result;
 }
 
@@ -2637,4 +2687,11 @@ module.exports = {
   governedRead,
   recordMetric,
   queryMetrics,
+  // ── Pass 7.1.f — WebView reactive membrane pump handle ────────────
+  // Pass 7.2 attaches the XREAD pump to this slot via setWebviewStreamPump.
+  // Until then, the slot is null and the surface is dormant.
+  // Bootstrap (Pass 7.2.e) reads the current handle, calls .start()
+  // once, captures .stop() for shutdown.
+  webviewStreamPump: null,
+  setWebviewStreamPump: (handle) => { module.exports.webviewStreamPump = handle; },
 };
